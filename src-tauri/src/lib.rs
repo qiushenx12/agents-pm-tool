@@ -103,11 +103,76 @@ async fn shutdown_server(app: &tauri::AppHandle) {
     }
 }
 
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+fn open_web_page(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let port = state.server.lock().unwrap().as_ref().map(|h| h.port);
+    if let Some(port) = port {
+        use tauri_plugin_shell::ShellExt;
+        let _ = app
+            .shell()
+            .open(format!("http://127.0.0.1:{port}"), None);
+    }
+}
+
+/// 系统托盘：打开设置 / 打开网页 / 退出（停止服务）
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let show = MenuItem::with_id(app, "tray_show", "打开设置", true, None::<&str>)?;
+    let open_web = MenuItem::with_id(app, "tray_open_web", "打开网页", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "tray_quit", "退出（停止服务）", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &open_web, &quit])?;
+
+    TrayIconBuilder::new()
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .tooltip("Agents PM Tool")
+        .icon(app.default_window_icon().unwrap().clone())
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "tray_show" => show_main_window(app),
+            "tray_open_web" => open_web_page(app),
+            "tray_quit" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    shutdown_server(&app).await;
+                    app.exit(0);
+                });
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 单实例：重复启动时聚焦已有窗口，避免起第二个服务（端口顺延导致双实例）
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
+            setup_tray(app)?;
             let data_dir = paths::data_dir().map_err(|e| {
                 eprintln!("数据目录初始化失败：{e}");
                 e
@@ -140,9 +205,7 @@ pub fn run() {
             }
 
             // 窗口创建完成后显示（frameless 避免白屏闪烁）
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-            }
+            show_main_window(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
