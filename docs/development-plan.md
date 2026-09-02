@@ -262,46 +262,46 @@ pm-cli describe <id> --description <文本> [--json]     # 仅 Agent 创建的�
 
 ### Phase 0 — 工程脚手架（0.5~1 天）
 
-- [ ] 按 §3 初始化：Vite 多入口（index/config）、TS strict、`@` 别名、Pinia；拷贝 cc-launcher 的 `vite.config.ts/tsconfig/tauri.conf/theme.css/components.css` 并裁剪
-- [ ] Rust：`paths.rs`（exe 同目录 `data/`，dev 回退项目根）、rusqlite 建库 + `user_version` 迁移框架
-- [ ] axum 服务最小启动 + rust-embed 托管 + 端口顺延；Tauri 配置窗显示「服务已启动 http://127.0.0.1:17890」
-- [ ] `runtime.json` 写入 + token 生成
+- [x] 按 §3 初始化：Vite 多入口（index/config）、TS strict、`@` 别名、Pinia；拷贝 cc-launcher 的 `vite.config.ts/tsconfig/tauri.conf/theme.css/components.css` 并裁剪
+- [x] Rust：`paths.rs`（exe 同目录 `data/`，dev 回退项目根）、rusqlite 建库 + `user_version` 迁移框架
+- [x] axum 服务最小启动 + rust-embed 托管 + 端口顺延；Tauri 配置窗显示「服务已启动 http://127.0.0.1:17890」
+- [x] `runtime.json` 写入 + token 生成
 
 **验收**：`tauri dev` 起窗，浏览器打开网页看到占位页；data/ 生成 pm.db 与 runtime.json。
 
 ### Phase 1 — 数据层 + Agent 通路（2 天）
 
-- [ ] schema 全量 + 种子项目 `agents-pm-tool`；idgen（事务内序号）+ 状态机/校验规则单测先行
-- [ ] `/api/web/tasks` CRUD + 筛选排序关键字；`/api/web/projects` 全量（含级联重命名、引用保护）
-- [ ] `/api/agent/*` 五个接口 + token 中间层 + §5.4 全部收窄规则
-- [ ] `pm-cli`：五个子命令 + `--json` + 退出码/中文报错
-- [ ] SSE broadcast（任务变更即广播）
+- [x] schema 全量 + 种子项目 `agents-pm-tool`；idgen（事务内序号）+ 状态机/校验规则单测先行
+- [x] `/api/web/tasks` CRUD + 筛选排序关键字；`/api/web/projects` 全量（含级联重命名、引用保护）
+- [x] `/api/agent/*` 五个接口 + token 中间层 + §5.4 全部收窄规则
+- [x] `pm-cli`：五个子命令 + `--json` + 退出码/中文报错
+- [x] SSE broadcast（任务变更即广播）
 
 **验收**：curl/CLI 全链路通；CLI 越权用例（改项目、改用户任务描述、设验收通过）全部 403/422。
 
 ### Phase 2 — 网页表格（3 天）
 
-- [ ] TaskGrid：9 列渲染、行内编辑（下拉/文本）、列排序、列宽拖拽
-- [ ] FilterBar（多选筛选 + 关键字 + URL query 同步）
-- [ ] 新建弹窗 + 详情抽屉 + 删除二次确认
-- [ ] ProjectOptionPopover 表头选项管理（增删改色排序、引用保护提示）
-- [ ] SSE 实时刷新 + 降级轮询；空态/加载态/错误态
+- [x] TaskGrid：9 列渲染、行内编辑（下拉/文本）、列排序、列宽拖拽
+- [x] FilterBar（多选筛选 + 关键字 + URL query 同步）
+- [x] 新建弹窗 + 详情抽屉 + 删除二次确认
+- [x] ProjectOptionPopover 表头选项管理（增删改色排序、引用保护提示）
+- [x] SSE 实时刷新 + 降级轮询；空态/加载态/错误态
 
 **验收**：网页端完成 §5.2/§5.3 全部交互；CLI 建任务网页 1s 内出现。
 
 ### Phase 3 — 附件 + 配置窗完善（2 天）
 
-- [ ] 附件上传（multipart，扩展名白名单：png/jpg/jpeg/gif/webp/mp4/mov/doc/docx/ppt/pptx/md/txt/pdf/xlsx；单文件 ≤200MB）、图片/视频内联预览、其余下载、删除
-- [ ] 配置窗：端口修改重启服务、自启动开关、打开网页、重生成 token、数据目录展示
-- [ ] 窗口关闭行为（关窗保服务 or 退出一并停服务，配置项）
+- [x] 附件上传（multipart，扩展名白名单：png/jpg/jpeg/gif/webp/mp4/mov/doc/docx/ppt/pptx/md/txt/pdf/xlsx；单文件 ≤200MB）、图片/视频内联预览、其余下载、删除
+- [x] 配置窗：端口修改重启服务、自启动开关、打开网页、重生成 token、数据目录展示
+- [x] 窗口关闭行为（关窗保服务 or 退出一并停服务，配置项）
 
 **验收**：附件全链路；配置项全部生效并持久化。
 
 ### Phase 4 — 测试与发布（1~2 天）
 
-- [ ] cargo test：idgen 并发、状态机、CLI 权限收窄、级联重命名、完成时间规则
-- [ ] Vitest：筛选条件序列化、时间格式渲染、类型对齐
-- [ ] 10 万行任务冒烟（网格目前数据量小，分页/滚动按需即可，**不做虚拟滚动过度设计**；若实测卡顿再加行虚拟化）
+- [x] cargo test：idgen 并发、状态机、CLI 权限收窄、级联重命名、完成时间规则
+- [x] Vitest：筛选条件序列化、时间格式渲染、类型对齐
+- [x] 10 万行任务冒烟（网格目前数据量小，分页/滚动按需即可，**不做虚拟滚动过度设计**；若实测卡顿再加行虚拟化）
 - [ ] NSIS 打包：`Agents PM Tool.exe` + `pm-cli.exe` 同目录；安装后新建→CLI→网页闭环验证
 
 ---

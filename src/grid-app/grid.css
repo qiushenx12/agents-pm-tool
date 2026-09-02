@@ -217,6 +217,15 @@
   padding: 40px 0;
   color: var(--text-secondary);
 }
+.grid-truncated {
+  padding: 8px 12px;
+  font-size: var(--font-size-small);
+  color: var(--text-secondary);
+  background: var(--card);
+  border-top: 1px solid var(--separator);
+  position: sticky;
+  bottom: 0;
+}
 
 .cell-id {
   font-family: var(--font-mono);

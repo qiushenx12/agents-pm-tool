@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref } from "vue";
+import { computed, reactive, ref } from "vue";
 import { api } from "@/grid-app/api/client";
 import ProjectOptionPopover from "@/grid-app/components/ProjectOptionPopover.vue";
 import StatusSelect from "@/grid-app/components/StatusSelect.vue";
@@ -9,6 +9,11 @@ import { useTaskStore } from "@/grid-app/stores/taskStore";
 import { formatDateTime, type Task, type TaskType } from "@/shared/types";
 
 const emit = defineEmits<{ "open-detail": [task: Task] }>();
+
+// 渲染上限：数据量大时避免浏览器卡死（规划：分页/虚拟滚动按需再加，先做轻量截断）
+const RENDER_LIMIT = 2000;
+const visibleTasks = computed(() => taskStore.tasks.slice(0, RENDER_LIMIT));
+const truncated = computed(() => taskStore.tasks.length > RENDER_LIMIT);
 
 const taskStore = useTaskStore();
 const metaStore = useMetaStore();
@@ -150,7 +155,7 @@ async function onDelete(task: Task) {
           </td>
         </tr>
         <tr
-          v-for="t in taskStore.tasks"
+          v-for="t in visibleTasks"
           :key="t.id"
           class="task-row"
           @click="emit('open-detail', t)"
@@ -206,5 +211,8 @@ async function onDelete(task: Task) {
     </table>
 
     <ProjectOptionPopover v-if="showProjectPopover" @close="showProjectPopover = false" />
+    <div v-if="truncated" class="grid-truncated">
+      共 {{ taskStore.tasks.length }} 条，仅渲染前 {{ RENDER_LIMIT }} 条，请用筛选缩小范围
+    </div>
   </div>
 </template>

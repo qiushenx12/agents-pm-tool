@@ -9,6 +9,7 @@ dist-ssr/
 src-tauri/target/
 src-tauri/Cargo.lock
 src-tauri/gen/
+src-tauri/binaries/
 
 # Runtime data (dev mode)
 data/

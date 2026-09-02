@@ -3,6 +3,7 @@ name = "agents-pm-tool"
 version = "1.0.0"
 description = "Agents PM Tool - 面向 Agents 的项目管理工具"
 edition = "2021"
+default-run = "agents-pm-tool"
 
 [lib]
 name = "agents_pm_tool_lib"
