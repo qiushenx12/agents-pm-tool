@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { currentTheme, toggleTheme } from "@/shared/theme";
 import { onMounted, ref } from "vue";
 
 interface Settings {
@@ -24,6 +25,11 @@ const error = ref("");
 const saving = ref(false);
 
 const appWindow = getCurrentWindow();
+const theme = ref(currentTheme());
+
+function onToggleTheme() {
+  theme.value = toggleTheme();
+}
 
 async function load() {
   settings.value = await invoke<Settings>("get_settings");
@@ -67,6 +73,9 @@ onMounted(load);
     <div class="titlebar" data-tauri-drag-region>
       <span class="titlebar-title">Agents PM Tool 设置</span>
       <div class="titlebar-actions">
+        <button class="icon-btn" title="切换明暗主题" @click="onToggleTheme">
+          {{ theme === "dark" ? "☀" : "☾" }}
+        </button>
         <button class="icon-btn" @click="appWindow.minimize()">—</button>
         <button class="icon-btn danger" @click="appWindow.close()">✕</button>
       </div>

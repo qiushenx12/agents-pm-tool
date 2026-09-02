@@ -13,6 +13,10 @@
   align-items: center;
   justify-content: space-between;
 }
+.toolbar-actions {
+  display: flex;
+  gap: 8px;
+}
 
 .grid-title {
   font-size: var(--font-size-title);

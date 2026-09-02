@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
+import { currentTheme, toggleTheme } from "@/shared/theme";
 import { subscribeTaskEvents } from "@/grid-app/api/client";
 import FilterBar from "@/grid-app/components/FilterBar.vue";
 import TaskCreateModal from "@/grid-app/components/TaskCreateModal.vue";
@@ -14,6 +15,11 @@ const metaStore = useMetaStore();
 
 const showCreate = ref(false);
 const detailTask = ref<Task | null>(null);
+const theme = ref(currentTheme());
+
+function onToggleTheme() {
+  theme.value = toggleTheme();
+}
 
 let unsubscribe: (() => void) | undefined;
 
@@ -33,7 +39,12 @@ onBeforeUnmount(() => unsubscribe?.());
   <div class="grid-app">
     <header class="grid-toolbar">
       <h1 class="grid-title">任务表</h1>
-      <button class="btn btn-primary" @click="showCreate = true">＋ 新建任务</button>
+      <div class="toolbar-actions">
+        <button class="btn" title="切换明暗主题" @click="onToggleTheme">
+          {{ theme === "dark" ? "☀ 浅色" : "☾ 深色" }}
+        </button>
+        <button class="btn btn-primary" @click="showCreate = true">＋ 新建任务</button>
+      </div>
     </header>
 
     <FilterBar />
