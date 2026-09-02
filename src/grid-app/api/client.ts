@@ -1,0 +1,143 @@
+import type {
+  ApiError,
+  Attachment,
+  Project,
+  Task,
+  TaskListQuery,
+  TaskStatus,
+  TaskType,
+} from "@/shared/types";
+
+export class ApiRequestError extends Error {
+  code: string;
+  details?: Record<string, unknown>;
+  constructor(e: ApiError["error"], public status: number) {
+    super(e.message);
+    this.code = e.code;
+    this.details = e.details;
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    headers: init?.body ? { "Content-Type": "application/json" } : undefined,
+    ...init,
+  });
+  if (!res.ok) {
+    let err: ApiError["error"] = {
+      code: "unknown",
+      message: `请求失败（${res.status}）`,
+    };
+    try {
+      const body = (await res.json()) as ApiError;
+      if (body?.error) err = body.error;
+    } catch {
+      /* ignore */
+    }
+    throw new ApiRequestError(err, res.status);
+  }
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+function buildQuery(q: TaskListQuery): string {
+  const p = new URLSearchParams();
+  q.project?.forEach((v) => p.append("project", v));
+  q.type?.forEach((v) => p.append("type", v));
+  q.status?.forEach((v) => p.append("status", v));
+  q.submitter?.forEach((v) => p.append("submitter", v));
+  if (q.keyword) p.set("keyword", q.keyword);
+  if (q.sort_by) p.set("sort_by", q.sort_by);
+  if (q.sort_order) p.set("sort_order", q.sort_order);
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+export const api = {
+  listTasks: (q: TaskListQuery = {}) =>
+    request<Task[]>(`/api/web/tasks${buildQuery(q)}`),
+
+  createTask: (body: { project: string; type: TaskType; description?: string }) =>
+    request<Task>("/api/web/tasks", { method: "POST", body: JSON.stringify(body) }),
+
+  patchTask: (
+    id: string,
+    body: Partial<{
+      project: string;
+      type: TaskType;
+      description: string;
+      status: TaskStatus;
+    }>,
+  ) => request<Task>(`/api/web/tasks/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+
+  deleteTask: (id: string) =>
+    request<void>(`/api/web/tasks/${id}`, { method: "DELETE" }),
+
+  listProjects: () => request<Project[]>("/api/web/projects"),
+
+  createProject: (body: { name: string; color?: string }) =>
+    request<Project>("/api/web/projects", { method: "POST", body: JSON.stringify(body) }),
+
+  patchProject: (name: string, body: Partial<{ new_name: string; color: string; sort_order: number }>) =>
+    request<Project>(`/api/web/projects/${encodeURIComponent(name)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  deleteProject: (name: string) =>
+    request<void>(`/api/web/projects/${encodeURIComponent(name)}`, { method: "DELETE" }),
+
+  listAttachments: (taskId: string) =>
+    request<Attachment[]>(`/api/web/tasks/${taskId}/attachments`),
+
+  attachmentUrl: (id: string) => `/api/web/attachments/${id}`,
+
+  uploadAttachment: (taskId: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request<Attachment>(`/api/web/tasks/${taskId}/attachments`, {
+      method: "POST",
+      body: fd,
+    });
+  },
+
+  deleteAttachment: (id: string) =>
+    request<void>(`/api/web/attachments/${id}`, { method: "DELETE" }),
+};
+
+/** SSE 订阅：任务变更时触发 onChange；断线自动降级为 10s 轮询 */
+export function subscribeTaskEvents(onChange: () => void): () => void {
+  let stopped = false;
+  let pollTimer: number | undefined;
+  let es: EventSource | undefined;
+
+  const startPolling = () => {
+    if (pollTimer !== undefined) return;
+    pollTimer = window.setInterval(() => onChange(), 10_000);
+  };
+  const stopPolling = () => {
+    if (pollTimer !== undefined) {
+      clearInterval(pollTimer);
+      pollTimer = undefined;
+    }
+  };
+
+  const connect = () => {
+    if (stopped) return;
+    es = new EventSource("/api/web/events");
+    es.addEventListener("tasks_changed", () => onChange());
+    es.onopen = () => stopPolling();
+    es.onerror = () => {
+      // EventSource 会自动重连；重连期间用轮询兜底
+      startPolling();
+    };
+  };
+
+  connect();
+
+  return () => {
+    stopped = true;
+    stopPolling();
+    es?.close();
+  };
+}

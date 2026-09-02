@@ -1,0 +1,40 @@
+[package]
+name = "agents-pm-tool"
+version = "1.0.0"
+description = "Agents PM Tool - 面向 Agents 的项目管理工具"
+edition = "2021"
+
+[lib]
+name = "agents_pm_tool_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "pm-cli"
+path = "src/cli/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["http1", "multipart", "tokio"] }
+rust-embed = { version = "8", features = ["compression"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+dirs = "5"
+mime_guess = "2"
+tower-http = { version = "0.6", features = ["fs"] }
+async-stream = "0.3"
+url = "2"
+
+# pm-cli 专用
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+[dev-dependencies]
+tempfile = "3"
