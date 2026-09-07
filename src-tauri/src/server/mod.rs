@@ -143,14 +143,19 @@ async fn write_runtime_json(core: &CoreState, port: u16) -> ApiResult<()> {
 }
 
 /// 启动 axum 服务；端口占用时自动顺延（最多 +20，规划 §7）
-pub async fn start_server(core: CoreState, preferred_port: u16) -> ApiResult<ServerHandle> {
+/// `bind_host` 来自 Settings::bind_host()：127.0.0.1 仅本机 / 0.0.0.0 局域网可达
+pub async fn start_server(
+    core: CoreState,
+    preferred_port: u16,
+    bind_host: [u8; 4],
+) -> ApiResult<ServerHandle> {
     let mut last_err: Option<std::io::Error> = None;
     let mut listener = None;
     let mut port = preferred_port;
 
     for offset in 0..=20u16 {
         port = preferred_port.saturating_add(offset);
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let addr = SocketAddr::from((bind_host, port));
         match tokio::net::TcpListener::bind(addr).await {
             Ok(l) => {
                 listener = Some(l);

@@ -124,7 +124,11 @@ pub async fn patch_description(
     Path(id): Path<String>,
     Json(body): Json<AgentDescriptionBody>,
 ) -> ApiResult<impl IntoResponse> {
-    let description = body.description.unwrap_or_default();
+    // 与 create 对齐：描述 trim 后不能为空（不允许借 describe 清空描述）
+    let description = body
+        .description
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| ApiError::unprocessable("描述不能为空（--description）"))?;
 
     let mut conn = core.db.lock().unwrap();
     let current = tasks::get(&conn, &id)?;

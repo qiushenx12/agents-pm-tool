@@ -11,9 +11,22 @@ async fn main() {
     let conn = db::open(&paths::db_path(&data_dir)).expect("数据库初始化失败");
     let settings = Settings::load(&paths::settings_path(&data_dir));
     let port = settings.port;
+    let bind_host = settings.bind_host();
     let core = Arc::new(server::CoreStateInner::new(data_dir, conn, settings));
-    let handle = server::start_server(core, port).await.expect("服务启动失败");
-    println!("服务已启动 http://127.0.0.1:{}（Ctrl+C 停止）", handle.port);
+    let handle = server::start_server(core, port, bind_host)
+        .await
+        .expect("服务启动失败");
+    let scope = if bind_host == [0, 0, 0, 0] {
+        "0.0.0.0（局域网可达）"
+    } else {
+        "127.0.0.1（仅本机）"
+    };
+    println!(
+        "服务已启动，监听 {}:{} {}（Ctrl+C 停止）",
+        std::net::Ipv4Addr::from(bind_host),
+        handle.port,
+        scope
+    );
     // 挂起直到 Ctrl+C
     tokio::signal::ctrl_c().await.ok();
     handle.stop().await;

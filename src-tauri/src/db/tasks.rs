@@ -196,10 +196,17 @@ pub fn patch(conn: &mut Connection, id: &str, p: &TaskPatch) -> ApiResult<Task> 
     get(conn, id)
 }
 
-pub fn remove(conn: &Connection, id: &str) -> ApiResult<()> {
+/// 删除任务（attachments 行随 ON DELETE CASCADE 清除）。
+/// 返回被级联删除的附件 stored_path 清单，由调用方清理磁盘文件（DB 层不碰文件系统）。
+pub fn remove(conn: &Connection, id: &str) -> ApiResult<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT stored_path FROM attachments WHERE task_id = ?1")?;
+    let paths: Vec<String> = stmt
+        .query_map(params![id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+
     let n = conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
     if n == 0 {
         return Err(ApiError::not_found(format!("任务 {id} 不存在")));
     }
-    Ok(())
+    Ok(paths)
 }

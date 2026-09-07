@@ -42,10 +42,10 @@ pub fn is_agent_status(s: &str) -> bool {
 }
 
 /// 状态迁移统一入口（规划 §7）：返回新的 finished_at。
-/// 规则：每次进入「待验证」或「已完成」刷新为当前时间（latest-wins）；
-/// 离开这两个状态不清空。
+/// 规则：每次进入「待验证」「已完成」或「验收通过」刷新为当前时间（latest-wins）；
+/// 离开这几个状态不清空。「验收通过」是终态，必须记完成时间。
 pub fn transition(new_status: &str, current_finished_at: Option<String>) -> Option<String> {
-    if new_status == "待验证" || new_status == "已完成" {
+    if new_status == "待验证" || new_status == "已完成" || new_status == "验收通过" {
         Some(now_str())
     } else {
         current_finished_at
@@ -63,6 +63,20 @@ mod tests {
         let f2 = transition("已完成", f.clone());
         assert!(f2.is_some());
         assert!(f2 >= f); // latest-wins（同秒则相等）
+    }
+
+    #[test]
+    fn transition_refreshes_on_acceptance() {
+        // 未开始 → 验收通过（跳过待验证/已完成）：必须记完成时间
+        let f = transition("验收通过", None);
+        assert!(f.is_some(), "验收通过是终态，必须有完成时间");
+        // 进行中（无 finished）→ 验收通过：同样要记
+        let f2 = transition("验收通过", None);
+        assert!(f2.is_some());
+        // 已有完成时间 → 再验收通过：刷新为最新
+        let f3 = transition("验收通过", f2.clone());
+        assert!(f3.is_some());
+        assert!(f3 >= f2);
     }
 
     #[test]

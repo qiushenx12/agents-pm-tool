@@ -90,10 +90,24 @@ export const useTaskStore = defineStore("tasks", () => {
     }
   }
 
+  // 关键字输入防抖 ~300ms（review P3-4）：避免每敲一个键发一次请求。
+  // URL 同步仍走 watch 立即写入（刷新不丢），仅请求触发防抖。
+  let keywordTimer: ReturnType<typeof setTimeout> | undefined;
+  let prevKeyword = filters.value.keyword;
+
   watch(
     filters,
     (f) => {
       writeFiltersToUrl(f);
+      if (f.keyword !== prevKeyword) {
+        prevKeyword = f.keyword;
+        if (keywordTimer !== undefined) clearTimeout(keywordTimer);
+        keywordTimer = setTimeout(() => {
+          keywordTimer = undefined;
+          void refresh();
+        }, 300);
+        return;
+      }
       void refresh();
     },
     { deep: true },

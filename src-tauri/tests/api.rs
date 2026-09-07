@@ -15,6 +15,10 @@ struct TestApp {
 }
 
 async fn spawn_app() -> TestApp {
+    spawn_app_with_host([127, 0, 0, 1]).await
+}
+
+async fn spawn_app_with_host(bind_host: [u8; 4]) -> TestApp {
     let tmp = tempfile::tempdir().unwrap();
     let data_dir = tmp.path().to_path_buf();
     let conn = db::open(&paths::db_path(&data_dir)).unwrap();
@@ -25,7 +29,8 @@ async fn spawn_app() -> TestApp {
     ));
     let token = "test-token".to_string();
     *core.token.write().await = token.clone();
-    let handle = server::start_server(core, 0).await.unwrap();
+    let handle = server::start_server(core, 0, bind_host).await.unwrap();
+    // 0.0.0.0 绑定时用回环地址访问（测试机本机）
     let base = format!("http://127.0.0.1:{}", handle.port);
     TestApp {
         base,
@@ -161,6 +166,33 @@ async fn finished_at_rules() {
     // 已完成 → 刷新
     let t = patch("已完成").await;
     assert!(t["finished_at"].as_str().unwrap() >= f2.as_str());
+    // 验收通过 → 刷新（终态必须记完成时间）
+    let f3 = t["finished_at"].as_str().unwrap().to_string();
+    let t = patch("验收通过").await;
+    assert!(t["finished_at"].as_str().unwrap() >= f3.as_str());
+}
+
+/// 验收通过直达路径：未开始 → 验收通过，完成时间必须有值
+#[tokio::test]
+async fn finished_at_on_direct_acceptance() {
+    let app = spawn_app().await;
+    let t = create_task(&app, false, "直接验收通过").await;
+    let id = t["id"].as_str().unwrap().to_string();
+    assert!(t["finished_at"].is_null());
+
+    let res = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{id}"))
+        .json(&json!({"status": "验收通过"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let t = res.json::<Value>().await.unwrap();
+    assert_eq!(t["status"].as_str().unwrap(), "验收通过");
+    assert!(
+        t["finished_at"].as_str().is_some(),
+        "验收通过是终态，必须有完成时间"
+    );
 }
 
 // ── Agent 权限收窄（规划 §5.4 验收：越权全部 403/422） ────
@@ -248,6 +280,20 @@ async fn agent_permission_matrix() {
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
+
+    // 空描述（trim 后为空）→ 422，与 create 校验对齐（review P3-2）
+    for body in [json!({"description": ""}), json!({"description": "   "}), json!({})] {
+        let res = app
+            .agent(
+                reqwest::Method::PATCH,
+                &format!("/tasks/{agent_id}/description"),
+            )
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 422, "空描述应 422：{body}");
+    }
 
     // Agent 改用户任务的描述 → 403
     let res = app
@@ -412,8 +458,46 @@ async fn project_rename_cascade_and_delete_protection() {
     assert_eq!(res.status(), 409);
 }
 
-// ── 静态站点托管 ─────────────────────────────────────────
+// ── 删除任务时清理磁盘附件（review P2-1） ────────────────
 
+#[tokio::test]
+async fn delete_task_removes_attachment_files() {
+    let app = spawn_app().await;
+    let data_dir = app._tmp.path().to_path_buf();
+    let t = create_task(&app, false, "带附件的任务").await;
+    let id = t["id"].as_str().unwrap().to_string();
+
+    // multipart 上传一个 txt 附件
+    let part = reqwest::multipart::Part::text("hello attachment")
+        .file_name("备注.txt")
+        .mime_str("text/plain")
+        .unwrap();
+    let form = reqwest::multipart::Form::new().part("file", part);
+    let res = app
+        .web(reqwest::Method::POST, &format!("/tasks/{id}/attachments"))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let a: Value = res.json().await.unwrap();
+    let stored_rel = a["stored_path"].as_str().unwrap().to_string();
+    assert!(data_dir.join(&stored_rel).exists(), "附件应已落盘");
+
+    // 删除任务 → 附件文件一并清理
+    let res = app
+        .web(reqwest::Method::DELETE, &format!("/tasks/{id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert!(
+        !data_dir.join(&stored_rel).exists(),
+        "删除任务后磁盘附件应被清理"
+    );
+}
+
+// ── 静态站点托管 ─────────────────────────────────────────
 #[tokio::test]
 async fn static_site_serves_index() {
     let app = spawn_app().await;
@@ -421,4 +505,16 @@ async fn static_site_serves_index() {
     assert_eq!(res.status(), 200);
     let body = res.text().await.unwrap();
     assert!(body.contains("Agents PM Tool") || body.contains("app"));
+}
+
+// ── 监听范围（listen_scope）─────────────────────────────────
+#[tokio::test]
+async fn lan_bind_serves_on_all_interfaces() {
+    // 绑定 0.0.0.0 时服务正常响应（测试用回环地址访问本机）
+    let app = spawn_app_with_host([0, 0, 0, 0]).await;
+    let res = app.http.get(&app.base).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+    // API 也应可达
+    let res = app.web(reqwest::Method::GET, "/projects").send().await.unwrap();
+    assert_eq!(res.status(), 200);
 }

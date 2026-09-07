@@ -22,6 +22,8 @@ struct ServerStatus {
     running: bool,
     port: u16,
     url: String,
+    /// LAN 模式下的局域网访问地址（供其他设备访问）；local 模式为空
+    lan_url: String,
     data_dir: String,
 }
 
@@ -30,45 +32,86 @@ fn get_settings(state: State<'_, AppState>) -> Settings {
     state.core.settings.read().unwrap().clone()
 }
 
+#[derive(Serialize)]
+struct SaveSettingsResult {
+    settings: Settings,
+    /// 端口变化导致服务重启（前端提示语据此区分，review P3-3）
+    restarted: bool,
+    /// 重启后的实际端口（可能因占用顺延）
+    port: u16,
+}
+
 #[tauri::command]
 async fn save_settings(
     state: State<'_, AppState>,
     settings: Settings,
-) -> Result<Settings, String> {
-    let old_port = state.core.settings.read().unwrap().port;
+) -> Result<SaveSettingsResult, String> {
+    let old = state.core.settings.read().unwrap().clone();
     settings
         .save(&paths::settings_path(&state.core.data_dir))
         .map_err(|e| e.to_string())?;
     *state.core.settings.write().unwrap() = settings.clone();
 
-    // 端口变化 → 重启服务（规划 §5.6：保存即重启）
-    if settings.port != old_port {
-        let old = state.server.lock().unwrap().take();
-        if let Some(h) = old {
+    // 端口或监听范围变化 → 重启服务（规划 §5.6：保存即重启）
+    let mut restarted = false;
+    if settings.port != old.port || settings.bind_host() != old.bind_host() {
+        let old_handle = state.server.lock().unwrap().take();
+        if let Some(h) = old_handle {
             h.stop().await;
         }
-        let handle = server::start_server(state.core.clone(), settings.port)
+        let handle = server::start_server(state.core.clone(), settings.port, settings.bind_host())
             .await
             .map_err(|e| e.message)?;
+        restarted = true;
         *state.server.lock().unwrap() = Some(handle);
     }
-    Ok(settings)
+    let port = state
+        .server
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|h| h.port)
+        .unwrap_or(0);
+    Ok(SaveSettingsResult {
+        settings,
+        restarted,
+        port,
+    })
+}
+
+/// 本机局域网 IPv4（UDP connect 不真发包，只是让内核选出对外网卡）
+fn lan_ipv4() -> Option<std::net::Ipv4Addr> {
+    let s = std::net::UdpSocket::bind(("0.0.0.0", 0)).ok()?;
+    s.connect(("8.8.8.8", 80)).ok()?;
+    match s.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(v4) if !v4.is_loopback() => Some(v4),
+        _ => None,
+    }
 }
 
 #[tauri::command]
 fn get_server_status(state: State<'_, AppState>) -> ServerStatus {
     let guard = state.server.lock().unwrap();
+    let is_lan = state.core.settings.read().unwrap().bind_host() == [0, 0, 0, 0];
     match guard.as_ref() {
         Some(h) => ServerStatus {
             running: true,
             port: h.port,
             url: format!("http://127.0.0.1:{}", h.port),
+            lan_url: if is_lan {
+                lan_ipv4()
+                    .map(|ip| format!("http://{ip}:{}", h.port))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            },
             data_dir: state.core.data_dir.display().to_string(),
         },
         None => ServerStatus {
             running: false,
             port: 0,
             url: String::new(),
+            lan_url: String::new(),
             data_dir: state.core.data_dir.display().to_string(),
         },
     }
@@ -115,10 +158,10 @@ fn open_web_page(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     let port = state.server.lock().unwrap().as_ref().map(|h| h.port);
     if let Some(port) = port {
-        use tauri_plugin_shell::ShellExt;
+        use tauri_plugin_opener::OpenerExt;
         let _ = app
-            .shell()
-            .open(format!("http://127.0.0.1:{port}"), None);
+            .opener()
+            .open_url(format!("http://127.0.0.1:{port}"), None::<&str>);
     }
 }
 
@@ -170,6 +213,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             setup_tray(app)?;
@@ -192,8 +236,11 @@ pub fn run() {
                 let core = core.clone();
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let port = core.settings.read().unwrap().port;
-                    match server::start_server(core.clone(), port).await {
+                    let (port, bind_host) = {
+                        let s = core.settings.read().unwrap();
+                        (s.port, s.bind_host())
+                    };
+                    match server::start_server(core.clone(), port, bind_host).await {
                         Ok(h) => {
                             let actual = h.port;
                             *handle.state::<AppState>().server.lock().unwrap() = Some(h);

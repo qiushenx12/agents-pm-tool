@@ -95,8 +95,14 @@ pub async fn delete_task(
     Path(id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
     let conn = core.db.lock().unwrap();
-    tasks::remove(&conn, &id)?;
+    let attach_paths = tasks::remove(&conn, &id)?;
     drop(conn);
+    // 级联删除的附件行已清除，这里清理磁盘文件；失败仅告警不回滚（规划：删除任务仅网页端）
+    for rel in &attach_paths {
+        if let Err(e) = std::fs::remove_file(core.data_dir.join(rel)) {
+            eprintln!("清理附件文件失败 {rel}：{e}");
+        }
+    }
     core.events.notify();
     Ok(StatusCode::NO_CONTENT)
 }

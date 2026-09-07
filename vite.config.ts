@@ -39,7 +39,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           vue: ["vue", "pinia"],
-          tauri: ["@tauri-apps/api", "@tauri-apps/plugin-shell"],
+          tauri: ["@tauri-apps/api", "@tauri-apps/plugin-opener"],
         },
       },
     },

@@ -13,6 +13,7 @@
     "windows": [
       {
         "title": "Agents PM Tool",
+        "url": "config.html",
         "width": 520,
         "height": 680,
         "minWidth": 420,
@@ -31,14 +32,14 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "icon": ["icons/app.ico"],
+    "icon": ["icons/icon.ico"],
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
       "timestampUrl": "",
       "nsis": {
         "displayLanguageSelector": false,
-        "installerIcon": "icons/app.ico",
+        "installerIcon": "icons/icon.ico",
         "languages": ["SimpChinese"],
         "installMode": "currentUser"
       }

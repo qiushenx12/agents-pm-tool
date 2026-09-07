@@ -35,5 +35,11 @@ pub async fn index(uri: Uri) -> Response {
 }
 
 pub async fn asset(Path(path): Path<String>) -> Response {
-    serve_asset(&path)
+    // {*path} 通配符只捕获 /assets/ 之后的部分；rust-embed 的 key 带 assets/ 前缀，需补回
+    serve_asset(&format!("assets/{path}"))
+}
+
+/// 调试用：列出嵌入的全部文件
+pub fn debug_list_files() -> Vec<String> {
+    DistAssets::iter().map(|c| c.to_string()).collect()
 }
