@@ -107,9 +107,21 @@ export const api = {
   deleteTask: (id: string) =>
     request<void>(`/api/web/tasks/${id}`, { method: "DELETE" }),
 
+  /** 手动排序：把任务移到 prev/next 之间（只给一侧即贴到该侧之外） */
+  reorderTask: (id: string, body: { prev_id?: string; next_id?: string }) =>
+    request<Task>(`/api/web/tasks/${encodeURIComponent(id)}/reorder`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   listProjects: () => request<Project[]>("/api/web/projects"),
 
-  createProject: (body: { name: string; color?: string }) =>
+  createProject: (body: {
+    name: string;
+    color?: string;
+    local_path?: string;
+    git_url?: string;
+  }) =>
     request<Project>("/api/web/projects", {
       method: "POST",
       body: JSON.stringify(body),
@@ -117,11 +129,23 @@ export const api = {
 
   patchProject: (
     name: string,
-    body: Partial<{ new_name: string; color: string; sort_order: number }>,
+    body: Partial<{
+      new_name: string;
+      color: string;
+      sort_order: number;
+      local_path: string;
+      git_url: string;
+    }>,
   ) =>
     request<Project>(`/api/web/projects/${encodeURIComponent(name)}`, {
       method: "PATCH",
       body: JSON.stringify(body),
+    }),
+
+  /** 弹系统文件夹选择框；用户取消时返回 undefined */
+  pickFolder: () =>
+    request<{ path: string } | undefined>("/api/web/pick-folder", {
+      method: "POST",
     }),
 
   deleteProject: (name: string) =>

@@ -20,6 +20,9 @@ pub struct Task {
     pub created_at: String,
     pub finished_at: Option<String>,
     pub updated_at: String,
+    /// 手动排序位置（实数中点插入，sort_by=manual 时生效）
+    #[serde(default)]
+    pub position: f64,
     #[serde(default)]
     pub attachment_count: i64,
 }

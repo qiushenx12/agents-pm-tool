@@ -118,6 +118,65 @@ function dropColumn(event: DragEvent, key: string) {
   );
   draggingColumn.value = "";
 }
+// ── 行拖拽（手动排序） ──────────────────────────────────
+const draggingTask = ref("");
+const dropSlot = ref<{ id: string; edge: "above" | "below" } | null>(null);
+const canDragRows = computed(
+  () =>
+    tasks.filters.sort_by === "manual" &&
+    tasks.isCurrentPage &&
+    !tasks.batchBusy,
+);
+/** 计算落在 task 上/下半行时的前后邻居；不允许时返回 null */
+function dropTarget(event: DragEvent, task: Task) {
+  const dragged = draggingTask.value;
+  if (!dragged || dragged === task.id) return null;
+  // 分组视图只允许同组内拖动（跨组不涉及字段变更，避免误导）
+  const field = tasks.filters.group_by;
+  const draggedTask = tasks.records[dragged];
+  if (field && draggedTask && draggedTask[field] !== task[field]) return null;
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const above = event.clientY < rect.top + rect.height / 2;
+  const list = rows.value;
+  const at = list.findIndex((t) => t.id === task.id);
+  if (at < 0) return null;
+  const prevId = above ? (list[at - 1]?.id ?? null) : task.id;
+  const nextId = above ? task.id : (list[at + 1]?.id ?? null);
+  if (prevId === dragged || nextId === dragged || (!prevId && !nextId))
+    return null; // 原位
+  return { prevId, nextId, edge: above ? ("above" as const) : ("below" as const) };
+}
+function dragRow(event: DragEvent, task: Task) {
+  if (!canDragRows.value) {
+    event.preventDefault();
+    return;
+  }
+  draggingTask.value = task.id;
+  if (event.dataTransfer) {
+    event.dataTransfer.setData("application/x-pm-task", task.id);
+    event.dataTransfer.effectAllowed = "move";
+  }
+}
+function dragOverRow(event: DragEvent, task: Task) {
+  const target = dropTarget(event, task);
+  if (!target) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  dropSlot.value = { id: task.id, edge: target.edge };
+}
+function dropRow(event: DragEvent, task: Task) {
+  const dragged = draggingTask.value;
+  const target = dropTarget(event, task);
+  draggingTask.value = "";
+  dropSlot.value = null;
+  if (!dragged || !target) return;
+  event.preventDefault();
+  void tasks.moveTask(dragged, target.prevId, target.nextId);
+}
+function dragRowEnd() {
+  draggingTask.value = "";
+  dropSlot.value = null;
+}
 watch(rows, (current) => {
   if (active.value && !current.some((t) => t.id === active.value?.id))
     active.value = null;
@@ -515,10 +574,23 @@ defineExpose({ reveal });
               :class="{
                 'row-selected': active?.id === task.id,
                 'row-checked': !!tasks.selection[task.id],
+                'row-dragging': draggingTask === task.id,
+                'drop-above': dropSlot?.id === task.id && dropSlot.edge === 'above',
+                'drop-below': dropSlot?.id === task.id && dropSlot.edge === 'below',
               }"
+              @dragover="dragOverRow($event, task)"
+              @drop="dropRow($event, task)"
             >
               <td class="row-index pinned-index">
-                <input
+                <span
+                  class="row-grip"
+                  :class="{ 'grip-ready': canDragRows }"
+                  :draggable="canDragRows"
+                  :title="canDragRows ? '拖动排序' : '排序方式设为手动排序后可拖动'"
+                  @dragstart="dragRow($event, task)"
+                  @dragend="dragRowEnd"
+                  ><UiIcon name="grip" :size="14" /></span
+                ><input
                   class="row-checkbox"
                   type="checkbox"
                   :aria-label="

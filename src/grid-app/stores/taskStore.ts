@@ -200,6 +200,37 @@ export const useTaskStore = defineStore("tasks", () => {
     delete selection.value[id];
     scheduleRefresh();
   }
+  /** 手动排序：乐观重排当前页后调 reorder 接口；失败则刷新回服务端顺序 */
+  async function moveTask(id: string, prevId: string | null, nextId: string | null) {
+    if (batchBusy.value) throw new Error("批量操作进行中，请稍后重试");
+    if (prevId === id || nextId === id || (!prevId && !nextId)) return;
+    generation++;
+    controller?.abort();
+    const from = tasks.value.findIndex((t) => t.id === id);
+    if (from < 0) return;
+    const moved = tasks.value[from];
+    const rest = tasks.value.filter((t) => t.id !== id);
+    let to = nextId ? rest.findIndex((t) => t.id === nextId) : -1;
+    if (to < 0) {
+      const p = prevId ? rest.findIndex((t) => t.id === prevId) : -1;
+      to = p < 0 ? rest.length : p + 1;
+    }
+    tasks.value = [...rest.slice(0, to), moved, ...rest.slice(to)];
+    pending.value[id] = (pending.value[id] ?? 0) + 1;
+    try {
+      const task = await api.reorderTask(id, {
+        prev_id: prevId ?? undefined,
+        next_id: nextId ?? undefined,
+      });
+      acceptTask(task);
+    } catch (e) {
+      notify(errorText(e), "error");
+      await refresh();
+    } finally {
+      pending.value[id]--;
+      scheduleRefresh();
+    }
+  }
   function toggleSelection(task: Task, selected = !selection.value[task.id]) {
     if (batchBusy.value || !isCurrentPage.value) return;
     if (!selected) {
@@ -357,6 +388,7 @@ export const useTaskStore = defineStore("tasks", () => {
     acceptTask,
     updateTask,
     removeTask,
+    moveTask,
     toggleFilter,
     clearFilters,
     setProject,

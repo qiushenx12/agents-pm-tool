@@ -361,6 +361,14 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             } else if let Some(arr) = v.as_array() {
                 for p in arr {
                     println!("{}", p["name"].as_str().unwrap_or(""));
+                    let local_path = p["local_path"].as_str().unwrap_or("");
+                    let git_url = p["git_url"].as_str().unwrap_or("");
+                    if !local_path.is_empty() {
+                        println!("  本地路径：{local_path}");
+                    }
+                    if !git_url.is_empty() {
+                        println!("  Git 地址：{git_url}");
+                    }
                 }
             }
             Ok(())

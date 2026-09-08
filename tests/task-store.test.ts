@@ -10,6 +10,7 @@ vi.mock("@/grid-app/api/client", () => ({
     patchTask: vi.fn(),
     deleteTask: vi.fn(),
     batchTasks: vi.fn(),
+    reorderTask: vi.fn(),
   },
 }));
 const task = (id: string, description = id): Task => ({
@@ -23,6 +24,7 @@ const task = (id: string, description = id): Task => ({
   created_at: "2026-09-07 10:00:00",
   finished_at: null,
   updated_at: "2026-09-07 10:00:00",
+  position: 1,
 });
 const result = (items: Task[], page = 1, total = items.length): TaskPage => ({
   items,
@@ -162,5 +164,41 @@ describe("task request coordination", () => {
     expect(store.selectedIds).toEqual(["2"]);
     expect(store.records["1"].description).toBe("更新");
     expect(store.saving).toBe(false);
+  });
+  it("moves a task optimistically and adopts the server position", async () => {
+    vi.mocked(api.pageTasks).mockResolvedValue(
+      result([task("1"), task("2"), task("3")]),
+    );
+    const store = useTaskStore();
+    await store.refresh();
+    vi.mocked(api.reorderTask).mockResolvedValue({
+      ...task("3"),
+      position: 1.5,
+    });
+    await store.moveTask("3", "1", "2");
+    expect(store.tasks.map((t) => t.id)).toEqual(["1", "3", "2"]);
+    expect(api.reorderTask).toHaveBeenCalledWith("3", {
+      prev_id: "1",
+      next_id: "2",
+    });
+    expect(store.records["3"].position).toBe(1.5);
+    expect(store.saving).toBe(false);
+  });
+  it("restores the server order when a move fails", async () => {
+    vi.mocked(api.pageTasks).mockResolvedValue(
+      result([task("1"), task("2"), task("3")]),
+    );
+    const store = useTaskStore();
+    await store.refresh();
+    vi.mocked(api.reorderTask).mockRejectedValue(new Error("网络异常"));
+    await store.moveTask("3", null, "1");
+    // 乐观顺序先生效；失败后的刷新经 scheduleRefresh 延迟触发
+    expect(store.tasks.map((t) => t.id)).toEqual(["3", "1", "2"]);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(store.tasks.map((t) => t.id)).toEqual(["1", "2", "3"]);
+    expect(api.reorderTask).toHaveBeenCalledWith("3", {
+      prev_id: undefined,
+      next_id: "1",
+    });
   });
 });

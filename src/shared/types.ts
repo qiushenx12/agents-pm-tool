@@ -30,6 +30,8 @@ export interface Task {
   created_at: string; // 'YYYY-MM-DD HH:MM:SS' 本地时间
   finished_at: string | null;
   updated_at: string;
+  /** 手动排序位置（sort_by=manual 时生效） */
+  position: number;
   attachment_count?: number;
 }
 
@@ -37,6 +39,8 @@ export interface Project {
   name: string;
   color: string;
   sort_order: number;
+  local_path: string;
+  git_url: string;
   created_at: string;
 }
 
@@ -64,7 +68,7 @@ export interface TaskListQuery {
   status?: TaskStatus[];
   submitter?: Submitter[];
   keyword?: string;
-  sort_by?: "created_at" | "seq" | "updated_at" | "finished_at";
+  sort_by?: "created_at" | "seq" | "updated_at" | "finished_at" | "manual";
   sort_order?: "asc" | "desc";
 }
 

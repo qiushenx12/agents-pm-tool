@@ -486,6 +486,7 @@ th:focus-within .column-menu {
   position: sticky;
   left: 0;
   z-index: 3;
+  border-right: 0;
 }
 .task-grid .pinned-description {
   position: sticky;
@@ -555,6 +556,17 @@ th:focus-within .column-menu {
 .task-row:focus-within .row-number,
 .row-selected .row-number {
   opacity: 0;
+}
+.task-row:hover .row-checkbox,
+.task-row:focus-within .row-checkbox,
+.row-selected .row-checkbox,
+.row-checked .row-checkbox {
+  opacity: 1;
+  pointer-events: auto;
+}
+.task-row:hover .row-grip,
+.task-row:focus-within .row-grip {
+  opacity: 1;
 }
 .task-field {
   display: flex;
@@ -1019,9 +1031,17 @@ th:focus-within .column-menu {
 }
 .project-create {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
   margin-bottom: 20px;
+}
+.project-create-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.project-create-row .btn {
+  flex-shrink: 0;
 }
 .project-list-heading {
   display: flex;
@@ -1042,12 +1062,36 @@ th:focus-within .column-menu {
   min-height: 53px;
   border-bottom: 1px solid var(--separator);
 }
-.project-item-name {
+.project-item-main {
   min-width: 0;
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.project-item-name {
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.project-item-path {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+.project-git-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.project-git-form .input {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
 }
 .project-color-button {
   width: 30px;
@@ -1387,14 +1431,50 @@ th:focus-within .column-menu {
   left: var(--index-width, 64px);
 }
 .task-grid th.row-index {
-  text-align: left;
-  padding-left: 10px;
+  text-align: right;
+  padding-right: 8px;
 }
 .row-checkbox {
   position: absolute;
-  left: 10px;
+  right: 7px;
   top: 50%;
   transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+}
+.row-grip {
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  cursor: grab;
+  opacity: 0;
+}
+.row-grip .ui-icon {
+  stroke-width: 2.2;
+}
+.row-grip:hover {
+  background: var(--hover);
+  color: var(--text-secondary);
+}
+.row-grip:not(.grip-ready) {
+  cursor: default;
+}
+.task-row.row-dragging td {
+  opacity: 0.45;
+}
+.task-row.drop-above td {
+  box-shadow: inset 0 1.5px 0 var(--primary);
+}
+.task-row.drop-below td {
+  box-shadow: inset 0 -1.5px 0 var(--primary);
 }
 .task-grid .row-number {
   position: absolute;
@@ -1405,8 +1485,8 @@ th:focus-within .column-menu {
   text-align: center;
 }
 .row-menu {
-  left: 32px;
-  width: 25px;
+  left: 21px;
+  width: 21px;
 }
 .task-row.row-checked td {
   background: var(--active-bg);

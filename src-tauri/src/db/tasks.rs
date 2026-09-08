@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::domain::idgen;
 use crate::domain::task::{self, Task};
@@ -27,6 +27,7 @@ pub(super) fn row_to_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
         created_at: r.get("created_at")?,
         finished_at: r.get("finished_at")?,
         updated_at: r.get("updated_at")?,
+        position: r.get("position")?,
         attachment_count: r.get("attachment_count")?,
     })
 }
@@ -72,6 +73,10 @@ pub(super) fn filter_sql(f: &TaskFilter) -> (String, Vec<String>) {
 }
 
 pub(super) fn sort_sql(f: &TaskFilter) -> String {
+    // 手动排序就是用户摆好的顺序，无升/降序之分（降序会让显示位次与位置倒挂）
+    if f.sort_by.as_deref() == Some("manual") {
+        return "t.position ASC, t.seq ASC".into();
+    }
     let column = match f.sort_by.as_deref() {
         Some("seq") => "t.seq",
         Some("updated_at") => "t.updated_at",
@@ -129,9 +134,10 @@ pub fn create(conn: &mut Connection, n: &NewTask) -> ApiResult<Task> {
     let now = task::now_str();
     let tx = conn.transaction()?;
     let (id, seq) = idgen::next_task_id(&tx)?;
+    // 新任务排在手动排序末尾：position 取递增的 seq 即可
     tx.execute(
-        "INSERT INTO tasks (id, seq, project, type, description, status, submitter, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, '未开始', ?6, ?7, ?7)",
+        "INSERT INTO tasks (id, seq, project, type, description, status, submitter, created_at, updated_at, position)
+         VALUES (?1, ?2, ?3, ?4, ?5, '未开始', ?6, ?7, ?7, ?2)",
         params![id, seq, n.project, n.task_type, n.description, n.submitter, now],
     )?;
     tx.commit()?;
@@ -223,4 +229,226 @@ pub fn remove(conn: &Connection, id: &str) -> ApiResult<Vec<String>> {
         return Err(ApiError::not_found(format!("任务 {id} 不存在")));
     }
     Ok(paths)
+}
+
+// ── 手动排序（实数中点插入） ──────────────────────────────
+
+fn position_of(conn: &Connection, id: &str) -> ApiResult<(f64, i64)> {
+    conn.query_row(
+        "SELECT position, seq FROM tasks WHERE id = ?1",
+        params![id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => ApiError::not_found(format!("任务 {id} 不存在")),
+        other => ApiError::from(other),
+    })
+}
+
+/// 取 (pos, seq) 位次之前（before=true）或之后紧邻的任务位置，排除被拖动的任务本身。
+/// 位次口径与 sort_sql(manual) 一致：(position, seq)。
+fn neighbor_position(
+    conn: &Connection,
+    exclude: &str,
+    pos: f64,
+    seq: i64,
+    before: bool,
+) -> ApiResult<Option<f64>> {
+    let (cmp, dir) = if before { ("<", "DESC") } else { (">", "ASC") };
+    conn.query_row(
+        &format!(
+            "SELECT position FROM tasks
+             WHERE id <> ?1 AND (position {cmp} ?2 OR (position = ?2 AND seq {cmp} ?3))
+             ORDER BY position {dir}, seq {dir} LIMIT 1"
+        ),
+        params![exclude, pos, seq],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(ApiError::from)
+}
+
+/// 全表按当前顺序重排位置（1024 间隔），中点插入无位可用时兜底
+fn renumber_positions(conn: &Connection) -> ApiResult<()> {
+    conn.execute_batch(
+        "UPDATE tasks SET position = (
+           SELECT 1024.0 * r FROM (
+             SELECT id AS rid, ROW_NUMBER() OVER (ORDER BY position, seq) AS r FROM tasks
+           ) WHERE rid = tasks.id
+         );",
+    )?;
+    Ok(())
+}
+
+/// 把任务移到 prev_id/next_id 之间；只给一侧则贴到该侧邻居之外。
+/// 都为空或落点即自身 → 原样返回。邻居不存在 → 404。
+pub fn reorder(
+    conn: &mut Connection,
+    id: &str,
+    prev_id: Option<&str>,
+    next_id: Option<&str>,
+) -> ApiResult<Task> {
+    get(conn, id)?;
+    if prev_id == Some(id) || next_id == Some(id) || (prev_id.is_none() && next_id.is_none()) {
+        return get(conn, id);
+    }
+    if let Some(p) = prev_id {
+        position_of(conn, p)?;
+    }
+    if let Some(n) = next_id {
+        position_of(conn, n)?;
+    }
+
+    let tx = conn.transaction()?;
+    let mut renumbered = false;
+    let position = loop {
+        let lo = match prev_id {
+            Some(p) => Some(position_of(&tx, p)?.0),
+            None => match next_id {
+                Some(n) => {
+                    let (pos, seq) = position_of(&tx, n)?;
+                    neighbor_position(&tx, id, pos, seq, true)?
+                }
+                None => None,
+            },
+        };
+        let hi = match next_id {
+            Some(n) => Some(position_of(&tx, n)?.0),
+            None => match prev_id {
+                Some(p) => {
+                    let (pos, seq) = position_of(&tx, p)?;
+                    neighbor_position(&tx, id, pos, seq, false)?
+                }
+                None => None,
+            },
+        };
+        let candidate = match (lo, hi) {
+            (Some(a), Some(b)) => {
+                // 两侧邻居的顺序不影响结果：中点始终落在两者之间
+                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                let mid = lo + (hi - lo) / 2.0;
+                // 位置并列或 f64 精度耗尽（中点等于端点）→ 重排后重试
+                if mid > lo && mid < hi {
+                    Some(mid)
+                } else {
+                    None
+                }
+            }
+            (Some(lo), None) => Some(lo + 1.0),
+            (None, Some(hi)) => Some(hi - 1.0),
+            (None, None) => Some(position_of(&tx, id)?.0), // 全表仅此一行
+        };
+        match candidate {
+            Some(p) => break p,
+            None if !renumbered => {
+                renumber_positions(&tx)?;
+                renumbered = true;
+            }
+            None => return Err(ApiError::internal("重排位置后仍无法计算插入位置")),
+        }
+    };
+    tx.execute(
+        "UPDATE tasks SET position = ?2 WHERE id = ?1",
+        params![id, position],
+    )?;
+    tx.commit()?;
+    get(conn, id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+
+    fn add(conn: &mut Connection, desc: &str) -> Task {
+        create(
+            conn,
+            &NewTask {
+                project: "agents-pm-tool",
+                task_type: "优化",
+                description: desc,
+                submitter: "用户",
+            },
+        )
+        .unwrap()
+    }
+
+    fn manual_order(conn: &Connection) -> Vec<String> {
+        list(conn, &TaskFilter {
+            sort_by: Some("manual".into()),
+            sort_order: Some("asc".into()),
+            ..Default::default()
+        })
+        .unwrap()
+        .into_iter()
+        .map(|t| t.description)
+        .collect()
+    }
+
+    #[test]
+    fn new_tasks_append_at_manual_end() {
+        let mut conn = db::open_memory().unwrap();
+        let a = add(&mut conn, "A");
+        let b = add(&mut conn, "B");
+        assert!(a.position < b.position);
+        assert_eq!(manual_order(&conn), ["A", "B"]);
+    }
+
+    #[test]
+    fn reorder_between_neighbors_uses_midpoint() {
+        let mut conn = db::open_memory().unwrap();
+        let a = add(&mut conn, "A");
+        let b = add(&mut conn, "B");
+        let c = add(&mut conn, "C");
+
+        let moved = reorder(&mut conn, &c.id, Some(&a.id), Some(&b.id)).unwrap();
+        assert_eq!(moved.position, (a.position + b.position) / 2.0);
+        assert_eq!(manual_order(&conn), ["A", "C", "B"]);
+
+        // 拖到末尾：只给 prev
+        let moved = reorder(&mut conn, &a.id, Some(&b.id), None).unwrap();
+        assert!(moved.position > b.position);
+        assert_eq!(manual_order(&conn), ["C", "B", "A"]);
+
+        // 拖到最前：只给 next
+        reorder(&mut conn, &a.id, None, Some(&c.id)).unwrap();
+        assert_eq!(manual_order(&conn), ["A", "C", "B"]);
+    }
+
+    #[test]
+    fn manual_sort_ignores_direction() {
+        let mut conn = db::open_memory().unwrap();
+        add(&mut conn, "A");
+        add(&mut conn, "B");
+        let ids = |order: &str| {
+            list(&conn, &TaskFilter {
+                sort_by: Some("manual".into()),
+                sort_order: Some(order.into()),
+                ..Default::default()
+            })
+            .unwrap()
+            .into_iter()
+            .map(|t| t.description)
+            .collect::<Vec<_>>()
+        };
+        // 手动排序无升/降序之分：desc 与 asc 结果一致，避免显示位次与位置倒挂
+        assert_eq!(ids("asc"), ["A", "B"]);
+        assert_eq!(ids("desc"), ["A", "B"]);
+    }
+
+    #[test]
+    fn reorder_noop_and_missing_neighbor() {
+        let mut conn = db::open_memory().unwrap();
+        let a = add(&mut conn, "A");
+        let b = add(&mut conn, "B");
+        let before = get(&conn, &a.id).unwrap().position;
+
+        let same = reorder(&mut conn, &a.id, None, None).unwrap();
+        assert_eq!(same.position, before);
+        let same = reorder(&mut conn, &a.id, Some(&a.id), None).unwrap();
+        assert_eq!(same.position, before);
+        assert!(reorder(&mut conn, &a.id, Some("missing"), None).is_err());
+        assert!(reorder(&mut conn, "missing", Some(&b.id), None).is_err());
+        assert_eq!(manual_order(&conn), ["A", "B"]);
+    }
 }

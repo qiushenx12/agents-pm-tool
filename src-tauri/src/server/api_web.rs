@@ -128,6 +128,30 @@ pub async fn delete_task(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+pub struct ReorderTaskBody {
+    pub prev_id: Option<String>,
+    pub next_id: Option<String>,
+}
+
+/// 手动排序：把任务移到 prev_id/next_id 之间（sort_by=manual 时前端拖拽调用）
+pub async fn reorder_task(
+    State(core): State<CoreState>,
+    Path(id): Path<String>,
+    Json(body): Json<ReorderTaskBody>,
+) -> ApiResult<impl IntoResponse> {
+    let mut conn = core.db.lock().unwrap();
+    let task = tasks::reorder(
+        &mut conn,
+        &id,
+        body.prev_id.as_deref(),
+        body.next_id.as_deref(),
+    )?;
+    drop(conn);
+    core.events.notify();
+    Ok(Json(task))
+}
+
 // ── 项目选项 ─────────────────────────────────────────────
 
 pub async fn list_projects(State(core): State<CoreState>) -> ApiResult<impl IntoResponse> {
@@ -139,6 +163,8 @@ pub async fn list_projects(State(core): State<CoreState>) -> ApiResult<impl Into
 pub struct CreateProjectBody {
     pub name: String,
     pub color: Option<String>,
+    pub local_path: Option<String>,
+    pub git_url: Option<String>,
 }
 
 pub async fn create_project(
@@ -146,7 +172,13 @@ pub async fn create_project(
     Json(body): Json<CreateProjectBody>,
 ) -> ApiResult<impl IntoResponse> {
     let conn = core.db.lock().unwrap();
-    let p = projects::create(&conn, &body.name, body.color.as_deref())?;
+    let p = projects::create(
+        &conn,
+        &body.name,
+        body.color.as_deref(),
+        body.local_path.as_deref(),
+        body.git_url.as_deref(),
+    )?;
     drop(conn);
     core.events.notify();
     Ok((StatusCode::CREATED, Json(p)))
@@ -157,6 +189,8 @@ pub struct PatchProjectBody {
     pub new_name: Option<String>,
     pub color: Option<String>,
     pub sort_order: Option<i64>,
+    pub local_path: Option<String>,
+    pub git_url: Option<String>,
 }
 
 pub async fn patch_project(
@@ -172,11 +206,28 @@ pub async fn patch_project(
             new_name: body.new_name,
             color: body.color,
             sort_order: body.sort_order,
+            local_path: body.local_path,
+            git_url: body.git_url,
         },
     )?;
     drop(conn);
     core.events.notify();
     Ok(Json(p))
+}
+
+/// 弹系统文件夹选择框（对话框开在本机服务端），返回所选路径；用户取消 → 204
+pub async fn pick_folder() -> ApiResult<Response> {
+    let folder = rfd::AsyncFileDialog::new()
+        .set_title("选择项目本地路径")
+        .pick_folder()
+        .await;
+    match folder {
+        Some(f) => Ok(Json(serde_json::json!({
+            "path": f.path().display().to_string()
+        }))
+        .into_response()),
+        None => Ok(StatusCode::NO_CONTENT.into_response()),
+    }
 }
 
 pub async fn delete_project(

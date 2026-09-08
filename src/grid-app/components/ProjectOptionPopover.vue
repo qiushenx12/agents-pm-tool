@@ -14,8 +14,12 @@ const emit = defineEmits<{
 const meta = useMetaStore(),
   tasks = useTaskStore();
 const newName = ref(""),
+  newPath = ref(""),
+  newGit = ref(""),
   editing = ref(""),
   draft = ref(""),
+  editingGit = ref(""),
+  gitDraft = ref(""),
   error = ref(""),
   busy = ref(false);
 const colors = [
@@ -51,8 +55,21 @@ function create() {
     await api.createProject({
       name,
       color: colors[meta.projects.length % colors.length],
+      local_path: newPath.value.trim() || undefined,
+      git_url: newGit.value.trim() || undefined,
     });
     newName.value = "";
+    newPath.value = "";
+    newGit.value = "";
+  });
+}
+/** 弹系统文件夹选择框：新项目草稿填输入框，已有项目直接保存 */
+function browse(target?: string) {
+  void run(async () => {
+    const r = await api.pickFolder();
+    if (!r?.path) return;
+    if (target) await api.patchProject(target, { local_path: r.path });
+    else newPath.value = r.path;
   });
 }
 function startRename(name: string) {
@@ -61,6 +78,28 @@ function startRename(name: string) {
   void nextTick(() =>
     document.querySelector<HTMLInputElement>("#project-rename")?.focus(),
   );
+}
+function startEditGit(project: { name: string; git_url: string }) {
+  editingGit.value = project.name;
+  gitDraft.value = project.git_url;
+  void nextTick(() =>
+    document.querySelector<HTMLInputElement>("#project-git-url")?.focus(),
+  );
+}
+/** 保存 git 地址；清空输入即清除该项目的 git 地址 */
+async function saveGit() {
+  const name = editingGit.value,
+    url = gitDraft.value.trim();
+  if (!name) return;
+  const current = meta.projects.find((p) => p.name === name)?.git_url ?? "";
+  if (url === current) {
+    editingGit.value = "";
+    return;
+  }
+  await run(async () => {
+    await api.patchProject(name, { git_url: url });
+    editingGit.value = "";
+  });
 }
 async function rename() {
   const old = editing.value,
@@ -107,8 +146,10 @@ async function close() {
   if (busy.value) return;
   if (
     (newName.value.trim() ||
+      newPath.value.trim() ||
+      newGit.value.trim() ||
       (editing.value && draft.value !== editing.value)) &&
-    !(await askConfirm("关闭项目管理", "未保存的项目名称将被丢弃。", "关闭"))
+    !(await askConfirm("关闭项目管理", "未保存的项目信息将被丢弃。", "关闭"))
   )
     return;
   emit("close");
@@ -120,16 +161,44 @@ async function close() {
       按项目组织任务。项目名称和颜色会同步显示在任务表中。
     </p>
     <form class="project-create" @submit.prevent="create">
-      <input
-        v-model="newName"
-        class="input"
-        aria-label="新项目名称"
-        placeholder="输入新项目名称"
-        data-autofocus
-        :disabled="busy"
-      /><button class="btn btn-primary" :disabled="busy || !newName.trim()">
-        <UiIcon name="plus" :size="15" />创建项目
-      </button>
+      <div class="project-create-row">
+        <input
+          v-model="newName"
+          class="input"
+          aria-label="新项目名称"
+          placeholder="输入新项目名称"
+          data-autofocus
+          :disabled="busy"
+        /><button class="btn btn-primary" :disabled="busy || !newName.trim()">
+          <UiIcon name="plus" :size="15" />创建项目
+        </button>
+      </div>
+      <div class="project-create-row">
+        <input
+          v-model="newPath"
+          class="input"
+          aria-label="新项目本地路径"
+          placeholder="本地路径（可选），如 D:\code\my-project"
+          :disabled="busy"
+        /><button
+          type="button"
+          class="btn"
+          :disabled="busy"
+          title="选择文件夹"
+          @click="browse()"
+        >
+          <UiIcon name="folder" :size="15" />选择文件夹
+        </button>
+      </div>
+      <div class="project-create-row">
+        <input
+          v-model="newGit"
+          class="input"
+          aria-label="新项目 Git 地址"
+          placeholder="Git 远端地址（可选），如 git@github.com:org/repo.git"
+          :disabled="busy"
+        />
+      </div>
     </form>
     <div v-if="error || meta.error" class="form-error" role="alert">
       {{ error || meta.error }}
@@ -202,11 +271,72 @@ async function close() {
             <UiIcon name="close" />
           </button>
         </form>
-        <span v-else class="project-item-name" :title="project.name">{{
-          project.name
-        }}</span>
+        <div v-else class="project-item-main">
+          <span class="project-item-name" :title="project.name">{{
+            project.name
+          }}</span>
+          <form
+            v-if="editingGit === project.name"
+            class="project-git-form"
+            @submit.prevent="saveGit"
+          >
+            <input
+              id="project-git-url"
+              v-model="gitDraft"
+              class="input"
+              aria-label="项目 Git 地址"
+              placeholder="Git 远端地址，留空清除"
+              :disabled="busy"
+              @keydown.esc.prevent.stop="editingGit = ''"
+            /><button
+              class="icon-btn"
+              aria-label="保存 Git 地址"
+              :disabled="busy"
+            >
+              <UiIcon name="check" /></button
+            ><button
+              type="button"
+              class="icon-btn"
+              aria-label="取消编辑 Git 地址"
+              :disabled="busy"
+              @click="editingGit = ''"
+            >
+              <UiIcon name="close" />
+            </button>
+          </form>
+          <template v-else>
+            <span
+              v-if="project.local_path"
+              class="project-item-path"
+              :title="project.local_path"
+              >{{ project.local_path }}</span
+            >
+            <span
+              v-if="project.git_url"
+              class="project-item-path"
+              :title="project.git_url"
+              >{{ project.git_url }}</span
+            >
+          </template>
+        </div>
         <div v-if="editing !== project.name" class="inline-actions">
           <button
+            class="icon-btn"
+            :aria-label="'编辑 Git 地址：' + project.name"
+            title="编辑 Git 地址"
+            :disabled="busy"
+            @click="startEditGit(project)"
+          >
+            <UiIcon name="git" :size="14" /></button
+          ><button
+            class="icon-btn"
+            :aria-label="'选择本地路径：' + project.name"
+            title="选择本地路径"
+            :disabled="busy"
+            @click="browse(project.name)"
+          >
+            <UiIcon name="folder" :size="14" /></button
+          ><button
             class="icon-btn"
             :aria-label="'重命名：' + project.name"
             title="重命名"

@@ -26,7 +26,7 @@ it("creates the task only once when retrying an attachment failure in the new-ta
   pinia = createPinia();
   const meta = useMetaStore(pinia);
   meta.projects = [
-    { name: "测试项目", color: "#3370ff", sort_order: 0, created_at: "" },
+    { name: "测试项目", color: "#3370ff", sort_order: 0, local_path: "", git_url: "", created_at: "" },
   ];
   const task: Task = {
     id: "created-once",
@@ -39,6 +39,7 @@ it("creates the task only once when retrying an attachment failure in the new-ta
     created_at: "",
     updated_at: "",
     finished_at: null,
+    position: 1,
   };
   vi.mocked(api.createTask).mockResolvedValue(task);
   vi.mocked(api.pageTasks).mockResolvedValue({

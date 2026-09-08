@@ -9,6 +9,8 @@ pub struct Project {
     pub name: String,
     pub color: String,
     pub sort_order: i64,
+    pub local_path: String,
+    pub git_url: String,
     pub created_at: String,
 }
 
@@ -17,6 +19,8 @@ fn row_to_project(r: &rusqlite::Row) -> rusqlite::Result<Project> {
         name: r.get("name")?,
         color: r.get("color")?,
         sort_order: r.get("sort_order")?,
+        local_path: r.get("local_path")?,
+        git_url: r.get("git_url")?,
         created_at: r.get("created_at")?,
     })
 }
@@ -32,7 +36,13 @@ pub fn list(conn: &Connection) -> ApiResult<Vec<Project>> {
     Ok(out)
 }
 
-pub fn create(conn: &Connection, name: &str, color: Option<&str>) -> ApiResult<Project> {
+pub fn create(
+    conn: &Connection,
+    name: &str,
+    color: Option<&str>,
+    local_path: Option<&str>,
+    git_url: Option<&str>,
+) -> ApiResult<Project> {
     let name = name.trim();
     if name.is_empty() {
         return Err(ApiError::unprocessable("项目选项名不能为空"));
@@ -43,8 +53,15 @@ pub fn create(conn: &Connection, name: &str, color: Option<&str>) -> ApiResult<P
         |r| r.get(0),
     )?;
     conn.execute(
-        "INSERT INTO projects (name, color, sort_order, created_at) VALUES (?1, ?2, ?3, ?4)",
-        params![name, color.unwrap_or("#007AFF"), max_order + 1, now_str()],
+        "INSERT INTO projects (name, color, sort_order, local_path, git_url, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            name,
+            color.unwrap_or("#007AFF"),
+            max_order + 1,
+            local_path.map(str::trim).unwrap_or(""),
+            git_url.map(str::trim).unwrap_or(""),
+            now_str()
+        ],
     )
     .map_err(|e| match e {
         rusqlite::Error::SqliteFailure(err, _)
@@ -76,6 +93,8 @@ pub struct ProjectPatch {
     pub new_name: Option<String>,
     pub color: Option<String>,
     pub sort_order: Option<i64>,
+    pub local_path: Option<String>,
+    pub git_url: Option<String>,
 }
 
 /// 重命名级联更新存量任务（事务，规划 §5.3）
@@ -96,12 +115,14 @@ pub fn patch(conn: &mut Connection, name: &str, p: &ProjectPatch) -> ApiResult<P
         }
         let tx = conn.transaction()?;
         tx.execute(
-            "UPDATE projects SET name = ?2, color = ?3, sort_order = ?4 WHERE name = ?1",
+            "UPDATE projects SET name = ?2, color = ?3, sort_order = ?4, local_path = ?5, git_url = ?6 WHERE name = ?1",
             params![
                 name,
                 new_name,
                 p.color.as_deref().unwrap_or(&current.color),
                 p.sort_order.unwrap_or(current.sort_order),
+                p.local_path.as_deref().unwrap_or(&current.local_path),
+                p.git_url.as_deref().unwrap_or(&current.git_url),
             ],
         )?;
         tx.execute(
@@ -111,11 +132,13 @@ pub fn patch(conn: &mut Connection, name: &str, p: &ProjectPatch) -> ApiResult<P
         tx.commit()?;
     } else {
         conn.execute(
-            "UPDATE projects SET color = ?2, sort_order = ?3 WHERE name = ?1",
+            "UPDATE projects SET color = ?2, sort_order = ?3, local_path = ?4, git_url = ?5 WHERE name = ?1",
             params![
                 name,
                 p.color.as_deref().unwrap_or(&current.color),
                 p.sort_order.unwrap_or(current.sort_order),
+                p.local_path.as_deref().unwrap_or(&current.local_path),
+                p.git_url.as_deref().unwrap_or(&current.git_url),
             ],
         )?;
     }

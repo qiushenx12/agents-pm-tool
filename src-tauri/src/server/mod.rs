@@ -75,6 +75,10 @@ fn build_router(core: CoreState) -> Router {
                 .delete(api_web::delete_task),
         )
         .route(
+            "/tasks/{id}/reorder",
+            axum::routing::post(api_web::reorder_task),
+        )
+        .route(
             "/tasks/{id}/attachments",
             get(api_web::list_attachments).post(api_web::upload_attachment),
         )
@@ -86,6 +90,7 @@ fn build_router(core: CoreState) -> Router {
             "/projects/{name}",
             axum::routing::patch(api_web::patch_project).delete(api_web::delete_project),
         )
+        .route("/pick-folder", axum::routing::post(api_web::pick_folder))
         .route(
             "/attachments/{id}",
             get(api_web::download_attachment).delete(api_web::delete_attachment),

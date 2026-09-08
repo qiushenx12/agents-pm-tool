@@ -29,6 +29,7 @@ it("requests only the desired server page and reaches records after 2000", async
     created_at: "",
     finished_at: null,
     updated_at: "",
+    position: index,
   }));
   vi.mocked(api.pageTasks).mockImplementation(async (query) => ({
     items: fixtures.slice(

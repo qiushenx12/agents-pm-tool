@@ -125,6 +125,64 @@ async fn web_crud_and_filter() {
     assert!(list.as_array().unwrap().is_empty());
 }
 
+// ── 手动排序（拖动换序） ─────────────────────────────────
+
+#[tokio::test]
+async fn manual_reorder() {
+    let app = spawn_app().await;
+    let a = create_task(&app, false, "排序A").await;
+    let b = create_task(&app, false, "排序B").await;
+    let c = create_task(&app, false, "排序C").await;
+    let ids = |t: &Value| t["id"].as_str().unwrap().to_string();
+    let (a, b, c) = (ids(&a), ids(&b), ids(&c));
+
+    let manual_order = || async {
+        let res = app
+            .web(reqwest::Method::GET, "/tasks?sort_by=manual&sort_order=asc")
+            .send()
+            .await
+            .unwrap();
+        let list: Value = res.json().await.unwrap();
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(ids)
+            .collect::<Vec<_>>()
+    };
+
+    // 默认按创建顺序
+    assert_eq!(manual_order().await, vec![a.clone(), b.clone(), c.clone()]);
+
+    // C 拖到 A、B 之间
+    let res = app
+        .web(reqwest::Method::POST, &format!("/tasks/{c}/reorder"))
+        .json(&json!({"prev_id": a, "next_id": b}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(manual_order().await, vec![a.clone(), c.clone(), b.clone()]);
+
+    // A 拖到末尾（只给 prev）
+    let res = app
+        .web(reqwest::Method::POST, &format!("/tasks/{a}/reorder"))
+        .json(&json!({"prev_id": b}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(manual_order().await, vec![c.clone(), b.clone(), a.clone()]);
+
+    // 邻居不存在 → 404
+    let res = app
+        .web(reqwest::Method::POST, &format!("/tasks/{a}/reorder"))
+        .json(&json!({"prev_id": "missing"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+}
+
 // ── 状态机与完成时间（规划 §4.3） ─────────────────────────
 
 #[tokio::test]

@@ -36,10 +36,11 @@ const chips = computed(() =>
   ),
 );
 const sorts = [
-  { value: "created_at", label: "创建时间" },
-  { value: "finished_at", label: "完成时间" },
-  { value: "updated_at", label: "更新时间" },
-  { value: "seq", label: "创建顺序" },
+  { value: "created_at", label: "创建时间", icon: "clock" },
+  { value: "finished_at", label: "完成时间", icon: "clock" },
+  { value: "updated_at", label: "更新时间", icon: "clock" },
+  { value: "seq", label: "创建顺序", icon: "sort" },
+  { value: "manual", label: "手动排序", icon: "grip" },
 ] as const;
 </script>
 <template>
@@ -106,27 +107,32 @@ const sorts = [
           class="menu-item"
           @click="tasks.filters.sort_by = sort.value"
         >
-          <UiIcon name="clock" :size="14" />{{ sort.label
+          <UiIcon :name="sort.icon" :size="14" />{{ sort.label
           }}<UiIcon
             v-if="tasks.filters.sort_by === sort.value"
             name="check"
             class="menu-check"
           />
         </button>
-        <div class="menu-divider"></div>
-        <button class="menu-item" @click="tasks.filters.sort_order = 'asc'">
-          <UiIcon name="up" />升序<UiIcon
-            v-if="tasks.filters.sort_order === 'asc'"
-            name="check"
-            class="menu-check"
-          /></button
-        ><button class="menu-item" @click="tasks.filters.sort_order = 'desc'">
-          <UiIcon name="down" />降序<UiIcon
-            v-if="tasks.filters.sort_order === 'desc'"
-            name="check"
-            class="menu-check"
-          />
-        </button> </template
+        <div v-if="tasks.filters.sort_by === 'manual'" class="menu-empty">
+          拖动行首把手即可调整顺序
+        </div>
+        <template v-else>
+          <div class="menu-divider"></div>
+          <button class="menu-item" @click="tasks.filters.sort_order = 'asc'">
+            <UiIcon name="up" />升序<UiIcon
+              v-if="tasks.filters.sort_order === 'asc'"
+              name="check"
+              class="menu-check"
+            /></button
+          ><button class="menu-item" @click="tasks.filters.sort_order = 'desc'">
+            <UiIcon name="down" />降序<UiIcon
+              v-if="tasks.filters.sort_order === 'desc'"
+              name="check"
+              class="menu-check"
+            />
+          </button>
+        </template> </template
     ></UiPopover>
     <UiPopover :width="310" label="字段设置"
       ><template #trigger="{ toggle, open }"

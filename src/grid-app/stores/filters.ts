@@ -20,7 +20,7 @@ export interface FilterState {
   group_by: GroupField | "";
 }
 export const FILTER_KEYS = ["project", "type", "status", "submitter"] as const;
-const SORT_FIELDS = ["created_at", "finished_at", "seq", "updated_at"] as const;
+const SORT_FIELDS = ["created_at", "finished_at", "seq", "updated_at", "manual"] as const;
 export function sanitizeFilters(value: unknown): FilterState {
   const f =
     value && typeof value === "object"
