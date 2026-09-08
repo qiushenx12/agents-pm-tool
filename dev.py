@@ -70,6 +70,19 @@ def install_deps():
     return True
 
 
+def build_frontend():
+    # 浏览器里的任务表格页由 axum 从 dist/ 提供（rust-embed），
+    # 而 tauri dev 的 beforeDevCommand 只用 vite 服务设置窗，不会重建 dist。
+    # 这里先补一次前端构建；build-frontend.mjs 有指纹缓存，源码没变时直接跳过。
+    print("正在构建前端 dist/（源码未变化时自动跳过）……")
+    ret = subprocess.run(["npm", "run", "build"], cwd=PROJECT_DIR, shell=True)
+    if ret.returncode != 0:
+        print("前端构建失败。")
+        input("\n按回车键退出……")
+        return False
+    return True
+
+
 def run_dev():
     print("启动 Tauri 开发模式（设置窗 + 内嵌 HTTP 服务）……")
     print("提示：dev 模式下数据目录为项目根 data/；浏览器访问 http://127.0.0.1:<端口>/ 看表格。")
@@ -91,6 +104,9 @@ def main():
 
     if not install_deps():
         input("\n按回车键退出……")
+        return
+
+    if not build_frontend():
         return
 
     run_dev()
