@@ -1,11 +1,14 @@
 # Dependencies
 node_modules/
 
-# Build output
-dist/
-dist-ssr/
+# Frontend/build output
+/dist/
+/dist-ssr/
+coverage/
+.cache/
+*.tsbuildinfo
 
-# Rust
+# Rust/Tauri build output
 src-tauri/target/
 src-tauri/Cargo.lock
 src-tauri/gen/
@@ -13,11 +16,20 @@ src-tauri/binaries/
 src-tauri/release-bundle/
 
 # Runtime data (dev mode)
-data/
+/data/
+
+# Local agent state
+.workbuddy/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
 # Logs
 *.log
 log/
+logs/
 
 # OS
 .DS_Store
@@ -27,6 +39,7 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Env
+# Environment
 .env
-.env.local
+.env.*
+!.env.example
