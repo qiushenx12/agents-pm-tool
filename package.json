@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "node scripts/build-frontend.mjs",
+    "build:frontend:uncached": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "build:cli": "cargo build --release --bin pm-cli --manifest-path src-tauri/Cargo.toml && node scripts/copy-cli.mjs",
+    "build:cli": "node scripts/build-cli.mjs",
     "build:all": "npm run build && npm run build:cli",
     "tauri": "tauri"
   },

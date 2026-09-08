@@ -7,7 +7,7 @@ default-run = "agents-pm-tool"
 
 [lib]
 name = "agents_pm_tool_lib"
-crate-type = ["lib", "cdylib", "staticlib"]
+crate-type = ["rlib"]
 
 [[bin]]
 name = "pm-cli"

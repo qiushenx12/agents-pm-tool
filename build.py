@@ -23,6 +23,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 
@@ -349,11 +350,17 @@ def run_build(version: str, product_name: str) -> bool:
     if npm is None:
         return False
 
-    restored = restore_archived_artifacts()
-    if restored:
-        print(f"已从发布归档恢复 {restored} 个历史安装包。")
     bundle_dir().mkdir(parents=True, exist_ok=True)
-    existing = list(bundle_dir().glob("*.exe"))
+    archived_names = {
+        artifact.name for artifact in archive_dir().glob("*.exe")
+    }
+    # 已归档的历史包不需要在构建前再次复制到 bundle；构建完成后统一恢复即可。
+    # 这里只备份尚未归档的当前版本包，以便构建失败时保留它。
+    existing = [
+        artifact
+        for artifact in bundle_dir().glob("*.exe")
+        if artifact.name not in archived_names
+    ]
     print(f"正在打包 Agents PM Tool {version}（Windows NSIS）……")
 
     with tempfile.TemporaryDirectory(prefix="agents-pm-tool-installer-history-") as backup:
@@ -362,7 +369,13 @@ def run_build(version: str, product_name: str) -> bool:
             shutil.copy2(artifact, backup_path / artifact.name)
 
         # tauri build 的 beforeBuildCommand 是 build:all（前端 + pm-cli externalBin）
+        started_at = perf_counter()
         result = subprocess.run([npm, "run", "tauri", "build"], cwd=PROJECT_DIR)
+        print(f"Tauri 构建耗时：{perf_counter() - started_at:.2f} 秒。")
+
+        restored = restore_archived_artifacts()
+        if restored:
+            print(f"已从发布归档恢复 {restored} 个历史安装包。")
 
         kept = 0
         for artifact in existing:
