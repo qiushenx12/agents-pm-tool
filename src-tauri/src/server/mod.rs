@@ -1,4 +1,5 @@
 pub mod api_agent;
+pub mod api_batch;
 pub mod api_web;
 pub mod auth;
 pub mod events;
@@ -61,10 +62,17 @@ pub fn parse_task_filter(raw: Option<&str>) -> ApiResult<TaskFilter> {
 
 fn build_router(core: CoreState) -> Router {
     let web = Router::new()
-        .route("/tasks", get(api_web::list_tasks).post(api_web::create_task))
+        .route(
+            "/tasks",
+            get(api_web::list_tasks).post(api_web::create_task),
+        )
+        .route("/tasks/page", get(api_web::page_tasks))
+        .route("/tasks/batch", axum::routing::post(api_web::batch_tasks))
         .route(
             "/tasks/{id}",
-            axum::routing::patch(api_web::patch_task).delete(api_web::delete_task),
+            get(api_web::get_task)
+                .patch(api_web::patch_task)
+                .delete(api_web::delete_task),
         )
         .route(
             "/tasks/{id}/attachments",
@@ -85,9 +93,15 @@ fn build_router(core: CoreState) -> Router {
         .route("/events", get(api_web::events));
 
     let agent = Router::new()
-        .route("/tasks", get(api_agent::list_tasks).post(api_agent::create_task))
+        .route(
+            "/tasks",
+            get(api_agent::list_tasks).post(api_agent::create_task),
+        )
         .route("/tasks/{id}", get(api_agent::get_task))
-        .route("/tasks/{id}/status", axum::routing::patch(api_agent::patch_status))
+        .route(
+            "/tasks/{id}/status",
+            axum::routing::patch(api_agent::patch_status),
+        )
         .route(
             "/tasks/{id}/description",
             axum::routing::patch(api_agent::patch_description),

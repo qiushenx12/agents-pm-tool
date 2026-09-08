@@ -68,6 +68,43 @@ export interface TaskListQuery {
   sort_order?: "asc" | "desc";
 }
 
+export const GROUP_FIELDS = ["project", "status", "type", "submitter"] as const;
+export type GroupField = (typeof GROUP_FIELDS)[number];
+export interface TaskPageQuery extends TaskListQuery {
+  page?: number;
+  page_size?: number;
+  group_by?: GroupField;
+  anchor_id?: string;
+}
+export interface TaskGroupCount {
+  value: string;
+  count: number;
+}
+export interface TaskPage {
+  items: Task[];
+  total: number;
+  page: number;
+  page_size: number;
+  groups: TaskGroupCount[];
+  anchor_found: boolean | null;
+}
+export type TaskBatchRequest =
+  | {
+      action: "update";
+      ids: string[];
+      patch: Partial<Pick<Task, "project" | "type" | "status">>;
+    }
+  | { action: "delete"; ids: string[] };
+export interface TaskBatchResult {
+  results: {
+    id: string;
+    task?: Task;
+    error?: { code: string; message: string };
+  }[];
+  succeeded: number;
+  failed: number;
+}
+
 /** 展示用：'YYYY-MM-DD HH:MM:SS' → 'yyyy/mm/dd hh:mm:ss' */
 export function formatDateTime(s: string | null): string {
   if (!s) return "";

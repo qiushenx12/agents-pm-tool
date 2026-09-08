@@ -1,134 +1,255 @@
 <script setup lang="ts">
 import { nextTick, ref } from "vue";
-import { api } from "@/grid-app/api/client";
-import { useMetaStore } from "@/grid-app/stores/metaStore";
-import { useTaskStore } from "@/grid-app/stores/taskStore";
-
-const emit = defineEmits<{ close: [] }>();
-
-const metaStore = useMetaStore();
-const taskStore = useTaskStore();
-
-const newName = ref("");
-const editingName = ref<string | null>(null);
-const editingText = ref("");
-const error = ref("");
-const busy = ref(false);
-
-const COLORS = [
-  "#007AFF", "#34C759", "#FF9500", "#FF3B30", "#AF52DE",
-  "#5856D6", "#00C7BE", "#A2845E", "#8E8E93", "#FF2D55",
+import { api } from "../api/client";
+import { useMetaStore } from "../stores/metaStore";
+import { useTaskStore } from "../stores/taskStore";
+import UiDialog from "@/shared/UiDialog.vue";
+import UiIcon from "@/shared/UiIcon.vue";
+import UiPopover from "@/shared/UiPopover.vue";
+import { askConfirm, errorText } from "@/shared/feedback";
+const emit = defineEmits<{
+  close: [];
+  renamed: [oldName: string, newName: string];
+}>();
+const meta = useMetaStore(),
+  tasks = useTaskStore();
+const newName = ref(""),
+  editing = ref(""),
+  draft = ref(""),
+  error = ref(""),
+  busy = ref(false);
+const colors = [
+  "#3370ff",
+  "#34a874",
+  "#f5a623",
+  "#e85b50",
+  "#9162db",
+  "#6672dc",
+  "#29a6a6",
+  "#8d7866",
+  "#8f959e",
+  "#d861a9",
 ];
-
-async function run(fn: () => Promise<unknown>) {
+async function run(action: () => Promise<unknown>) {
+  if (busy.value) return;
   busy.value = true;
   error.value = "";
   try {
-    await fn();
-    await metaStore.refresh();
-    await taskStore.refresh();
+    await action();
+    await meta.refresh();
+    tasks.scheduleRefresh();
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    error.value = errorText(e);
   } finally {
     busy.value = false;
   }
 }
-
-function createOption() {
+function create() {
   const name = newName.value.trim();
-  if (!name || busy.value) return;
+  if (!name) return;
   void run(async () => {
-    await api.createProject({ name });
+    await api.createProject({
+      name,
+      color: colors[meta.projects.length % colors.length],
+    });
     newName.value = "";
   });
 }
-
 function startRename(name: string) {
-  editingName.value = name;
-  editingText.value = name;
-  void nextTick(() => {
-    document.querySelector<HTMLInputElement>(".rename-input")?.focus();
+  editing.value = name;
+  draft.value = name;
+  void nextTick(() =>
+    document.querySelector<HTMLInputElement>("#project-rename")?.focus(),
+  );
+}
+async function rename() {
+  const old = editing.value,
+    name = draft.value.trim();
+  if (!old || !name || old === name) {
+    editing.value = "";
+    return;
+  }
+  await run(async () => {
+    await api.patchProject(old, { new_name: name });
+    editing.value = "";
+    emit("renamed", old, name);
   });
 }
-
-function commitRename(oldName: string) {
-  const new_name = editingText.value.trim();
-  editingName.value = null;
-  if (!new_name || new_name === oldName || busy.value) return;
-  void run(() => api.patchProject(oldName, { new_name }));
-}
-
-function changeColor(name: string, color: string) {
-  if (busy.value) return;
-  void run(() => api.patchProject(name, { color }));
-}
-
-function move(name: string, dir: -1 | 1) {
-  const list = metaStore.projects;
-  const i = list.findIndex((p) => p.name === name);
-  const j = i + dir;
-  if (i < 0 || j < 0 || j >= list.length || busy.value) return;
-  void run(async () => {
-    await api.patchProject(list[i].name, { sort_order: list[j].sort_order });
-    await api.patchProject(list[j].name, { sort_order: list[i].sort_order });
+async function move(index: number, direction: number) {
+  const ordered = [...meta.projects];
+  const destination = index + direction;
+  if (destination < 0 || destination >= ordered.length) return;
+  [ordered[index], ordered[destination]] = [
+    ordered[destination],
+    ordered[index],
+  ];
+  await run(async () => {
+    for (let i = 0; i < ordered.length; i++)
+      await api.patchProject(ordered[i].name, { sort_order: i });
   });
 }
-
-function remove(name: string) {
+async function remove(name: string) {
+  if (
+    !(await askConfirm(
+      "删除项目",
+      "确定删除「" + name + "」？包含任务的项目需要先处理其中的任务。",
+      "删除项目",
+      true,
+    ))
+  )
+    return;
+  await run(async () => {
+    await api.deleteProject(name);
+    tasks.filters.project = tasks.filters.project.filter((p) => p !== name);
+  });
+}
+async function close() {
   if (busy.value) return;
-  if (!confirm(`确定删除项目选项「${name}」？`)) return;
-  void run(() => api.deleteProject(name));
+  if (
+    (newName.value.trim() ||
+      (editing.value && draft.value !== editing.value)) &&
+    !(await askConfirm("关闭项目管理", "未保存的项目名称将被丢弃。", "关闭"))
+  )
+    return;
+  emit("close");
 }
 </script>
-
 <template>
-  <div class="popover-mask" @click.self="emit('close')">
-    <div class="option-popover" @click.stop>
-      <div class="option-popover-title">项目选项</div>
-
-      <div class="option-create">
-        <input
-          v-model="newName"
-          class="input"
-          placeholder="输入新选项名称，回车创建"
-          @keydown.enter="createOption"
-        />
-      </div>
-
-      <div v-if="error" class="option-error">{{ error }}</div>
-
-      <ul class="option-list">
-        <li v-for="(p, i) in metaStore.projects" :key="p.name" class="option-item">
-          <span class="option-dot" :style="{ background: p.color }"></span>
-          <input
-            v-if="editingName === p.name"
-            v-model="editingText"
-            class="input rename-input"
-            @keydown.enter="commitRename(p.name)"
-            @keydown.esc="editingName = null"
-            @blur="commitRename(p.name)"
-          />
-          <span v-else class="option-name" @dblclick="startRename(p.name)">{{ p.name }}</span>
-
-          <span class="option-actions">
-            <button class="icon-btn" title="重命名" @click="startRename(p.name)">✎</button>
-            <button class="icon-btn" title="上移" :disabled="i === 0" @click="move(p.name, -1)">↑</button>
-            <button class="icon-btn" title="下移" :disabled="i === metaStore.projects.length - 1" @click="move(p.name, 1)">↓</button>
-            <button class="icon-btn danger" title="删除" @click="remove(p.name)">✕</button>
-          </span>
-
-          <span class="option-colors">
-            <button
-              v-for="c in COLORS"
-              :key="c"
-              class="color-swatch"
-              :class="{ active: p.color === c }"
-              :style="{ background: c }"
-              @click="changeColor(p.name, c)"
-            ></button>
-          </span>
-        </li>
-      </ul>
+  <UiDialog title="项目管理" :width="600" :busy="busy" @close="close">
+    <p class="project-intro">
+      按项目组织任务。项目名称和颜色会同步显示在任务表中。
+    </p>
+    <form class="project-create" @submit.prevent="create">
+      <input
+        v-model="newName"
+        class="input"
+        aria-label="新项目名称"
+        placeholder="输入新项目名称"
+        data-autofocus
+        :disabled="busy"
+      /><button class="btn btn-primary" :disabled="busy || !newName.trim()">
+        <UiIcon name="plus" :size="15" />创建项目
+      </button>
+    </form>
+    <div v-if="error || meta.error" class="form-error" role="alert">
+      {{ error || meta.error }}
     </div>
-  </div>
+    <div class="project-list-heading">
+      <span>项目名称</span><span>{{ meta.projects.length }} 个项目</span>
+    </div>
+    <ul class="project-list">
+      <li
+        v-for="(project, index) in meta.projects"
+        :key="project.name"
+        class="project-item"
+      >
+        <UiPopover :width="198" label="项目颜色"
+          ><template #trigger="{ toggle }"
+            ><button
+              class="project-color-button"
+              :aria-label="'修改颜色：' + project.name"
+              :disabled="busy"
+              @click="toggle"
+            >
+              <UiIcon
+                name="folder"
+                :size="19"
+                :style="{ color: project.color }"
+              /></button></template
+          ><template #default="{ close: closeMenu }"
+            ><div class="menu-caption">项目颜色</div>
+            <div class="color-palette">
+              <button
+                v-for="color in colors"
+                :key="color"
+                class="color-swatch"
+                :aria-label="'颜色 ' + color"
+                :aria-pressed="color === project.color"
+                :style="{ background: color }"
+                @click="
+                  closeMenu();
+                  run(() => api.patchProject(project.name, { color }));
+                "
+              >
+                <UiIcon
+                  v-if="color === project.color"
+                  name="check"
+                  :size="13"
+                />
+              </button></div></template
+        ></UiPopover>
+        <form
+          v-if="editing === project.name"
+          class="project-rename-form"
+          @submit.prevent="rename"
+        >
+          <input
+            id="project-rename"
+            v-model="draft"
+            class="input"
+            aria-label="项目新名称"
+            :disabled="busy"
+            @keydown.esc.prevent.stop="editing = ''"
+          /><button class="icon-btn" aria-label="保存项目名称" :disabled="busy">
+            <UiIcon name="check" /></button
+          ><button
+            type="button"
+            class="icon-btn"
+            aria-label="取消重命名"
+            :disabled="busy"
+            @click="editing = ''"
+          >
+            <UiIcon name="close" />
+          </button>
+        </form>
+        <span v-else class="project-item-name" :title="project.name">{{
+          project.name
+        }}</span>
+        <div v-if="editing !== project.name" class="inline-actions">
+          <button
+            class="icon-btn"
+            :aria-label="'重命名：' + project.name"
+            title="重命名"
+            :disabled="busy"
+            @click="startRename(project.name)"
+          >
+            <UiIcon name="edit" :size="14" /></button
+          ><button
+            class="icon-btn"
+            aria-label="上移项目"
+            title="上移"
+            :disabled="busy || index === 0"
+            @click="move(index, -1)"
+          >
+            <UiIcon name="up" :size="14" /></button
+          ><button
+            class="icon-btn"
+            aria-label="下移项目"
+            title="下移"
+            :disabled="busy || index === meta.projects.length - 1"
+            @click="move(index, 1)"
+          >
+            <UiIcon name="down" :size="14" /></button
+          ><button
+            class="icon-btn danger"
+            :aria-label="'删除项目：' + project.name"
+            title="删除项目"
+            :disabled="busy"
+            @click="remove(project.name)"
+          >
+            <UiIcon name="trash" :size="14" />
+          </button>
+        </div>
+      </li>
+    </ul>
+    <p v-if="!meta.projects.length" class="menu-empty">
+      还没有项目，创建一个开始记录任务。
+    </p>
+    <template #footer
+      ><span class="form-footer-hint">名称和颜色自动同步到已有任务</span
+      ><button class="btn" :disabled="busy" @click="close">
+        完成
+      </button></template
+    >
+  </UiDialog>
 </template>

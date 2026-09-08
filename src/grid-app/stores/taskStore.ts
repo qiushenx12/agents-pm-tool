@@ -1,117 +1,374 @@
 import { defineStore } from "pinia";
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onScopeDispose, ref, watch } from "vue";
 import { api } from "@/grid-app/api/client";
+import { errorText, notify } from "@/shared/feedback";
 import type {
-  Submitter,
   Task,
-  TaskListQuery,
+  TaskPageQuery,
+  TaskPage,
   TaskStatus,
-  TaskType,
+  TaskGroupCount,
+  TaskBatchRequest,
 } from "@/shared/types";
-
-export interface FilterState {
-  project: string[];
-  type: TaskType[];
-  status: TaskStatus[];
-  submitter: Submitter[];
-  keyword: string;
-  sort_by: NonNullable<TaskListQuery["sort_by"]>;
-  sort_order: NonNullable<TaskListQuery["sort_order"]>;
-}
-
-const FILTER_KEYS = ["project", "type", "status", "submitter"] as const;
-
-function readFiltersFromUrl(): FilterState {
-  const p = new URLSearchParams(window.location.search);
-  const list = (k: string) => p.getAll(k).filter(Boolean);
-  return {
-    project: list("project"),
-    type: list("type") as TaskType[],
-    status: list("status") as TaskStatus[],
-    submitter: list("submitter") as Submitter[],
-    keyword: p.get("keyword") ?? "",
-    sort_by: (p.get("sort_by") as FilterState["sort_by"]) || "created_at",
-    sort_order: (p.get("sort_order") as FilterState["sort_order"]) || "desc",
-  };
-}
-
-function writeFiltersToUrl(f: FilterState) {
-  const p = new URLSearchParams();
-  for (const k of FILTER_KEYS) f[k].forEach((v) => p.append(k, v));
-  if (f.keyword) p.set("keyword", f.keyword);
-  if (f.sort_by !== "created_at") p.set("sort_by", f.sort_by);
-  if (f.sort_order !== "desc") p.set("sort_order", f.sort_order);
-  const s = p.toString();
-  const url = s ? `?${s}` : window.location.pathname;
-  window.history.replaceState(null, "", url);
-}
-
+import {
+  FILTER_KEYS,
+  filterFingerprint,
+  readFiltersFromUrl,
+  sanitizeFilters,
+  writeFiltersToUrl,
+  type FilterState,
+} from "./filters";
+export type { FilterState } from "./filters";
 export const useTaskStore = defineStore("tasks", () => {
-  const tasks = ref<Task[]>([]);
-  const loading = ref(false);
-  const error = ref("");
+  const tasks = ref<Task[]>([]),
+    records = ref<Record<string, Task>>({});
+  const loading = ref(false),
+    error = ref(""),
+    initialized = ref(false);
   const filters = ref<FilterState>(readFiltersFromUrl());
-
-  const query = computed<TaskListQuery>(() => ({
-    project: filters.value.project.length ? filters.value.project : undefined,
-    type: filters.value.type.length ? filters.value.type : undefined,
-    status: filters.value.status.length ? filters.value.status : undefined,
-    submitter: filters.value.submitter.length ? filters.value.submitter : undefined,
+  const page = ref(1),
+    pageSize = ref(100),
+    total = ref(0),
+    groups = ref<TaskGroupCount[]>([]);
+  const pages = computed(() =>
+    Math.max(1, Math.ceil(total.value / pageSize.value)),
+  );
+  const pending = ref<Record<string, number>>({}),
+    batchBusy = ref(false);
+  const saving = computed(
+    () => batchBusy.value || Object.values(pending.value).some((n) => n > 0),
+  );
+  const selection = ref<Record<string, Task>>({});
+  const selectedIds = computed(() => Object.keys(selection.value));
+  const connection = ref<"connecting" | "live" | "reconnecting">("connecting"),
+    externalRevision = ref(0);
+  const activeFilterCount = computed(
+    () =>
+      FILTER_KEYS.reduce((n, k) => n + filters.value[k].length, 0) +
+      (filters.value.keyword ? 1 : 0),
+  );
+  const query = computed<TaskPageQuery>(() => ({
+    project: filters.value.project.length
+      ? [...filters.value.project]
+      : undefined,
+    type: filters.value.type.length ? [...filters.value.type] : undefined,
+    status: filters.value.status.length ? [...filters.value.status] : undefined,
+    submitter: filters.value.submitter.length
+      ? [...filters.value.submitter]
+      : undefined,
     keyword: filters.value.keyword || undefined,
     sort_by: filters.value.sort_by,
     sort_order: filters.value.sort_order,
+    group_by: filters.value.group_by || undefined,
   }));
-
-  async function refresh() {
+  const loadedKey = ref("");
+  const currentKey = computed(() =>
+    JSON.stringify([query.value, page.value, pageSize.value]),
+  );
+  const isCurrentPage = computed(() => loadedKey.value === currentKey.value);
+  let requestId = 0,
+    generation = 0;
+  let controller: AbortController | undefined,
+    timer: ReturnType<typeof setTimeout> | undefined;
+  let disposed = false;
+  const queues = new Map<string, Promise<unknown>>();
+  async function refresh(anchorId?: string): Promise<TaskPage | undefined> {
+    if (disposed) return;
+    if (saving.value) {
+      scheduleRefresh();
+      return;
+    }
+    clearTimeout(timer);
+    controller?.abort();
+    controller = new AbortController();
+    const id = ++requestId,
+      version = generation;
     loading.value = true;
     error.value = "";
+    const requestStarted = performance.now();
     try {
-      tasks.value = await api.listTasks(query.value);
+      const result = await api.pageTasks(
+        {
+          ...query.value,
+          page: page.value,
+          page_size: pageSize.value,
+          anchor_id: anchorId,
+        },
+        controller.signal,
+      );
+      if (id !== requestId || version !== generation || disposed) return;
+      const renderStarted = performance.now();
+      tasks.value = result.items;
+      total.value = result.total;
+      page.value = result.page;
+      pageSize.value = result.page_size;
+      groups.value = result.groups;
+      result.items.forEach((t) => {
+        records.value[t.id] = t;
+        if (selection.value[t.id]) selection.value[t.id] = t;
+      });
+      initialized.value = true;
+      loadedKey.value = currentKey.value;
+      if (import.meta.env.DEV && import.meta.env.MODE !== "test") {
+        await nextTick();
+        const end = performance.now();
+        performance.measure("pm-page-load", {
+          start: requestStarted,
+          end,
+          detail: { total: result.total, rows: result.items.length },
+        });
+        performance.measure("pm-dom-update", {
+          start: renderStarted,
+          end,
+          detail: { total: result.total, rows: result.items.length },
+        });
+        console.debug(
+          "[pm-perf] " +
+            JSON.stringify({
+              total: result.total,
+              rows: result.items.length,
+              load_ms: Number((end - requestStarted).toFixed(2)),
+              dom_ms: Number((end - renderStarted).toFixed(2)),
+            }),
+        );
+      }
+      return result;
     } catch (e) {
-      error.value = e instanceof Error ? e.message : String(e);
+      if (
+        id === requestId &&
+        version === generation &&
+        !(e instanceof Error && e.name === "AbortError")
+      )
+        error.value = errorText(e);
     } finally {
-      loading.value = false;
+      if (id === requestId) loading.value = false;
     }
   }
-
+  function scheduleRefresh(delay = 120) {
+    if (disposed) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = undefined;
+      void refresh();
+    }, delay);
+  }
+  function acceptTask(task: Task) {
+    const previous = records.value[task.id];
+    const merged = {
+      ...previous,
+      ...task,
+      attachment_count:
+        task.attachment_count ?? previous?.attachment_count ?? 0,
+    };
+    records.value[task.id] = merged;
+    const index = tasks.value.findIndex((t) => t.id === task.id);
+    if (index >= 0) tasks.value[index] = merged;
+    if (selection.value[task.id]) selection.value[task.id] = merged;
+  }
+  async function updateTask(
+    id: string,
+    patch: Parameters<typeof api.patchTask>[1],
+  ) {
+    if (batchBusy.value) throw new Error("批量操作进行中，请稍后重试");
+    generation++;
+    controller?.abort();
+    pending.value[id] = (pending.value[id] ?? 0) + 1;
+    const operation = (queues.get(id) ?? Promise.resolve())
+      .catch(() => {})
+      .then(async () => {
+        const task = await api.patchTask(id, patch);
+        acceptTask(task);
+        return task;
+      });
+    queues.set(id, operation);
+    try {
+      return await operation;
+    } finally {
+      pending.value[id]--;
+      if (queues.get(id) === operation) queues.delete(id);
+      scheduleRefresh();
+    }
+  }
+  async function removeTask(id: string) {
+    if (batchBusy.value) throw new Error("批量操作进行中，请稍后重试");
+    generation++;
+    controller?.abort();
+    await (queues.get(id) ?? Promise.resolve()).catch(() => {});
+    await api.deleteTask(id);
+    tasks.value = tasks.value.filter((t) => t.id !== id);
+    delete records.value[id];
+    delete selection.value[id];
+    scheduleRefresh();
+  }
+  function toggleSelection(task: Task, selected = !selection.value[task.id]) {
+    if (batchBusy.value || !isCurrentPage.value) return;
+    if (!selected) {
+      delete selection.value[task.id];
+      return;
+    }
+    if (selectedIds.value.length >= 500) {
+      notify("每次最多选择 500 条任务", "info");
+      return;
+    }
+    selection.value[task.id] = task;
+  }
+  function clearSelection() {
+    if (!batchBusy.value) selection.value = {};
+  }
+  async function applyBatch(request: TaskBatchRequest) {
+    if (saving.value) throw new Error("还有更改正在保存，请稍后重试");
+    generation++;
+    controller?.abort();
+    batchBusy.value = true;
+    try {
+      const result = await api.batchTasks(request);
+      result.results.forEach((item) => {
+        if (item.error) return;
+        if (item.task) acceptTask(item.task);
+        else {
+          tasks.value = tasks.value.filter((t) => t.id !== item.id);
+          delete records.value[item.id];
+        }
+        delete selection.value[item.id];
+      });
+      return result;
+    } finally {
+      batchBusy.value = false;
+      await refresh();
+    }
+  }
+  async function setPage(value: number) {
+    if (!Number.isFinite(value) || saving.value) return;
+    generation++;
+    controller?.abort();
+    page.value = Math.max(1, Math.min(pages.value, Math.trunc(value)));
+    return refresh();
+  }
+  async function setPageSize(value: number) {
+    if (![50, 100, 200].includes(value) || saving.value) return;
+    generation++;
+    pageSize.value = value;
+    page.value = 1;
+    return refresh();
+  }
+  async function reveal(id: string) {
+    return refresh(id);
+  }
+  async function adjacentTask(id: string, direction: -1 | 1) {
+    let index = tasks.value.findIndex((t) => t.id === id);
+    if (index < 0) {
+      const located = await reveal(id);
+      if (!located?.anchor_found) return;
+      index = tasks.value.findIndex((t) => t.id === id);
+    }
+    const adjacent = tasks.value[index + direction];
+    if (adjacent) return adjacent;
+    if (
+      (direction === -1 && page.value > 1) ||
+      (direction === 1 && page.value < pages.value)
+    ) {
+      const result = await setPage(page.value + direction);
+      if (result)
+        return direction === -1
+          ? result.items[result.items.length - 1]
+          : result.items[0];
+    }
+  }
   function toggleFilter(key: (typeof FILTER_KEYS)[number], value: string) {
-    const arr = filters.value[key] as string[];
-    const i = arr.indexOf(value);
-    if (i >= 0) arr.splice(i, 1);
+    const arr = filters.value[key] as string[],
+      index = arr.indexOf(value);
+    if (index >= 0) arr.splice(index, 1);
     else arr.push(value);
   }
-
+  function clearFilters() {
+    FILTER_KEYS.forEach((k) => {
+      filters.value[k] = [];
+    });
+    filters.value.keyword = "";
+  }
+  function setProject(project?: string) {
+    filters.value.project = project ? [project] : [];
+  }
+  function setPreset(status?: TaskStatus) {
+    clearFilters();
+    filters.value.status = status ? [status] : [];
+  }
+  function applyFilters(value: unknown) {
+    filters.value = sanitizeFilters(value);
+  }
   function toggleSort(field: FilterState["sort_by"]) {
-    if (filters.value.sort_by === field) {
-      filters.value.sort_order = filters.value.sort_order === "asc" ? "desc" : "asc";
-    } else {
+    if (filters.value.sort_by === field)
+      filters.value.sort_order =
+        filters.value.sort_order === "asc" ? "desc" : "asc";
+    else {
       filters.value.sort_by = field;
       filters.value.sort_order = "desc";
     }
   }
-
-  // 关键字输入防抖 ~300ms（review P3-4）：避免每敲一个键发一次请求。
-  // URL 同步仍走 watch 立即写入（刷新不丢），仅请求触发防抖。
-  let keywordTimer: ReturnType<typeof setTimeout> | undefined;
-  let prevKeyword = filters.value.keyword;
-
+  let previousKeyword = filters.value.keyword,
+    fingerprint = filterFingerprint(filters.value);
   watch(
     filters,
     (f) => {
+      generation++;
+      controller?.abort();
       writeFiltersToUrl(f);
-      if (f.keyword !== prevKeyword) {
-        prevKeyword = f.keyword;
-        if (keywordTimer !== undefined) clearTimeout(keywordTimer);
-        keywordTimer = setTimeout(() => {
-          keywordTimer = undefined;
-          void refresh();
-        }, 300);
-        return;
+      page.value = 1;
+      const next = filterFingerprint(f);
+      if (next !== fingerprint) {
+        selection.value = {};
+        fingerprint = next;
       }
-      void refresh();
+      const keywordChanged = previousKeyword !== f.keyword;
+      previousKeyword = f.keyword;
+      scheduleRefresh(keywordChanged ? 300 : 0);
     },
-    { deep: true },
+    { deep: true, flush: "sync" },
   );
-
-  return { tasks, loading, error, filters, refresh, toggleFilter, toggleSort };
+  onScopeDispose(() => {
+    disposed = true;
+    clearTimeout(timer);
+    controller?.abort();
+  });
+  return {
+    tasks,
+    records,
+    loading,
+    initialized,
+    error,
+    filters,
+    query,
+    pending,
+    saving,
+    connection,
+    externalRevision,
+    activeFilterCount,
+    page,
+    pageSize,
+    pages,
+    total,
+    groups,
+    isCurrentPage,
+    selection,
+    selectedIds,
+    batchBusy,
+    refresh,
+    scheduleRefresh,
+    acceptTask,
+    updateTask,
+    removeTask,
+    toggleFilter,
+    clearFilters,
+    setProject,
+    setPreset,
+    toggleSort,
+    applyFilters,
+    toggleSelection,
+    clearSelection,
+    applyBatch,
+    setPage,
+    setPageSize,
+    reveal,
+    adjacentTask,
+  };
 });

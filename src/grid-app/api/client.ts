@@ -1,4 +1,8 @@
 import type {
+  TaskPage,
+  TaskPageQuery,
+  TaskBatchRequest,
+  TaskBatchResult,
   ApiError,
   Attachment,
   Project,
@@ -11,7 +15,10 @@ import type {
 export class ApiRequestError extends Error {
   code: string;
   details?: Record<string, unknown>;
-  constructor(e: ApiError["error"], public status: number) {
+  constructor(
+    e: ApiError["error"],
+    public status: number,
+  ) {
     super(e.message);
     this.code = e.code;
     this.details = e.details;
@@ -20,7 +27,10 @@ export class ApiRequestError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
-    headers: init?.body ? { "Content-Type": "application/json" } : undefined,
+    headers:
+      init?.body && !(init.body instanceof FormData)
+        ? { "Content-Type": "application/json" }
+        : undefined,
     ...init,
   });
   if (!res.ok) {
@@ -40,7 +50,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-function buildQuery(q: TaskListQuery): string {
+function buildQuery(q: TaskPageQuery): string {
   const p = new URLSearchParams();
   q.project?.forEach((v) => p.append("project", v));
   q.type?.forEach((v) => p.append("type", v));
@@ -49,16 +59,36 @@ function buildQuery(q: TaskListQuery): string {
   if (q.keyword) p.set("keyword", q.keyword);
   if (q.sort_by) p.set("sort_by", q.sort_by);
   if (q.sort_order) p.set("sort_order", q.sort_order);
+  if (q.page) p.set("page", String(q.page));
+  if (q.page_size) p.set("page_size", String(q.page_size));
+  if (q.group_by) p.set("group_by", q.group_by);
+  if (q.anchor_id) p.set("anchor_id", q.anchor_id);
   const s = p.toString();
   return s ? `?${s}` : "";
 }
 
 export const api = {
-  listTasks: (q: TaskListQuery = {}) =>
-    request<Task[]>(`/api/web/tasks${buildQuery(q)}`),
+  pageTasks: (q: TaskPageQuery = {}, signal?: AbortSignal) =>
+    request<TaskPage>(`/api/web/tasks/page${buildQuery(q)}`, { signal }),
+  getTask: (id: string) =>
+    request<Task>(`/api/web/tasks/${encodeURIComponent(id)}`),
+  batchTasks: (body: TaskBatchRequest) =>
+    request<TaskBatchResult>("/api/web/tasks/batch", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listTasks: (q: TaskListQuery = {}, signal?: AbortSignal) =>
+    request<Task[]>(`/api/web/tasks${buildQuery(q)}`, { signal }),
 
-  createTask: (body: { project: string; type: TaskType; description?: string }) =>
-    request<Task>("/api/web/tasks", { method: "POST", body: JSON.stringify(body) }),
+  createTask: (body: {
+    project: string;
+    type: TaskType;
+    description?: string;
+  }) =>
+    request<Task>("/api/web/tasks", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   patchTask: (
     id: string,
@@ -68,7 +98,11 @@ export const api = {
       description: string;
       status: TaskStatus;
     }>,
-  ) => request<Task>(`/api/web/tasks/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  ) =>
+    request<Task>(`/api/web/tasks/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
 
   deleteTask: (id: string) =>
     request<void>(`/api/web/tasks/${id}`, { method: "DELETE" }),
@@ -76,16 +110,24 @@ export const api = {
   listProjects: () => request<Project[]>("/api/web/projects"),
 
   createProject: (body: { name: string; color?: string }) =>
-    request<Project>("/api/web/projects", { method: "POST", body: JSON.stringify(body) }),
+    request<Project>("/api/web/projects", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
-  patchProject: (name: string, body: Partial<{ new_name: string; color: string; sort_order: number }>) =>
+  patchProject: (
+    name: string,
+    body: Partial<{ new_name: string; color: string; sort_order: number }>,
+  ) =>
     request<Project>(`/api/web/projects/${encodeURIComponent(name)}`, {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
 
   deleteProject: (name: string) =>
-    request<void>(`/api/web/projects/${encodeURIComponent(name)}`, { method: "DELETE" }),
+    request<void>(`/api/web/projects/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
 
   listAttachments: (taskId: string) =>
     request<Attachment[]>(`/api/web/tasks/${taskId}/attachments`),
@@ -106,7 +148,10 @@ export const api = {
 };
 
 /** SSE 订阅：任务变更时触发 onChange；断线自动降级为 10s 轮询 */
-export function subscribeTaskEvents(onChange: () => void): () => void {
+export function subscribeTaskEvents(
+  onChange: () => void,
+  onStatus?: (state: "connecting" | "live" | "reconnecting") => void,
+): () => void {
   let stopped = false;
   let pollTimer: number | undefined;
   let es: EventSource | undefined;
@@ -124,10 +169,16 @@ export function subscribeTaskEvents(onChange: () => void): () => void {
 
   const connect = () => {
     if (stopped) return;
+    onStatus?.("connecting");
     es = new EventSource("/api/web/events");
     es.addEventListener("tasks_changed", () => onChange());
-    es.onopen = () => stopPolling();
+    es.onopen = () => {
+      stopPolling();
+      onStatus?.("live");
+      onChange();
+    };
     es.onerror = () => {
+      onStatus?.("reconnecting");
       // EventSource 会自动重连；重连期间用轮询兜底
       startPolling();
     };

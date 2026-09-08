@@ -1,153 +1,434 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { api } from "@/grid-app/api/client";
-import { useMetaStore } from "@/grid-app/stores/metaStore";
-import { useTaskStore } from "@/grid-app/stores/taskStore";
-import { formatDateTime, type Attachment, type Task } from "@/shared/types";
-
+import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { api, ApiRequestError } from "../api/client";
+import { useTaskStore } from "../stores/taskStore";
+import UiDialog from "@/shared/UiDialog.vue";
+import UiIcon from "@/shared/UiIcon.vue";
+import UiPopover from "@/shared/UiPopover.vue";
+import TaskField from "./TaskField.vue";
+import DescriptionEditor from "./DescriptionEditor.vue";
+import AttachmentUploader from "./AttachmentUploader.vue";
+import { useUploadQueue, formatSize } from "./useUploadQueue";
+import { askConfirm, copyText, errorText, notify } from "@/shared/feedback";
+import { formatDateTime, type Task, type Attachment } from "@/shared/types";
 const props = defineProps<{ task: Task }>();
-const emit = defineEmits<{ close: [] }>();
-
-const metaStore = useMetaStore();
-const taskStore = useTaskStore();
-
-const attachments = ref<Attachment[]>([]);
-const error = ref("");
-const uploading = ref(false);
-
-const current = computed(
-  () => taskStore.tasks.find((t) => t.id === props.task.id) ?? props.task,
+const emit = defineEmits<{ close: []; navigate: [task: Task] }>();
+const tasks = useTaskStore(),
+  queue = useUploadQueue();
+const attachments = ref<Attachment[]>([]),
+  attachmentError = ref(""),
+  attachmentLoading = ref(false),
+  showUpload = ref(false);
+const editing = ref(false),
+  editor = ref<InstanceType<typeof DescriptionEditor>>();
+const preview = ref<Attachment | null>(null);
+const missing = ref(false),
+  detailError = ref("");
+const current = computed(() => tasks.records[props.task.id] ?? props.task);
+const index = computed(() =>
+  tasks.tasks.findIndex((t) => t.id === props.task.id),
 );
-
-async function refreshAttachments() {
-  attachments.value = await api.listAttachments(props.task.id);
-}
-
-onMounted(refreshAttachments);
-
-function isImage(a: Attachment) {
-  return /^image\//.test(a.mime ?? "") || /\.(png|jpe?g|gif|webp)$/i.test(a.filename);
-}
-
-function isVideo(a: Attachment) {
-  return /^video\//.test(a.mime ?? "") || /\.(mp4|mov)$/i.test(a.filename);
-}
-
-function formatSize(n: number) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-
-async function onUpload(e: Event) {
-  const input = e.target as HTMLInputElement;
-  const files = Array.from(input.files ?? []);
-  input.value = "";
-  if (!files.length) return;
-  error.value = "";
-  uploading.value = true;
+const busy = computed(() => queue.busy.value || !!tasks.pending[props.task.id]);
+let loadId = 0;
+let detailRequest = 0;
+async function refreshCurrent() {
+  const id = ++detailRequest,
+    taskId = props.task.id;
+  const before = tasks.records[taskId];
+  if (tasks.pending[taskId]) return;
   try {
-    for (const f of files) await api.uploadAttachment(props.task.id, f);
-    await refreshAttachments();
-    await taskStore.refresh();
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err);
+    // Read independently of the table's filters, which may now exclude this open task.
+    const latest = await api.getTask(taskId);
+    if (
+      id !== detailRequest ||
+      taskId !== props.task.id ||
+      tasks.pending[taskId] ||
+      tasks.records[taskId] !== before
+    )
+      return;
+    missing.value = false;
+    detailError.value = "";
+    if (latest) tasks.acceptTask(latest);
+  } catch (e) {
+    if (id === detailRequest) {
+      if (e instanceof ApiRequestError && e.status === 404)
+        missing.value = true;
+      else detailError.value = errorText(e);
+    }
+  }
+}
+async function loadAttachments() {
+  const id = ++loadId,
+    taskId = props.task.id;
+  attachmentError.value = "";
+  attachmentLoading.value = true;
+  try {
+    const result = await api.listAttachments(taskId);
+    if (id === loadId) attachments.value = result;
+  } catch (e) {
+    if (id === loadId) attachmentError.value = errorText(e);
   } finally {
-    uploading.value = false;
+    if (id === loadId) attachmentLoading.value = false;
   }
 }
-
-async function onDeleteAttachment(a: Attachment) {
-  if (!confirm(`删除附件「${a.filename}」？`)) return;
-  try {
-    await api.deleteAttachment(a.id);
-    await refreshAttachments();
-    await taskStore.refresh();
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err);
+watch(
+  () => props.task.id,
+  () => {
+    detailRequest++;
+    missing.value = false;
+    detailError.value = "";
+    attachments.value = [];
+    editing.value = false;
+    queue.items.value = [];
+    showUpload.value = false;
+    preview.value = null;
+    void loadAttachments();
+    void refreshCurrent();
+  },
+  { immediate: true },
+);
+watch(
+  () => tasks.externalRevision,
+  () => {
+    if (!queue.busy.value) void loadAttachments();
+    void refreshCurrent();
+  },
+);
+onBeforeUnmount(() => {
+  loadId++;
+  detailRequest++;
+});
+async function canLeave() {
+  if (busy.value) return false;
+  if (
+    (editing.value && editor.value?.dirty) ||
+    queue.items.value.some((item) => item.state !== "done")
+  )
+    return askConfirm(
+      "离开任务详情",
+      "未保存的描述或未上传的附件将被丢弃。",
+      "离开",
+    );
+  return true;
+}
+async function close() {
+  if (await canLeave()) emit("close");
+}
+async function navigate(direction: number) {
+  if (!(await canLeave())) return;
+  const task = await tasks.adjacentTask(props.task.id, direction as -1 | 1);
+  if (task) emit("navigate", task);
+}
+async function upload() {
+  await queue.upload(props.task.id);
+  await loadAttachments();
+  tasks.scheduleRefresh();
+  if (!queue.failed.value.length) {
+    queue.clearDone();
+    showUpload.value = false;
+    notify("附件已上传");
   }
+}
+async function removeAttachment(attachment: Attachment) {
+  if (
+    !(await askConfirm(
+      "删除附件",
+      "确定永久删除「" + attachment.filename + "」？",
+      "删除附件",
+      true,
+    ))
+  )
+    return;
+  try {
+    await api.deleteAttachment(attachment.id);
+    await loadAttachments();
+    tasks.scheduleRefresh();
+    notify("附件已删除");
+  } catch (e) {
+    attachmentError.value = errorText(e);
+  }
+}
+async function removeTask() {
+  if (
+    !(await askConfirm(
+      "删除任务",
+      "该任务及其附件将被永久删除，确认继续？",
+      "删除任务",
+      true,
+    ))
+  )
+    return;
+  try {
+    await tasks.removeTask(props.task.id);
+    emit("close");
+    notify("任务已删除");
+  } catch (e) {
+    notify(errorText(e), "error");
+  }
+}
+function mediaKind(a: Attachment) {
+  return /^image\//.test(a.mime ?? "") ||
+    /\.(png|jpe?g|gif|webp)$/i.test(a.filename)
+    ? "image"
+    : /^video\//.test(a.mime ?? "") || /\.(mp4|mov)$/i.test(a.filename)
+      ? "video"
+      : "file";
 }
 </script>
-
 <template>
-  <div class="drawer-mask" @click.self="emit('close')">
-    <aside class="drawer">
-      <header class="drawer-header">
-        <h2>任务详情</h2>
-        <button class="icon-btn" @click="emit('close')">✕</button>
-      </header>
-
-      <div class="drawer-body">
-        <div class="detail-row">
-          <span class="detail-label">ID</span>
-          <span class="cell-id">{{ current.id }}</span>
-        </div>
-        <div class="detail-row">
-          <span class="detail-label">项目</span>
-          <span>
-            <span class="option-dot" :style="{ background: metaStore.projectColor(current.project) }"></span>
-            {{ current.project }}
-          </span>
-        </div>
-        <div class="detail-row">
-          <span class="detail-label">类型</span>
-          <span>{{ current.type }}</span>
-        </div>
-        <div class="detail-row">
-          <span class="detail-label">状态</span>
-          <span>{{ current.status }}</span>
-        </div>
-        <div class="detail-row">
-          <span class="detail-label">提交人</span>
-          <span>{{ current.submitter }}</span>
-        </div>
-        <div class="detail-row">
-          <span class="detail-label">创建时间</span>
-          <span>{{ formatDateTime(current.created_at) }}</span>
-        </div>
-        <div class="detail-row">
-          <span class="detail-label">完成时间</span>
-          <span>{{ formatDateTime(current.finished_at) || "—" }}</span>
-        </div>
-
-        <div class="detail-section">
-          <h3>任务描述</h3>
-          <p class="detail-desc">{{ current.description || "（空）" }}</p>
-        </div>
-
-        <div class="detail-section">
-          <h3>
-            附件（{{ attachments.length }}）
-            <label class="btn btn-sm upload-btn" :class="{ disabled: uploading }">
-              {{ uploading ? "上传中…" : "上传附件" }}
-              <input type="file" multiple hidden :disabled="uploading" @change="onUpload" />
-            </label>
-          </h3>
-          <div v-if="error" class="form-error">{{ error }}</div>
-          <ul class="attach-list">
-            <li v-for="a in attachments" :key="a.id" class="attach-item">
-              <img
-                v-if="isImage(a)"
-                class="attach-preview"
-                :src="api.attachmentUrl(a.id)"
-                :alt="a.filename"
-              />
-              <video
-                v-else-if="isVideo(a)"
-                class="attach-preview"
-                :src="api.attachmentUrl(a.id)"
-                controls
-              ></video>
-              <div class="attach-meta">
-                <a :href="api.attachmentUrl(a.id)" :download="a.filename">{{ a.filename }}</a>
-                <span class="attach-size">{{ formatSize(a.size) }}</span>
-              </div>
-              <button class="icon-btn danger" title="删除附件" @click="onDeleteAttachment(a)">✕</button>
-            </li>
-            <li v-if="!attachments.length" class="attach-empty">暂无附件</li>
-          </ul>
+  <UiDialog title="任务详情" drawer :busy="busy" @close="close">
+    <template #header-actions
+      ><button
+        class="icon-btn"
+        aria-label="上一条任务"
+        title="上一条任务"
+        :disabled="(index === 0 && tasks.page === 1) || busy || tasks.loading"
+        @click="navigate(-1)"
+      >
+        <UiIcon name="up" /></button
+      ><button
+        class="icon-btn"
+        aria-label="下一条任务"
+        title="下一条任务"
+        :disabled="
+          (index === tasks.tasks.length - 1 && tasks.page === tasks.pages) ||
+          busy ||
+          tasks.loading
+        "
+        @click="navigate(1)"
+      >
+        <UiIcon name="down" /></button
+      ><UiPopover align="right" :width="180" label="详情操作"
+        ><template #trigger="{ toggle }"
+          ><button class="icon-btn" aria-label="更多任务操作" @click="toggle">
+            <UiIcon name="more" /></button></template
+        ><template #default="{ close: closeMenu }"
+          ><button
+            class="menu-item"
+            @click="
+              copyText(current.id);
+              closeMenu();
+            "
+          >
+            <UiIcon name="copy" />复制任务 ID</button
+          ><button
+            class="menu-item danger-text"
+            :disabled="busy"
+            @click="
+              closeMenu();
+              removeTask();
+            "
+          >
+            <UiIcon name="trash" />删除任务
+          </button></template
+        ></UiPopover
+      ></template
+    >
+    <div class="detail-identifier">
+      <span class="tag tag-gray">任务</span><span>{{ current.id }}</span
+      ><button
+        class="icon-btn"
+        aria-label="复制任务 ID"
+        title="复制任务 ID"
+        @click="copyText(current.id)"
+      >
+        <UiIcon name="copy" :size="13" />
+      </button>
+    </div>
+    <h3 class="detail-title">
+      {{ current.description.split("\n")[0] || "未填写任务描述" }}
+    </h3>
+    <div v-if="missing" class="form-error" role="alert">
+      任务已被其他操作删除。当前保留最后一次内容，便于复制。
+    </div>
+    <div v-else-if="detailError" class="form-error" role="alert">
+      {{ detailError
+      }}<button class="btn btn-sm" @click="refreshCurrent">重试</button>
+    </div>
+    <div v-if="index < 0" class="info-banner detail-outside-filter">
+      此任务不在当前页中，仍可在这里查看和编辑。
+    </div>
+    <div class="detail-properties">
+      <div class="property-row">
+        <span><UiIcon name="folder" />项目</span
+        ><TaskField :task="current" field="project" :editable="!missing" form />
+      </div>
+      <div class="property-row">
+        <span><UiIcon name="tag" />任务类型</span
+        ><TaskField :task="current" field="type" :editable="!missing" form />
+      </div>
+      <div class="property-row">
+        <span><UiIcon name="circle" />当前状态</span
+        ><TaskField :task="current" field="status" :editable="!missing" form />
+      </div>
+      <div class="property-row">
+        <span><UiIcon name="user" />提交人</span>
+        <div
+          class="submitter-tag"
+          :class="current.submitter === 'Agent' ? 'agent' : 'human'"
+        >
+          <span class="submitter-avatar"
+            ><UiIcon
+              :name="current.submitter === 'Agent' ? 'bot' : 'user'"
+              :size="12" /></span
+          >{{ current.submitter }}
         </div>
       </div>
-    </aside>
-  </div>
+      <div class="property-row">
+        <span><UiIcon name="clock" />创建时间</span>
+        <div class="detail-date">{{ formatDateTime(current.created_at) }}</div>
+      </div>
+      <div class="property-row">
+        <span><UiIcon name="check" />完成时间</span>
+        <div class="detail-date">
+          {{ formatDateTime(current.finished_at) || "—" }}
+        </div>
+      </div>
+    </div>
+    <section class="detail-section">
+      <div class="section-heading">
+        <h3><UiIcon name="text" />任务描述</h3>
+        <button
+          v-if="!editing && !missing"
+          class="btn btn-ghost btn-sm"
+          @click="editing = true"
+        >
+          <UiIcon name="edit" :size="14" />编辑
+        </button>
+      </div>
+      <DescriptionEditor
+        v-if="editing"
+        ref="editor"
+        :task-id="current.id"
+        :value="current.description"
+        @close="editing = false"
+      />
+      <p
+        v-else
+        class="detail-description"
+        :class="{ subtle: !current.description }"
+      >
+        {{
+          current.description || "暂无描述，添加背景和验收要求，让任务更清晰。"
+        }}
+      </p>
+    </section>
+    <section class="detail-section">
+      <div class="section-heading">
+        <h3>
+          <UiIcon name="attachment" />附件<span class="section-count">{{
+            attachments.length
+          }}</span>
+        </h3>
+        <button
+          class="btn btn-ghost btn-sm"
+          :disabled="queue.busy.value || missing"
+          @click="showUpload = !showUpload"
+        >
+          <UiIcon name="plus" :size="14" />添加附件
+        </button>
+      </div>
+      <div v-if="attachmentError" class="form-error" role="alert">
+        {{ attachmentError
+        }}<button class="btn btn-sm" @click="loadAttachments">重试</button>
+      </div>
+      <div v-if="showUpload || queue.items.value.length" class="detail-upload">
+        <AttachmentUploader
+          :items="queue.items.value"
+          :busy="queue.busy.value"
+          @add="queue.add"
+          @remove="queue.remove"
+        /><button
+          v-if="queue.items.value.length"
+          class="btn btn-primary btn-sm"
+          :disabled="queue.busy.value || missing"
+          @click="upload"
+        >
+          {{
+            queue.busy.value
+              ? "上传中…"
+              : queue.failed.value.length
+                ? "重试上传"
+                : "上传附件"
+          }}
+        </button>
+      </div>
+      <div
+        v-if="attachmentLoading && !attachments.length"
+        class="attachment-empty"
+      >
+        <span class="spinner"></span>正在加载附件
+      </div>
+      <ul v-else-if="attachments.length" class="attachment-list">
+        <li
+          v-for="attachment in attachments"
+          :key="attachment.id"
+          class="attachment-item"
+        >
+          <button
+            v-if="mediaKind(attachment) !== 'file'"
+            class="attachment-thumbnail"
+            :aria-label="'预览：' + attachment.filename"
+            @click="preview = attachment"
+          >
+            <img
+              v-if="mediaKind(attachment) === 'image'"
+              :src="api.attachmentUrl(attachment.id)"
+              :alt="attachment.filename"
+            /><UiIcon v-else name="expand" :size="24" /></button
+          ><span v-else class="attachment-file-icon"
+            ><UiIcon name="file" :size="25"
+          /></span>
+          <div class="attachment-meta">
+            <a
+              :href="api.attachmentUrl(attachment.id)"
+              :download="attachment.filename"
+              >{{ attachment.filename }}</a
+            ><span>{{ formatSize(attachment.size) }}</span>
+          </div>
+          <a
+            class="icon-btn"
+            :aria-label="'下载：' + attachment.filename"
+            :href="api.attachmentUrl(attachment.id)"
+            :download="attachment.filename"
+            ><UiIcon name="download" :size="15" /></a
+          ><button
+            class="icon-btn danger"
+            :aria-label="'删除附件：' + attachment.filename"
+            @click="removeAttachment(attachment)"
+          >
+            <UiIcon name="trash" :size="15" />
+          </button>
+        </li>
+      </ul>
+      <div v-else-if="!showUpload && !attachmentError" class="attachment-empty">
+        <UiIcon name="attachment" :size="20" /><span>暂无附件</span
+        ><span class="subtle">添加截图、文档或视频，补充任务信息。</span>
+      </div>
+    </section>
+    <template #footer
+      ><span class="detail-updated"
+        >最后更新 {{ formatDateTime(current.updated_at) }}</span
+      ><button class="btn btn-sm" :disabled="busy" @click="close">
+        完成
+      </button></template
+    >
+  </UiDialog>
+  <UiDialog
+    v-if="preview"
+    :title="preview.filename"
+    :width="960"
+    @close="preview = null"
+    ><div class="media-preview">
+      <img
+        v-if="mediaKind(preview) === 'image'"
+        :src="api.attachmentUrl(preview.id)"
+        :alt="preview.filename"
+      /><video
+        v-else
+        :src="api.attachmentUrl(preview.id)"
+        controls
+        autoplay
+      /></div
+  ></UiDialog>
 </template>

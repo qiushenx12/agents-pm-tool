@@ -15,7 +15,7 @@ pub struct TaskFilter {
     pub sort_order: Option<String>,
 }
 
-fn row_to_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
+pub(super) fn row_to_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
     Ok(Task {
         id: r.get("id")?,
         seq: r.get("seq")?,
@@ -31,63 +31,69 @@ fn row_to_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
     })
 }
 
-const SELECT_TASKS: &str = r#"
+pub(super) const SELECT_TASKS: &str = r#"
 SELECT t.*, (SELECT COUNT(*) FROM attachments a WHERE a.task_id = t.id) AS attachment_count
 FROM tasks t
 "#;
 
-pub fn list(conn: &Connection, f: &TaskFilter) -> ApiResult<Vec<Task>> {
-    let mut sql = String::from(SELECT_TASKS);
-    let mut conds: Vec<String> = Vec::new();
-    let mut values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-
-    let push_in = |col: &str, items: &[String], conds: &mut Vec<String>, values: &mut Vec<Box<dyn rusqlite::ToSql>>| {
+pub(super) fn filter_sql(f: &TaskFilter) -> (String, Vec<String>) {
+    let mut conds = Vec::new();
+    let mut values = Vec::new();
+    for (column, items) in [
+        ("project", &f.project),
+        ("type", &f.task_type),
+        ("status", &f.status),
+        ("submitter", &f.submitter),
+    ] {
         if !items.is_empty() {
-            let marks = items.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            conds.push(format!("t.{col} IN ({marks})"));
-            for it in items {
-                values.push(Box::new(it.clone()));
-            }
-        }
-    };
-
-    push_in("project", &f.project, &mut conds, &mut values);
-    push_in("type", &f.task_type, &mut conds, &mut values);
-    push_in("status", &f.status, &mut conds, &mut values);
-    push_in("submitter", &f.submitter, &mut conds, &mut values);
-
-    if let Some(kw) = &f.keyword {
-        let kw = kw.trim();
-        if !kw.is_empty() {
-            conds.push("(t.id LIKE ? OR t.description LIKE ?)".into());
-            let like = format!("%{kw}%");
-            values.push(Box::new(like.clone()));
-            values.push(Box::new(like));
+            let marks = vec!["?"; items.len()].join(",");
+            conds.push(format!("t.{column} IN ({marks})"));
+            values.extend(items.iter().cloned());
         }
     }
-
-    if !conds.is_empty() {
-        sql.push_str(" WHERE ");
-        sql.push_str(&conds.join(" AND "));
+    if let Some(keyword) = f
+        .keyword
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        conds.push("(t.id LIKE ? OR t.description LIKE ?)".into());
+        values.push(format!("%{keyword}%"));
+        values.push(format!("%{keyword}%"));
     }
+    (
+        if conds.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conds.join(" AND "))
+        },
+        values,
+    )
+}
 
-    let sort_col = match f.sort_by.as_deref() {
+pub(super) fn sort_sql(f: &TaskFilter) -> String {
+    let column = match f.sort_by.as_deref() {
         Some("seq") => "t.seq",
         Some("updated_at") => "t.updated_at",
         Some("finished_at") => "t.finished_at",
         _ => "t.created_at",
     };
-    let order = if f.sort_order.as_deref() == Some("asc") { "ASC" } else { "DESC" };
-    sql.push_str(&format!(" ORDER BY {sort_col} {order}, t.seq {order}"));
+    let direction = if f.sort_order.as_deref() == Some("asc") {
+        "ASC"
+    } else {
+        "DESC"
+    };
+    format!("{column} {direction}, t.seq {direction}")
+}
 
-    let params: Vec<&dyn rusqlite::ToSql> = values.iter().map(|b| b.as_ref()).collect();
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params.as_slice(), row_to_task)?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+pub fn list(conn: &Connection, f: &TaskFilter) -> ApiResult<Vec<Task>> {
+    let (conditions, values) = filter_sql(f);
+    let mut stmt = conn.prepare(&format!(
+        "{SELECT_TASKS}{conditions} ORDER BY {}",
+        sort_sql(f)
+    ))?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values.iter()), row_to_task)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub fn get(conn: &Connection, id: &str) -> ApiResult<Task> {
@@ -191,7 +197,15 @@ pub fn patch(conn: &mut Connection, id: &str, p: &TaskPatch) -> ApiResult<Task> 
     conn.execute(
         "UPDATE tasks SET project = ?2, type = ?3, description = ?4, status = ?5,
             finished_at = ?6, updated_at = ?7 WHERE id = ?1",
-        params![id, project, task_type, description, status, finished_at, now],
+        params![
+            id,
+            project,
+            task_type,
+            description,
+            status,
+            finished_at,
+            now
+        ],
     )?;
     get(conn, id)
 }

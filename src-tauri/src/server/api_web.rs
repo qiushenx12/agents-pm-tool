@@ -7,11 +7,32 @@ use axum::{
 };
 use serde::Deserialize;
 
+pub use super::api_batch::batch_tasks;
 use crate::db::{projects, tasks};
 use crate::domain::attachment as attach;
 use crate::domain::task::now_str;
 use crate::error::{ApiError, ApiResult};
 use crate::server::{parse_task_filter, CoreState};
+
+pub async fn get_task(
+    State(core): State<CoreState>,
+    Path(id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let conn = core.db.lock().unwrap();
+    Ok(Json(tasks::get(&conn, &id)?))
+}
+
+pub async fn page_tasks(
+    State(core): State<CoreState>,
+    RawQuery(query): RawQuery,
+) -> ApiResult<impl IntoResponse> {
+    let filter = parse_task_filter(query.as_deref())?;
+    let options = crate::db::task_page::PageOptions::parse(query.as_deref())?;
+    let conn = core.db.lock().unwrap();
+    Ok(Json(crate::db::task_page::list_page(
+        &conn, &filter, &options,
+    )?))
+}
 
 // ── 任务 ─────────────────────────────────────────────────
 
@@ -177,9 +198,8 @@ pub async fn list_attachments(
 ) -> ApiResult<impl IntoResponse> {
     let conn = core.db.lock().unwrap();
     tasks::get(&conn, &task_id)?; // 任务不存在 → 404
-    let mut stmt = conn.prepare(
-        "SELECT * FROM attachments WHERE task_id = ?1 ORDER BY created_at ASC",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT * FROM attachments WHERE task_id = ?1 ORDER BY created_at ASC")?;
     let rows = stmt.query_map([task_id], |r| {
         Ok(attach::Attachment {
             id: r.get("id")?,
@@ -232,33 +252,40 @@ pub async fn upload_attachment(
     }
 
     let id = uuid::Uuid::new_v4().to_string();
-    let ext = filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let stored_rel = format!("attachments/{id}.{ext}");
     let stored_abs = core.data_dir.join(&stored_rel);
 
     std::fs::create_dir_all(stored_abs.parent().unwrap())?;
     std::fs::write(&stored_abs, &data)?;
 
-    let mime = mime_guess::from_path(&filename).first().map(|m| m.to_string());
+    let mime = mime_guess::from_path(&filename)
+        .first()
+        .map(|m| m.to_string());
     let conn = core.db.lock().unwrap();
-    let result = (|| -> ApiResult<attach::Attachment> {
-        tasks::get(&conn, &task_id)?;
-        let now = now_str();
-        conn.execute(
+    let result =
+        (|| -> ApiResult<attach::Attachment> {
+            tasks::get(&conn, &task_id)?;
+            let now = now_str();
+            conn.execute(
             "INSERT INTO attachments (id, task_id, filename, stored_path, mime, size, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![id, task_id, filename, stored_rel, mime, data.len() as i64, now],
         )?;
-        Ok(attach::Attachment {
-            id,
-            task_id,
-            filename,
-            stored_path: stored_rel,
-            mime,
-            size: data.len() as i64,
-            created_at: now,
-        })
-    })();
+            Ok(attach::Attachment {
+                id,
+                task_id,
+                filename,
+                stored_path: stored_rel,
+                mime,
+                size: data.len() as i64,
+                created_at: now,
+            })
+        })();
     drop(conn);
 
     match result {
@@ -275,21 +302,17 @@ pub async fn upload_attachment(
 
 fn load_attachment(core: &CoreState, id: &str) -> ApiResult<attach::Attachment> {
     let conn = core.db.lock().unwrap();
-    conn.query_row(
-        "SELECT * FROM attachments WHERE id = ?1",
-        [id],
-        |r| {
-            Ok(attach::Attachment {
-                id: r.get("id")?,
-                task_id: r.get("task_id")?,
-                filename: r.get("filename")?,
-                stored_path: r.get("stored_path")?,
-                mime: r.get("mime")?,
-                size: r.get("size")?,
-                created_at: r.get("created_at")?,
-            })
-        },
-    )
+    conn.query_row("SELECT * FROM attachments WHERE id = ?1", [id], |r| {
+        Ok(attach::Attachment {
+            id: r.get("id")?,
+            task_id: r.get("task_id")?,
+            filename: r.get("filename")?,
+            stored_path: r.get("stored_path")?,
+            mime: r.get("mime")?,
+            size: r.get("size")?,
+            created_at: r.get("created_at")?,
+        })
+    })
     .map_err(|e| match e {
         rusqlite::Error::QueryReturnedNoRows => ApiError::not_found("附件不存在"),
         other => ApiError::from(other),

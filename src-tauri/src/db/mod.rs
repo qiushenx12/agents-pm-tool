@@ -1,5 +1,6 @@
 pub mod projects;
 pub mod schema;
+pub mod task_page;
 pub mod tasks;
 
 use std::path::Path;
