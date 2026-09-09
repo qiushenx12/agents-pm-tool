@@ -194,7 +194,7 @@ PRAGMA user_version = 1;
 - **筛选栏**：项目/类型/状态/提交人多选筛选 + 关键字（匹配 ID、描述与备注）；筛选条件进 URL query，刷新不丢。
 - **新建/详情**：顶部「新建任务」弹窗（项目*、类型*、描述、备注、附件）；点击行展开右侧抽屉，含完整描述、备注、附件管理和时间信息。
 - **删除任务**：仅网页端，行菜单内二次确认。
-- **空态**：内置示例项目选项 `agents-pm-tool`（初始化种子数据）。
+- **空态**：内置示例项目选项 `default-project`（初始化种子数据）。
 - **实时刷新**：SSE 收到 `tasks_changed` 事件后增量刷新当前筛选结果；SSE 断开降级 10s 轮询。
 
 ### 5.3 项目选项管理（对齐多维表格表头交互）
@@ -273,7 +273,7 @@ pm-cli describe <id> --description <文本> [--json]     # 仅 Agent 创建的�
 
 ### Phase 1 — 数据层 + Agent 通路（2 天）
 
-- [x] schema 全量 + 种子项目 `agents-pm-tool`；idgen（事务内序号）+ 状态机/校验规则单测先行
+- [x] schema 全量 + 种子项目 `default-project`；idgen（事务内序号）+ 状态机/校验规则单测先行
 - [x] `/api/web/tasks` CRUD + 筛选排序关键字；`/api/web/projects` 全量（含级联重命名、引用保护）
 - [x] `/api/agent/*` 五个接口 + token 中间层 + §5.4 全部收窄规则
 - [x] `pm-cli`：五个子命令 + `--json` + 退出码/中文报错

@@ -1,11 +1,12 @@
 import { TASK_STATUSES, TASK_TYPES, SUBMITTERS } from "./types";
 export const statusTones: Record<string, string> = {
-  未开始: "gray",
-  进行中: "blue",
-  待验证: "orange",
+  未开始: "red",
+  进行中: "orange",
+  待验证: "blue",
   已完成: "green",
   验收未通过: "red",
   验收通过: "teal",
+  取消: "gray",
 };
 export const statusOptions = TASK_STATUSES.map((value) => ({
   value,

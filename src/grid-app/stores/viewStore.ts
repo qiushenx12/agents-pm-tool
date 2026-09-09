@@ -65,9 +65,10 @@ export const useViewStore = defineStore("view", () => {
   const order = [
     ...new Set([
       "description",
-      ...previousColumns.map((p) => p.key).filter((key) => key !== "note"),
-      ...DEFAULT_COLUMNS.map((c) => c.key).filter((key) => key !== "note"),
-      "note",
+      ...previousColumns
+        .map((p) => p.key)
+        .filter((key) => key !== "description"),
+      ...DEFAULT_COLUMNS.map((c) => c.key),
     ]),
   ];
   const columns = ref(
@@ -104,13 +105,7 @@ export const useViewStore = defineStore("view", () => {
   function moveColumn(key: string, direction: -1 | 1) {
     const index = columns.value.findIndex((c) => c.key === key),
       target = index + direction;
-    if (
-      key === "note" ||
-      index <= 0 ||
-      target <= 0 ||
-      target >= columns.value.length - 1
-    )
-      return;
+    if (index <= 0 || target <= 0 || target >= columns.value.length) return;
     const [column] = columns.value.splice(index, 1);
     columns.value.splice(target, 0, column);
   }
@@ -118,13 +113,20 @@ export const useViewStore = defineStore("view", () => {
     if (
       source === target ||
       source === "description" ||
-      source === "note" ||
       target === "description"
     )
       return;
     const index = columns.value.findIndex((c) => c.key === source);
-    if (index < 1 || !columns.value.some((c) => c.key === target)) return;
+    if (
+      index < 1 ||
+      (target !== "actions" && !columns.value.some((c) => c.key === target))
+    )
+      return;
     const [column] = columns.value.splice(index, 1);
+    if (target === "actions") {
+      columns.value.push(column);
+      return;
+    }
     columns.value.splice(
       columns.value.findIndex((c) => c.key === target),
       0,

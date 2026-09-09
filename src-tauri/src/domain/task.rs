@@ -2,7 +2,7 @@ use chrono::Local;
 use serde::{Deserialize, Serialize};
 
 pub const TASK_TYPES: [&str; 3] = ["新增需求", "优化", "BUG"];
-pub const STATUSES: [&str; 6] = ["未开始", "进行中", "待验证", "已完成", "验收未通过", "验收通过"];
+pub const STATUSES: [&str; 7] = ["未开始", "进行中", "待验证", "已完成", "验收未通过", "验收通过", "取消"];
 /// Agent 仅可切到的状态（验收类状态留给用户，规划 §5.4）
 pub const AGENT_STATUSES: [&str; 3] = ["进行中", "待验证", "已完成"];
 pub const SUBMITTERS: [&str; 2] = ["用户", "Agent"];
@@ -48,6 +48,7 @@ pub fn is_agent_status(s: &str) -> bool {
 /// 状态迁移统一入口（规划 §7）：返回新的 finished_at。
 /// 规则：每次进入「待验证」「已完成」或「验收通过」刷新为当前时间（latest-wins）；
 /// 离开这几个状态不清空。「验收通过」是终态，必须记完成时间。
+/// 「取消」不刷新也不清空 finished_at。
 pub fn transition(new_status: &str, current_finished_at: Option<String>) -> Option<String> {
     if new_status == "待验证" || new_status == "已完成" || new_status == "验收通过" {
         Some(now_str())
@@ -97,9 +98,20 @@ mod tests {
     }
 
     #[test]
+    fn transition_keeps_finished_at_on_cancel() {
+        // 取消：不刷新完成时间
+        assert_eq!(transition("取消", None), None);
+        // 已有完成时间的任务被取消：保留原时间
+        let f = transition("已完成", None);
+        assert_eq!(transition("取消", f.clone()), f);
+    }
+
+    #[test]
     fn enums_are_stable() {
-        assert_eq!(STATUSES.len(), 6);
+        assert_eq!(STATUSES.len(), 7);
+        assert!(is_valid_status("取消"));
         assert!(AGENT_STATUSES.iter().all(|s| is_valid_status(s)));
         assert!(!is_agent_status("验收通过"));
+        assert!(!is_agent_status("取消"), "取消只能由网页端设置");
     }
 }

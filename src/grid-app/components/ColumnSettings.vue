@@ -5,7 +5,7 @@ import { useViewStore } from "../stores/viewStore";
 const view = useViewStore(),
   dragging = ref("");
 function start(event: DragEvent, key: string) {
-  if (key === "description" || key === "note") {
+  if (key === "description") {
     event.preventDefault();
     return;
   }
@@ -27,7 +27,7 @@ function drop(event: DragEvent, key: string) {
     :key="column.key"
     class="column-option"
     :class="{ dragging: dragging === column.key }"
-    :draggable="column.key !== 'description' && column.key !== 'note'"
+    :draggable="column.key !== 'description'"
     @dragstart="start($event, column.key)"
     @dragover.prevent
     @drop.prevent="drop($event, column.key)"
@@ -40,10 +40,8 @@ function drop(event: DragEvent, key: string) {
         :disabled="column.key === 'description'"
       /><UiIcon :name="column.icon" :size="14" />{{ column.label }}</label
     >
-    <span
-      v-if="column.key === 'description' || column.key === 'note'"
-      class="subtle column-fixed"
-      >{{ column.key === "description" ? "固定主列" : "固定末列" }}</span
+    <span v-if="column.key === 'description'" class="subtle column-fixed"
+      >固定主列</span
     >
     <template v-else
       ><button
@@ -61,6 +59,19 @@ function drop(event: DragEvent, key: string) {
       >
         <UiIcon name="down" :size="12" /></button
     ></template>
+  </div>
+  <div
+    class="column-option"
+    @dragover.prevent
+    @drop.prevent="drop($event, 'actions')"
+  >
+    <label class="column-option-label"
+      ><UiIcon name="density" :size="12" class="subtle" /><input
+        type="checkbox"
+        checked
+        disabled
+      /><UiIcon name="more" :size="14" />操作</label
+    ><span class="subtle column-fixed">固定末列</span>
   </div>
   <div class="menu-divider"></div>
   <button class="menu-item" @click="view.reset()">

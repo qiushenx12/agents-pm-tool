@@ -124,7 +124,7 @@ it("clears the active cell when clicking outside the task cells", async () => {
   expect(document.activeElement).not.toBe(descriptionCell);
 });
 
-it("fills the table with the last column and resizes only its left neighbor", async () => {
+it("keeps actions fixed last while notes remain a resizable data column", async () => {
   window.history.replaceState(null, "", "/");
   localStorage.clear();
   pinia = createPinia();
@@ -159,26 +159,44 @@ it("fills the table with the last column and resizes only its left neighbor", as
   app.mount(host);
 
   const view = useViewStore(pinia);
-  const penultimate = view.visibleColumns[view.visibleColumns.length - 2];
-  const originalWidth = penultimate.width;
+  const note = view.columns.find((column) => column.key === "note")!;
+  const originalWidth = note.width;
+  const leftWidths = view.visibleColumns
+    .filter((column) => column.key !== "note")
+    .map((column) => [column.key, column.width]);
   const table = host.querySelector<HTMLTableElement>(".task-grid")!;
   const originalTableWidth = Number.parseFloat(table.style.width);
-  const lastCell = table.querySelector<HTMLElement>("tbody .task-row td:last-child");
-  const lastColumn = table.querySelector<HTMLElement>("colgroup col:last-child");
-  const lastHeader = table.querySelector<HTMLElement>('thead th[data-column="note"]');
-  const penultimateHeader = table.querySelector<HTMLElement>(
-    `thead th[data-column="${penultimate.key}"]`,
-  )!;
+  const noteCell = table.querySelector<HTMLElement>(
+    'tbody .task-row td[data-column="note"]',
+  );
+  const actionCell = table.querySelector<HTMLElement>(
+    "tbody .task-row td:last-child",
+  );
+  const noteColumn = table.querySelector<HTMLElement>(
+    "colgroup col:nth-last-child(2)",
+  );
+  const actionColumn = table.querySelector<HTMLElement>(
+    "colgroup col:last-child",
+  );
+  const noteHeader = table.querySelector<HTMLElement>(
+    'thead th[data-column="note"]',
+  );
   expect(table.querySelector(".grid-filler")).toBeNull();
-  expect(lastCell?.dataset.column).toBe("note");
-  expect(lastColumn?.style.width).toBe("");
-  expect(lastHeader?.querySelector(".col-resize")).toBeNull();
-  expect(penultimateHeader.querySelector(".col-resize")).not.toBeNull();
+  expect(noteCell?.nextElementSibling).toBe(actionCell);
+  expect(noteCell?.textContent).toBe("末列备注");
+  expect(actionCell?.dataset.column).toBe("actions");
+  expect(actionCell?.querySelector("button")?.textContent).toContain(
+    "复制 Prompt",
+  );
+  expect(noteColumn?.style.width).toBe("240px");
+  expect(actionColumn?.style.width).toBe("");
+  expect(noteHeader?.draggable).toBe(true);
+  expect(noteHeader?.querySelector(".col-resize")).not.toBeNull();
   expect(
-    host.querySelector('[data-column="note"] .note-cell')?.textContent,
-  ).toBe("末列备注");
+    table.querySelector('[data-column="actions"] .col-resize'),
+  ).toBeNull();
 
-  penultimateHeader
+  noteHeader!
     .querySelector<HTMLElement>(".col-resize")!
     .dispatchEvent(
       new MouseEvent("pointerdown", { bubbles: true, clientX: 200 }),
@@ -187,6 +205,71 @@ it("fills the table with the last column and resizes only its left neighbor", as
   window.dispatchEvent(new MouseEvent("pointerup"));
   await nextTick();
 
-  expect(penultimate.width).toBe(originalWidth + 40);
+  expect(note.width).toBe(originalWidth + 40);
+  expect(
+    view.visibleColumns
+      .filter((column) => column.key !== "note")
+      .map((column) => [column.key, column.width]),
+  ).toEqual(leftWidths);
   expect(Number.parseFloat(table.style.width)).toBe(originalTableWidth + 40);
+});
+
+it("copies the concise task prompt from the ID cell button", async () => {
+  window.history.replaceState(null, "", "/");
+  localStorage.clear();
+  pinia = createPinia();
+  const task: Task = {
+    id: "202609091504000001",
+    seq: 1,
+    project: "agents-pm-tool",
+    type: "新增需求",
+    status: "未开始",
+    description: "ID 字段复制按钮",
+    note: "",
+    submitter: "用户",
+    created_at: "",
+    finished_at: null,
+    updated_at: "",
+    position: 1,
+  };
+  vi.mocked(api.pageTasks).mockResolvedValue({
+    items: [task],
+    total: 1,
+    page: 1,
+    page_size: 100,
+    groups: [],
+    anchor_found: null,
+  });
+  const tasks = useTaskStore(pinia);
+  const view = useViewStore(pinia);
+  view.columns.find((column) => column.key === "id")!.visible = true;
+  await tasks.refresh();
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp({ render: () => h(TaskGrid) });
+  app.use(pinia);
+  app.mount(host);
+
+  const idCell = host.querySelector<HTMLElement>(
+    `[data-task-id="${task.id}"][data-column="id"]`,
+  );
+  const button = idCell?.querySelector<HTMLButtonElement>(
+    ".id-prompt-button",
+  );
+  expect(idCell?.textContent).toContain(task.id);
+  expect(button?.getAttribute("aria-label")).toBe(
+    `复制任务 Prompt：${task.id}`,
+  );
+
+  button?.click();
+  await vi.waitFor(() => {
+    expect(writeText).toHaveBeenCalledWith(
+      `请使用 pm-cli 获取任务id=${task.id}的内容并完成任务`,
+    );
+  });
 });

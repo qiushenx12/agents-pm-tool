@@ -69,6 +69,33 @@ export function readFiltersFromUrl() {
     ...Object.fromEntries(FILTER_KEYS.map((k) => [k, p.getAll(k)])),
   });
 }
+const FILTER_PARAMS = [
+  ...FILTER_KEYS,
+  "keyword",
+  "sort_by",
+  "sort_order",
+  "group_by",
+] as const;
+export function urlHasFilterParams() {
+  const p = new URLSearchParams(window.location.search);
+  return FILTER_PARAMS.some((k) => p.has(k));
+}
+const STORAGE_KEY = "pm-grid-filters-v1";
+export function readSavedFilters(): FilterState | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? sanitizeFilters(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+export function saveFilters(f: FilterState) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(f));
+  } catch {
+    /* browsing without storage still works */
+  }
+}
 export function writeFiltersToUrl(f: FilterState) {
   const p = new URLSearchParams();
   FILTER_KEYS.forEach((k) => f[k].forEach((v) => p.append(k, v)));

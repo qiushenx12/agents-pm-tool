@@ -16,7 +16,7 @@ fn seed(conn: &mut rusqlite::Connection, count: usize) -> Vec<String> {
             let task = tasks::create(
                 conn,
                 &tasks::NewTask {
-                    project: "agents-pm-tool",
+                    project: "default-project",
                     task_type: if index % 2 == 0 { "优化" } else { "BUG" },
                     description: &format!("验收任务 {index}"),
                     note: "",

@@ -65,7 +65,7 @@ it("never claims a saved view after storage failure", () => {
   expect(() => saved.save("不能保存")).toThrow("无法保存");
   expect(saved.views).toHaveLength(0);
 });
-it("keeps description pinned while persisting column order and migrating old preferences", async () => {
+it("keeps only description pinned while persisting movable notes and migrating old preferences", async () => {
   localStorage.setItem(
     "pm-table-view-v1",
     JSON.stringify({
@@ -86,19 +86,22 @@ it("keeps description pinned while persisting column order and migrating old pre
   view.moveColumn("note", -1);
   view.moveBefore("note", "status");
   await nextTick();
-  expect(view.columns.slice(0, 3).map((c) => c.key)).toEqual([
+  expect(view.columns.slice(0, 4).map((c) => c.key)).toEqual([
     "description",
     "project",
+    "note",
     "status",
   ]);
   const persisted = JSON.parse(localStorage.getItem("pm-table-view-v1")!);
   expect(persisted.columns[1].key).toBe("project");
   expect(view.columns.some((c) => c.key === "obsolete")).toBe(false);
   expect(view.columns).toHaveLength(10);
-  expect(view.columns[view.columns.length - 1]).toMatchObject({
+  expect(view.columns[2]).toMatchObject({
     key: "note",
     label: "备注",
     visible: true,
   });
-  expect(view.visibleColumns[view.visibleColumns.length - 1]?.key).toBe("note");
+  expect(view.visibleColumns.map((column) => column.key)).toContain("note");
+  view.moveBefore("note", "actions");
+  expect(view.columns[view.columns.length - 1]?.key).toBe("note");
 });

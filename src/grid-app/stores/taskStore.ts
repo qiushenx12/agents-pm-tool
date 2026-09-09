@@ -14,7 +14,10 @@ import {
   FILTER_KEYS,
   filterFingerprint,
   readFiltersFromUrl,
+  readSavedFilters,
   sanitizeFilters,
+  saveFilters,
+  urlHasFilterParams,
   writeFiltersToUrl,
   type FilterState,
 } from "./filters";
@@ -25,7 +28,14 @@ export const useTaskStore = defineStore("tasks", () => {
   const loading = ref(false),
     error = ref(""),
     initialized = ref(false);
-  const filters = ref<FilterState>(readFiltersFromUrl());
+  // URL 带筛选参数时以 URL 为准（分享链接场景）；否则从 localStorage 恢复上次状态。
+  const filters = ref<FilterState>(
+    urlHasFilterParams()
+      ? readFiltersFromUrl()
+      : (readSavedFilters() ?? readFiltersFromUrl()),
+  );
+  writeFiltersToUrl(filters.value);
+  saveFilters(filters.value);
   const page = ref(1),
     pageSize = ref(100),
     total = ref(0),
@@ -365,6 +375,7 @@ export const useTaskStore = defineStore("tasks", () => {
       generation++;
       controller?.abort();
       writeFiltersToUrl(f);
+      saveFilters(f);
       page.value = 1;
       const next = filterFingerprint(f);
       if (next !== fingerprint) {

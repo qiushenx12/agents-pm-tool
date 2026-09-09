@@ -50,6 +50,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.resetAllMocks();
   window.history.replaceState(null, "", "/");
+  localStorage.clear();
   pinia = createPinia();
   setActivePinia(pinia);
   vi.mocked(api.pageTasks).mockResolvedValue(result([]));

@@ -5,10 +5,12 @@ import { GROUP_FIELDS, type GroupField } from "@/shared/types";
 import UiIcon from "@/shared/UiIcon.vue";
 import UiPopover from "@/shared/UiPopover.vue";
 import TaskField from "./TaskField.vue";
+import TaskActions from "./TaskActions.vue";
 import DescriptionEditor from "./DescriptionEditor.vue";
 import AttachmentPreviewDialog from "./AttachmentPreviewDialog.vue";
 import { api } from "../api/client";
 import { attachmentKind } from "../attachmentKind";
+import { buildAgentIdPrompt } from "../taskActions";
 import { useTaskStore } from "../stores/taskStore";
 import { useViewStore } from "../stores/viewStore";
 import { askConfirm, copyText, errorText, notify } from "@/shared/feedback";
@@ -107,7 +109,6 @@ const draggingColumn = ref("");
 function dragColumn(event: DragEvent, key: string) {
   if (
     key === "description" ||
-    key === "note" ||
     (event.target as HTMLElement).closest("button,.col-resize,.popover-anchor")
   ) {
     event.preventDefault();
@@ -334,8 +335,11 @@ watch(
       active.value.key = "description";
   },
 );
-const widths = computed(() =>
-  view.visibleColumns.reduce((n, c) => n + c.width, 64),
+const ACTION_COLUMN_WIDTH = 116;
+const widths = computed(
+  () =>
+    view.visibleColumns.reduce((n, c) => n + c.width, 64) +
+    ACTION_COLUMN_WIDTH,
 );
 const currentEditingTask = computed(() =>
   editingId.value
@@ -563,14 +567,11 @@ defineExpose({ reveal });
       <colgroup>
         <col style="width: 64px" />
         <col
-          v-for="(column, colIndex) in view.visibleColumns"
+          v-for="column in view.visibleColumns"
           :key="column.key"
-          :style="
-            colIndex === view.visibleColumns.length - 1
-              ? undefined
-              : { width: column.width + 'px' }
-          "
+          :style="{ width: column.width + 'px' }"
         />
+        <col />
       </colgroup>
       <thead>
         <tr>
@@ -590,14 +591,14 @@ defineExpose({ reveal });
             />
           </th>
           <th
-            v-for="(column, colIndex) in view.visibleColumns"
+            v-for="column in view.visibleColumns"
             :key="column.key"
             :data-column="column.key"
             :class="{
               'pinned-description': column.key === 'description',
               'column-dragging': draggingColumn === column.key,
             }"
-            :draggable="column.key !== 'description' && column.key !== 'note'"
+            :draggable="column.key !== 'description'"
             @dragstart="dragColumn($event, column.key)"
             @dragover.prevent
             @drop.prevent="dropColumn($event, column.key)"
@@ -607,11 +608,29 @@ defineExpose({ reveal });
               <UiIcon :name="column.icon" :size="14" /><span>{{
                 column.label
               }}</span
-              ><UiIcon
+              ><button
                 v-if="tasks.filters.sort_by === column.key"
-                :name="tasks.filters.sort_order === 'asc' ? 'up' : 'down'"
-                :size="12"
-              /><UiPopover
+                class="sort-toggle"
+                :aria-label="
+                  tasks.filters.sort_order === 'asc'
+                    ? '点击改为降序排列'
+                    : '点击改为升序排列'
+                "
+                :title="
+                  tasks.filters.sort_order === 'asc'
+                    ? '点击改为降序排列'
+                    : '点击改为升序排列'
+                "
+                @click="
+                  tasks.filters.sort_order =
+                    tasks.filters.sort_order === 'asc' ? 'desc' : 'asc'
+                "
+              >
+                <UiIcon
+                  :name="tasks.filters.sort_order === 'asc' ? 'up' : 'down'"
+                  :size="12"
+                /></button
+              ><UiPopover
                 :width="200"
                 align="right"
                 :label="column.label + '字段设置'"
@@ -707,17 +726,26 @@ defineExpose({ reveal });
               >
             </div>
             <span
-              v-if="colIndex < view.visibleColumns.length - 1"
               class="col-resize"
               @pointerdown="resize($event, column.key)"
             ></span>
+          </th>
+          <th
+            class="task-actions-column"
+            data-column="actions"
+            @dragover.prevent
+            @drop.prevent="dropColumn($event, 'actions')"
+          >
+            <div class="column-heading task-actions-heading">
+              <UiIcon name="more" :size="14" /><span>操作</span>
+            </div>
           </th>
         </tr>
       </thead>
       <tbody>
         <template v-for="group in pageGroups" :key="group.value">
           <tr v-if="tasks.filters.group_by" class="group-row">
-            <td :colspan="view.visibleColumns.length + 1">
+            <td :colspan="view.visibleColumns.length + 2">
               <div class="group-heading">
                 <button
                   class="group-toggle"
@@ -978,17 +1006,30 @@ defineExpose({ reveal });
                     >{{ task.attachment_count || "—" }}</template
                   ></span
                 >
-                <span
-                  v-else-if="column.key === 'id'"
-                  class="cell-id"
-                  :title="task.id"
-                  >{{ task.id }}</span
-                >
+                <div v-else-if="column.key === 'id'" class="id-cell">
+                  <span class="cell-id" :title="task.id">{{ task.id }}</span
+                  ><button
+                    type="button"
+                    class="icon-btn id-prompt-button"
+                    :aria-label="'复制任务 Prompt：' + task.id"
+                    title="复制任务 Prompt"
+                    @click.stop="copyText(buildAgentIdPrompt(task))"
+                  >
+                    <UiIcon name="copy" :size="13" />
+                  </button>
+                </div>
                 <span v-else class="cell-time">{{
                   formatDateTime(
                     task[column.key as "created_at" | "finished_at"],
                   ) || "—"
                 }}</span>
+              </td>
+              <td
+                role="gridcell"
+                class="task-actions-column"
+                data-column="actions"
+              >
+                <TaskActions :task="task" />
               </td>
             </tr>
           </template></template

@@ -3,7 +3,7 @@
 功能与 cc-launcher/build.py 对齐：
 - version.json 驱动的版本管理（发布后自动递增 patch，0.0.9 → 0.1.0）
 - 版本号同步 package.json / package-lock.json / tauri.conf.json / Cargo.toml / Cargo.lock
-- npm run tauri build（beforeBuildCommand = build:all，会连带编译前端 + pm-cli externalBin）
+- npm run tauri build（beforeBuildCommand = build:all，会连带编译前端 + pm-cli）
 - 产物归档到 src-tauri/release-bundle/nsis/，bundle 目录里保留历史安装包
 - 打包完成后交互确认测试是否通过，通过则记录为已发布
 
@@ -368,7 +368,7 @@ def run_build(version: str, product_name: str) -> bool:
         for artifact in existing:
             shutil.copy2(artifact, backup_path / artifact.name)
 
-        # tauri build 的 beforeBuildCommand 是 build:all（前端 + pm-cli externalBin）
+        # tauri build 的 beforeBuildCommand 是 build:all（前端 + pm-cli）
         started_at = perf_counter()
         result = subprocess.run([npm, "run", "tauri", "build"], cwd=PROJECT_DIR)
         print(f"Tauri 构建耗时：{perf_counter() - started_at:.2f} 秒。")

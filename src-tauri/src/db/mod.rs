@@ -9,7 +9,7 @@ use rusqlite::Connection;
 
 use crate::error::ApiResult;
 
-const USER_VERSION: i32 = 5;
+const USER_VERSION: i32 = 7;
 
 fn configure(conn: &Connection) -> ApiResult<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -23,6 +23,8 @@ fn configure(conn: &Connection) -> ApiResult<()> {
 /// v3：projects 增加 git_url（远端仓库地址，供 Agent 查询）
 /// v4：tasks 增加 position（手动排序位置，实数中点插入；初始 = seq）
 /// v5：tasks 增加 note（用户维护的备注）
+/// v6：tasks 状态 CHECK 增加「取消」（SQLite 不能 ALTER CHECK，需重建表）
+/// v7：meta 增加 id_ts / id_suffix（任务 ID 后缀改为同一秒内递增，0000 起）
 fn migrate(conn: &Connection) -> ApiResult<()> {
     let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version < 1 {
@@ -52,6 +54,47 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
     if version < 5 {
         conn.execute_batch("ALTER TABLE tasks ADD COLUMN note TEXT NOT NULL DEFAULT '';")?;
         conn.pragma_update(None, "user_version", 5)?;
+    }
+    if version < 6 {
+        // attachments 外键引用 tasks(id)，重建期间必须临时关闭外键，避免 DROP 时级联。
+        // PRAGMA foreign_keys 不能在事务内修改，因此在 BEGIN 之前关闭。
+        conn.pragma_update(None, "foreign_keys", "OFF")?;
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE tasks_v6 (
+               id           TEXT PRIMARY KEY,
+               seq          INTEGER NOT NULL UNIQUE,
+               project      TEXT NOT NULL,
+               type         TEXT NOT NULL CHECK (type IN ('新增需求','优化','BUG')),
+               description  TEXT NOT NULL DEFAULT '',
+               status       TEXT NOT NULL DEFAULT '未开始'
+                            CHECK (status IN ('未开始','进行中','待验证','已完成','验收未通过','验收通过','取消')),
+               submitter    TEXT NOT NULL CHECK (submitter IN ('用户','Agent')),
+               created_at   TEXT NOT NULL,
+               finished_at  TEXT,
+               updated_at   TEXT NOT NULL,
+               position     REAL NOT NULL DEFAULT 0,
+               note         TEXT NOT NULL DEFAULT ''
+             );
+             INSERT INTO tasks_v6
+               SELECT id, seq, project, type, description, status, submitter,
+                      created_at, finished_at, updated_at, position, note FROM tasks;
+             DROP TABLE tasks;
+             ALTER TABLE tasks_v6 RENAME TO tasks;
+             CREATE INDEX idx_tasks_filter ON tasks(project, type, status, submitter);
+             CREATE INDEX idx_tasks_created ON tasks(created_at DESC);
+             COMMIT;",
+        )?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.pragma_update(None, "user_version", 6)?;
+    }
+    if version < 7 {
+        // 旧库没有同秒后缀计数器；id_ts 置空使首个新 ID 从 0000 开始。
+        // 旧逻辑后缀 = 全局 seq（>= 1），永不产生 0000 后缀，故新旧 ID 不冲突。
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO meta(key, value) VALUES ('id_ts', ''), ('id_suffix', '0');",
+        )?;
+        conn.pragma_update(None, "user_version", 7)?;
     }
     debug_assert!(version <= USER_VERSION);
     Ok(())
@@ -95,6 +138,15 @@ mod tests {
     }
 
     #[test]
+    fn fresh_database_contains_default_project() {
+        let conn = open_memory().unwrap();
+        let projects = projects::list(&conn).unwrap();
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "default-project");
+    }
+
+    #[test]
     fn version_four_database_migrates_existing_tasks_with_empty_note() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(schema::SCHEMA_V1).unwrap();
@@ -119,5 +171,102 @@ mod tests {
             .unwrap();
         assert_eq!(note, "");
         assert_eq!(task_columns(&conn).last().map(String::as_str), Some("note"));
+    }
+
+    #[test]
+    fn version_five_database_gains_cancel_status_without_losing_data() {
+        let conn = Connection::open_in_memory().unwrap();
+        // 模拟 v5 旧库：SCHEMA_V1 + v2~v5 列，但 CHECK 不含「取消」
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+               id           TEXT PRIMARY KEY,
+               seq          INTEGER NOT NULL UNIQUE,
+               project      TEXT NOT NULL,
+               type         TEXT NOT NULL CHECK (type IN ('新增需求','优化','BUG')),
+               description  TEXT NOT NULL DEFAULT '',
+               status       TEXT NOT NULL DEFAULT '未开始'
+                            CHECK (status IN ('未开始','进行中','待验证','已完成','验收未通过','验收通过')),
+               submitter    TEXT NOT NULL CHECK (submitter IN ('用户','Agent')),
+               created_at   TEXT NOT NULL,
+               finished_at  TEXT,
+               updated_at   TEXT NOT NULL,
+               position     REAL NOT NULL DEFAULT 0,
+               note         TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE projects (
+               name TEXT PRIMARY KEY, color TEXT NOT NULL DEFAULT '#007AFF',
+               sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+               local_path TEXT NOT NULL DEFAULT '', git_url TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE attachments (
+               id TEXT PRIMARY KEY,
+               task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+               filename TEXT NOT NULL, stored_path TEXT NOT NULL,
+               mime TEXT, size INTEGER NOT NULL, created_at TEXT NOT NULL
+             );
+             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta(key, value) VALUES ('id_seq', '1');
+             INSERT INTO projects(name, color, sort_order, created_at)
+               VALUES ('p', '#007AFF', 0, '2026-01-01');
+             INSERT INTO tasks
+               (id, seq, project, type, description, status, submitter, created_at, updated_at, position, note)
+             VALUES
+               ('t1', 1, 'p', 'BUG', '旧任务', '已完成', '用户', '2026-01-01', '2026-01-02', 1, '备注');
+             INSERT INTO attachments(id, task_id, filename, stored_path, size, created_at)
+             VALUES ('a1', 't1', 'f.png', 'x/f.png', 10, '2026-01-01');",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 5).unwrap();
+
+        migrate(&conn).unwrap();
+
+        // 旧任务与备注保留
+        let (status, note): (String, String) = conn
+            .query_row("SELECT status, note FROM tasks WHERE id = 't1'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((status.as_str(), note.as_str()), ("已完成", "备注"));
+        // 附件未被级联删除
+        let attachments: i64 = conn
+            .query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(attachments, 1);
+        // 新 CHECK 允许「取消」
+        conn.execute("UPDATE tasks SET status = '取消' WHERE id = 't1'", [])
+            .unwrap();
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, USER_VERSION);
+    }
+
+    #[test]
+    fn version_six_database_gains_per_second_id_suffix() {
+        let conn = Connection::open_in_memory().unwrap();
+        // 模拟 v6 旧库：meta 只有 id_seq，没有 id_ts / id_suffix
+        conn.execute_batch(schema::SCHEMA_V1).unwrap();
+        conn.execute_batch(schema::SEED).unwrap();
+        conn.execute("UPDATE meta SET value = '7' WHERE key = 'id_seq'", [])
+            .unwrap();
+        conn.pragma_update(None, "user_version", 6).unwrap();
+
+        migrate(&conn).unwrap();
+
+        let (id, seq) = crate::domain::idgen::next_task_id(&conn).unwrap();
+        // 后缀从 0000 开始，全局 seq 在旧值上继续递增
+        assert!(id.ends_with("0000"));
+        assert_eq!(seq, 8);
+        let (id2, _) = crate::domain::idgen::next_task_id(&conn).unwrap();
+        if id2[..14] == id[..14] {
+            assert!(id2.ends_with("0001"));
+        } else {
+            // 两次调用跨过一秒边界时，后缀重新从 0000 开始
+            assert!(id2.ends_with("0000"));
+        }
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, USER_VERSION);
     }
 }

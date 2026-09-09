@@ -402,7 +402,7 @@ mod tests {
         create(
             conn,
             &NewTask {
-                project: "agents-pm-tool",
+                project: "default-project",
                 task_type: "优化",
                 description: desc,
                 note: "",

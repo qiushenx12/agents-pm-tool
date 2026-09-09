@@ -22,7 +22,7 @@ const EXIT_VALIDATION: u8 = 2;
         权限边界：Agent 不可修改项目/类型、不可删任务、不可操作附件、不可切验收类状态（验收通过/未通过），\n\
         只能修改自己（submitter=Agent）创建的任务描述；项目选项仅可只读（projects 子命令）。\n\n\
         示例：\n  \
-        pm-cli create --project agents-pm-tool --type BUG --description \"登录页白屏\"\n  \
+        pm-cli create --project default-project --type BUG --description \"登录页白屏\"\n  \
         pm-cli list --status 进行中 --json\n  \
         pm-cli status 202609021050340001 --to 待验证"
 )]

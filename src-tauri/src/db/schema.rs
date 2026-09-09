@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   type         TEXT NOT NULL CHECK (type IN ('新增需求','优化','BUG')),
   description  TEXT NOT NULL DEFAULT '',
   status       TEXT NOT NULL DEFAULT '未开始'
-               CHECK (status IN ('未开始','进行中','待验证','已完成','验收未通过','验收通过')),
+               CHECK (status IN ('未开始','进行中','待验证','已完成','验收未通过','验收通过','取消')),
   submitter    TEXT NOT NULL CHECK (submitter IN ('用户','Agent')),
   created_at   TEXT NOT NULL,
   finished_at  TEXT,
@@ -40,5 +40,5 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 pub const SEED: &str = r#"
 INSERT OR IGNORE INTO meta(key, value) VALUES ('id_seq', '0');
 INSERT OR IGNORE INTO projects(name, color, sort_order, created_at)
-VALUES ('agents-pm-tool', '#007AFF', 0, datetime('now', 'localtime'));
+VALUES ('default-project', '#007AFF', 0, datetime('now', 'localtime'));
 "#;

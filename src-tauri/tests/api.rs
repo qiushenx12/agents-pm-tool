@@ -55,7 +55,7 @@ impl TestApp {
 
 async fn create_task(app: &TestApp, via_agent: bool, desc: &str) -> Value {
     let body = json!({
-        "project": "agents-pm-tool",
+        "project": "default-project",
         "type": "新增需求",
         "description": desc,
     });
@@ -98,7 +98,7 @@ async fn web_crud_and_filter() {
     let res = app
         .web(reqwest::Method::POST, "/tasks")
         .json(&json!({
-            "project": "agents-pm-tool",
+            "project": "default-project",
             "type": "优化",
             "note": "创建时备注"
         }))
@@ -268,6 +268,10 @@ async fn finished_at_rules() {
     let f3 = t["finished_at"].as_str().unwrap().to_string();
     let t = patch("验收通过").await;
     assert!(t["finished_at"].as_str().unwrap() >= f3.as_str());
+    // 取消 → 不刷新也不清空完成时间
+    let t = patch("取消").await;
+    assert_eq!(t["status"].as_str().unwrap(), "取消");
+    assert!(t["finished_at"].as_str().is_some());
 }
 
 /// 验收通过直达路径：未开始 → 验收通过，完成时间必须有值
@@ -311,8 +315,8 @@ async fn agent_permission_matrix() {
     // Agent 创建：三必填缺一不可
     for body in [
         json!({"type": "BUG", "description": "x"}),
-        json!({"project": "agents-pm-tool", "description": "x"}),
-        json!({"project": "agents-pm-tool", "type": "BUG"}),
+        json!({"project": "default-project", "description": "x"}),
+        json!({"project": "default-project", "type": "BUG"}),
     ] {
         let res = app
             .agent(reqwest::Method::POST, "/tasks")
@@ -336,7 +340,7 @@ async fn agent_permission_matrix() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|p| p == "agents-pm-tool"));
+        .any(|p| p == "default-project"));
 
     let agent_task = create_task(&app, true, "Agent 的任务").await;
     let agent_id = agent_task["id"].as_str().unwrap().to_string();
@@ -358,7 +362,7 @@ async fn agent_permission_matrix() {
     }
 
     // Agent 切验收类状态 → 403
-    for s in ["验收通过", "验收未通过", "未开始"] {
+    for s in ["验收通过", "验收未通过", "未开始", "取消"] {
         let res = app
             .agent(reqwest::Method::PATCH, &format!("/tasks/{agent_id}/status"))
             .json(&json!({"status": s}))
@@ -455,7 +459,7 @@ async fn idgen_concurrent_unique() {
                 .post(format!("{base}/api/agent/tasks"))
                 .bearer_auth(token)
                 .json(&json!({
-                    "project": "agents-pm-tool",
+                    "project": "default-project",
                     "type": "优化",
                     "description": format!("并发 {i}"),
                 }))
@@ -508,14 +512,14 @@ async fn project_rename_cascade_and_delete_protection() {
         .unwrap();
     assert_eq!(res.status(), 201);
 
-    let t = create_task(&app, false, "属于 agents-pm-tool").await;
+    let t = create_task(&app, false, "属于 default-project").await;
     let id = t["id"].as_str().unwrap().to_string();
 
     // 重命名 → 存量任务级联更新
     let res = app
         .web(
             reqwest::Method::PATCH,
-            "/projects/agents-pm-tool",
+            "/projects/default-project",
         )
         .json(&json!({"new_name": "pm工具"}))
         .send()

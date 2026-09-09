@@ -15,6 +15,7 @@ const statusClass = computed(() => {
     已完成: "status-done",
     验收未通过: "status-rejected",
     验收通过: "status-accepted",
+    取消: "status-canceled",
   };
   return map[props.task.status];
 });

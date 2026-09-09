@@ -454,6 +454,7 @@
 .column-heading > span {
   overflow: hidden;
   text-overflow: ellipsis;
+  padding-right: 14px;
 }
 .column-heading > .ui-icon {
   color: var(--text-tertiary);
@@ -497,6 +498,31 @@ th:focus-within .column-menu {
 .task-grid th.pinned-index,
 .task-grid th.pinned-description {
   z-index: 7;
+}
+.task-grid .task-actions-column {
+  position: sticky;
+  right: 0;
+  z-index: 3;
+  padding: 0 8px;
+  box-shadow: -1px 0 0 var(--separator);
+}
+.task-grid th.task-actions-column {
+  z-index: 7;
+}
+.task-actions-heading,
+.task-actions {
+  justify-content: center;
+}
+.task-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+}
+.task-action-button {
+  max-width: 100%;
+  padding: 0 7px;
+  color: var(--text-secondary);
 }
 .task-grid .row-index {
   text-align: center;
@@ -616,9 +642,28 @@ th:focus-within .column-menu {
   font: 11px var(--font-mono);
   color: var(--text-secondary);
   display: block;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.id-cell {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 100%;
+  gap: 4px;
+}
+.id-prompt-button {
+  flex: 0 0 auto;
+  width: 21px;
+  height: 23px;
+  opacity: 0;
+}
+.task-grid td[data-column="id"]:hover .id-prompt-button,
+.task-grid td[data-column="id"]:focus-within .id-prompt-button {
+  opacity: 1;
 }
 .submitter-tag {
   display: flex;
@@ -1258,8 +1303,24 @@ button.attachment-preview:focus-visible {
 .column-menu {
   background: var(--sidebar-bg);
 }
-.task-grid th:hover .column-heading > span {
-  padding-right: 14px;
+.sort-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.sort-toggle:hover,
+.sort-toggle:focus-visible {
+  color: var(--text-primary);
+  background: var(--active-bg);
 }
 .workspace-header {
   padding-top: 8px;

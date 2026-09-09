@@ -10,6 +10,7 @@ export const TASK_STATUSES = [
   "已完成",
   "验收未通过",
   "验收通过",
+  "取消",
 ] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 

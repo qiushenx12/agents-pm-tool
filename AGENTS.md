@@ -169,7 +169,7 @@ agents-pm-tool/
 
 ### ID 与时间
 
-- 任务 ID 在 SQLite 事务中生成，格式为本地时间前缀加全局递增序号；不要把 ID 生成移到前端或 CLI。
+- 任务 ID 在 SQLite 事务中生成，格式为本地时间前缀（`yyyymmddhhmmss`）加同一秒内递增的 4 位后缀（每秒从 0000 开始）；全局递增序号仅存于 `tasks.seq`，不要把 ID 生成移到前端或 CLI。
 - 任务每次进入 `待验证`、`已完成`、`验收通过` 时刷新 `finished_at`。
 - 离开上述状态时不清空已有 `finished_at`。
 

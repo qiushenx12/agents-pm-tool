@@ -49,7 +49,7 @@ fn main() {
             stmt.execute(rusqlite::params![
                 format!("{id}{seq:05}"),
                 seq,
-                "agents-pm-tool",
+                "default-project",
                 types[i % 3],
                 format!("冒烟任务 #{i}：模拟描述文本，包含关键字 登录 支付 报表 导出 {}", i % 97),
                 statuses[i % 6],
