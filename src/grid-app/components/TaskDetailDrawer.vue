@@ -8,7 +8,9 @@ import UiPopover from "@/shared/UiPopover.vue";
 import TaskField from "./TaskField.vue";
 import DescriptionEditor from "./DescriptionEditor.vue";
 import AttachmentUploader from "./AttachmentUploader.vue";
+import AttachmentPreviewDialog from "./AttachmentPreviewDialog.vue";
 import { useUploadQueue, formatSize } from "./useUploadQueue";
+import { attachmentKind } from "../attachmentKind";
 import { askConfirm, copyText, errorText, notify } from "@/shared/feedback";
 import { formatDateTime, type Task, type Attachment } from "@/shared/types";
 const props = defineProps<{ task: Task }>();
@@ -19,7 +21,7 @@ const attachments = ref<Attachment[]>([]),
   attachmentError = ref(""),
   attachmentLoading = ref(false),
   showUpload = ref(false);
-const editing = ref(false),
+const editingField = ref<"description" | "note" | null>(null),
   editor = ref<InstanceType<typeof DescriptionEditor>>();
 const preview = ref<Attachment | null>(null);
 const missing = ref(false),
@@ -78,7 +80,7 @@ watch(
     missing.value = false;
     detailError.value = "";
     attachments.value = [];
-    editing.value = false;
+    editingField.value = null;
     queue.items.value = [];
     showUpload.value = false;
     preview.value = null;
@@ -101,12 +103,12 @@ onBeforeUnmount(() => {
 async function canLeave() {
   if (busy.value) return false;
   if (
-    (editing.value && editor.value?.dirty) ||
+    (editingField.value && editor.value?.dirty) ||
     queue.items.value.some((item) => item.state !== "done")
   )
     return askConfirm(
       "离开任务详情",
-      "未保存的描述或未上传的附件将被丢弃。",
+      "未保存的描述、备注或未上传的附件将被丢弃。",
       "离开",
     );
   return true;
@@ -165,14 +167,6 @@ async function removeTask() {
   } catch (e) {
     notify(errorText(e), "error");
   }
-}
-function mediaKind(a: Attachment) {
-  return /^image\//.test(a.mime ?? "") ||
-    /\.(png|jpe?g|gif|webp)$/i.test(a.filename)
-    ? "image"
-    : /^video\//.test(a.mime ?? "") || /\.(mp4|mov)$/i.test(a.filename)
-      ? "video"
-      : "file";
 }
 </script>
 <template>
@@ -289,19 +283,19 @@ function mediaKind(a: Attachment) {
       <div class="section-heading">
         <h3><UiIcon name="text" />任务描述</h3>
         <button
-          v-if="!editing && !missing"
+          v-if="!editingField && !missing"
           class="btn btn-ghost btn-sm"
-          @click="editing = true"
+          @click="editingField = 'description'"
         >
           <UiIcon name="edit" :size="14" />编辑
         </button>
       </div>
       <DescriptionEditor
-        v-if="editing"
+        v-if="editingField === 'description'"
         ref="editor"
         :task-id="current.id"
         :value="current.description"
-        @close="editing = false"
+        @close="editingField = null"
       />
       <p
         v-else
@@ -311,6 +305,33 @@ function mediaKind(a: Attachment) {
         {{
           current.description || "暂无描述，添加背景和验收要求，让任务更清晰。"
         }}
+      </p>
+    </section>
+    <section class="detail-section">
+      <div class="section-heading">
+        <h3><UiIcon name="edit" />备注</h3>
+        <button
+          v-if="!editingField && !missing"
+          class="btn btn-ghost btn-sm"
+          @click="editingField = 'note'"
+        >
+          <UiIcon name="edit" :size="14" />编辑
+        </button>
+      </div>
+      <DescriptionEditor
+        v-if="editingField === 'note'"
+        ref="editor"
+        :task-id="current.id"
+        :value="current.note"
+        field="note"
+        @close="editingField = null"
+      />
+      <p
+        v-else
+        class="detail-description"
+        :class="{ subtle: !current.note }"
+      >
+        {{ current.note || "暂无备注。" }}
       </p>
     </section>
     <section class="detail-section">
@@ -366,13 +387,13 @@ function mediaKind(a: Attachment) {
           class="attachment-item"
         >
           <button
-            v-if="mediaKind(attachment) !== 'file'"
+            v-if="attachmentKind(attachment) !== 'file'"
             class="attachment-thumbnail"
             :aria-label="'预览：' + attachment.filename"
             @click="preview = attachment"
           >
             <img
-              v-if="mediaKind(attachment) === 'image'"
+              v-if="attachmentKind(attachment) === 'image'"
               :src="api.attachmentUrl(attachment.id)"
               :alt="attachment.filename"
             /><UiIcon v-else name="expand" :size="24" /></button
@@ -414,21 +435,9 @@ function mediaKind(a: Attachment) {
       </button></template
     >
   </UiDialog>
-  <UiDialog
+  <AttachmentPreviewDialog
     v-if="preview"
-    :title="preview.filename"
-    :width="960"
+    :attachment="preview"
     @close="preview = null"
-    ><div class="media-preview">
-      <img
-        v-if="mediaKind(preview) === 'image'"
-        :src="api.attachmentUrl(preview.id)"
-        :alt="preview.filename"
-      /><video
-        v-else
-        :src="api.attachmentUrl(preview.id)"
-        controls
-        autoplay
-      /></div
-  ></UiDialog>
+  />
 </template>

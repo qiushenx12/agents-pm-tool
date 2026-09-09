@@ -42,6 +42,17 @@ const sorts = [
   { value: "seq", label: "创建顺序", icon: "sort" },
   { value: "manual", label: "手动排序", icon: "grip" },
 ] as const;
+/** 切入手动排序时先以当前视图为基线重铺位置，再从现状开始拖 */
+async function chooseSort(value: (typeof sorts)[number]["value"]) {
+  if (value === "manual" && tasks.filters.sort_by !== "manual") {
+    try {
+      await tasks.rebaseManualOrder();
+    } catch {
+      return; // 已 toast，保持当前排序
+    }
+  }
+  tasks.filters.sort_by = value;
+}
 </script>
 <template>
   <div class="table-toolbar">
@@ -105,7 +116,7 @@ const sorts = [
           v-for="sort in sorts"
           :key="sort.value"
           class="menu-item"
-          @click="tasks.filters.sort_by = sort.value"
+          @click="chooseSort(sort.value)"
         >
           <UiIcon :name="sort.icon" :size="14" />{{ sort.label
           }}<UiIcon
@@ -115,7 +126,7 @@ const sorts = [
           />
         </button>
         <div v-if="tasks.filters.sort_by === 'manual'" class="menu-empty">
-          拖动行首把手即可调整顺序
+          以当前顺序为起点，拖动行首把手调整
         </div>
         <template v-else>
           <div class="menu-divider"></div>

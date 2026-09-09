@@ -51,6 +51,7 @@ pub struct CreateTaskBody {
     #[serde(rename = "type")]
     pub task_type: Option<String>,
     pub description: Option<String>,
+    pub note: Option<String>,
 }
 
 pub async fn create_task(
@@ -73,6 +74,7 @@ pub async fn create_task(
             project: project.trim(),
             task_type: task_type.trim(),
             description: body.description.as_deref().unwrap_or(""),
+            note: body.note.as_deref().unwrap_or(""),
             submitter: "用户", // 网页端固定（规划 §4.3）
         },
     )?;
@@ -87,6 +89,7 @@ pub struct PatchTaskBody {
     #[serde(rename = "type")]
     pub task_type: Option<String>,
     pub description: Option<String>,
+    pub note: Option<String>,
     pub status: Option<String>,
 }
 
@@ -103,6 +106,7 @@ pub async fn patch_task(
             project: body.project,
             task_type: body.task_type,
             description: body.description,
+            note: body.note,
             status: body.status,
         },
     )?;
@@ -150,6 +154,24 @@ pub async fn reorder_task(
     drop(conn);
     core.events.notify();
     Ok(Json(task))
+}
+
+#[derive(Deserialize)]
+pub struct RebaseOrderBody {
+    pub sort_by: Option<String>,
+    pub sort_order: Option<String>,
+}
+
+/// 以指定排序重铺手动位置：切入手动排序时以当前视图为基线（视觉顺序不变）
+pub async fn rebase_order(
+    State(core): State<CoreState>,
+    Json(body): Json<RebaseOrderBody>,
+) -> ApiResult<impl IntoResponse> {
+    let conn = core.db.lock().unwrap();
+    tasks::rebase_positions(&conn, body.sort_by.as_deref(), body.sort_order.as_deref())?;
+    drop(conn);
+    core.events.notify();
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ── 项目选项 ─────────────────────────────────────────────

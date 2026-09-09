@@ -528,6 +528,12 @@ th:focus-within .column-menu {
   white-space: nowrap;
   flex: 1;
 }
+.note-cell {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .expand-record {
   width: 21px;
   height: 23px;
@@ -640,6 +646,62 @@ th:focus-within .column-menu {
   gap: 5px;
   color: var(--text-secondary);
   font-size: 12px;
+}
+.attachment-cell .spinner {
+  width: 11px;
+  height: 11px;
+}
+.attachment-preview-list {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.attachment-preview {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-left: -4px;
+  overflow: hidden;
+  flex: 0 0 24px;
+  color: var(--text-tertiary);
+  background: var(--sidebar-bg);
+  border: 1px solid var(--card);
+  border-radius: 5px;
+  padding: 0;
+}
+.attachment-preview:first-child {
+  margin-left: 0;
+}
+button.attachment-preview {
+  cursor: pointer;
+}
+button.attachment-preview:hover,
+button.attachment-preview:focus-visible {
+  z-index: 1;
+  color: var(--primary);
+  border-color: var(--primary);
+  outline: none;
+}
+.attachment-preview-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.attachment-preview-overflow {
+  margin-left: 3px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.task-grid td.attachment-drop-target {
+  background: var(--active-bg);
+  box-shadow: inset 0 0 0 1.5px var(--primary);
+}
+.attachment-drop-target .attachment-cell,
+.attachment-uploading .attachment-cell {
+  color: var(--primary);
+  font-weight: 600;
 }
 .add-record-row {
   display: flex;

@@ -15,6 +15,7 @@ pub struct Task {
     #[serde(rename = "type")]
     pub task_type: String,
     pub description: String,
+    pub note: String,
     pub status: String,
     pub submitter: String,
     pub created_at: String,

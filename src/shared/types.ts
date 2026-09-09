@@ -25,6 +25,7 @@ export interface Task {
   project: string;
   type: TaskType;
   description: string;
+  note: string;
   status: TaskStatus;
   submitter: Submitter;
   created_at: string; // 'YYYY-MM-DD HH:MM:SS' 本地时间

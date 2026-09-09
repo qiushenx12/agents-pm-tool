@@ -79,6 +79,10 @@ fn build_router(core: CoreState) -> Router {
             axum::routing::post(api_web::reorder_task),
         )
         .route(
+            "/tasks/rebase-order",
+            axum::routing::post(api_web::rebase_order),
+        )
+        .route(
             "/tasks/{id}/attachments",
             get(api_web::list_attachments).post(api_web::upload_attachment),
         )

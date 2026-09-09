@@ -11,12 +11,14 @@ vi.mock("@/grid-app/api/client", () => ({
     deleteTask: vi.fn(),
     batchTasks: vi.fn(),
     reorderTask: vi.fn(),
+    rebaseOrder: vi.fn(),
   },
 }));
 const task = (id: string, description = id): Task => ({
   id,
   seq: 1,
   description,
+  note: "",
   project: "项目",
   type: "优化",
   status: "未开始",
@@ -200,5 +202,23 @@ describe("task request coordination", () => {
       prev_id: undefined,
       next_id: "1",
     });
+  });
+  it("rebases manual order with the current sort before switching", async () => {
+    const store = useTaskStore();
+    store.filters.sort_by = "updated_at";
+    store.filters.sort_order = "asc";
+    vi.mocked(api.rebaseOrder).mockResolvedValue(undefined);
+    await store.rebaseManualOrder();
+    expect(api.rebaseOrder).toHaveBeenCalledWith({
+      sort_by: "updated_at",
+      sort_order: "asc",
+    });
+    expect(store.batchBusy).toBe(false);
+  });
+  it("rethrows and clears the busy flag when rebase fails", async () => {
+    const store = useTaskStore();
+    vi.mocked(api.rebaseOrder).mockRejectedValue(new Error("网络异常"));
+    await expect(store.rebaseManualOrder()).rejects.toThrow("网络异常");
+    expect(store.batchBusy).toBe(false);
   });
 });

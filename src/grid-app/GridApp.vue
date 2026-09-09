@@ -52,7 +52,6 @@ function onCreated(task: Task) {
   showCreate.value = false;
   const latest = tasks.records[task.id] ?? task;
   tasks.acceptTask(latest);
-  detailTask.value = latest;
   table.value?.reveal(task.id);
 }
 function renamed(oldName: string, newName: string) {

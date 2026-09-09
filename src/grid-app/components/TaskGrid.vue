@@ -1,22 +1,27 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { GROUP_FIELDS, type GroupField } from "@/shared/types";
 import UiIcon from "@/shared/UiIcon.vue";
 import UiPopover from "@/shared/UiPopover.vue";
 import TaskField from "./TaskField.vue";
 import DescriptionEditor from "./DescriptionEditor.vue";
+import AttachmentPreviewDialog from "./AttachmentPreviewDialog.vue";
+import { api } from "../api/client";
+import { attachmentKind } from "../attachmentKind";
 import { useTaskStore } from "../stores/taskStore";
 import { useViewStore } from "../stores/viewStore";
 import { askConfirm, copyText, errorText, notify } from "@/shared/feedback";
-import { formatDateTime, type Task } from "@/shared/types";
+import { formatDateTime, type Attachment, type Task } from "@/shared/types";
 const emit = defineEmits<{ "open-detail": [task: Task]; create: [] }>();
 const tasks = useTaskStore(),
   view = useViewStore();
 const root = ref<HTMLElement>();
 const active = ref<{ id: string; key: string } | null>(null);
 const editingId = ref<string | null>(null);
+const editingKey = ref<"description" | "note">("description");
 const editingTask = ref<Task | null>(null);
+const preview = ref<Attachment | null>(null);
 const editor = ref<InstanceType<typeof DescriptionEditor>>();
 const editorPosition = ref({ left: "0px", top: "0px" });
 const { page, pages } = storeToRefs(tasks);
@@ -102,6 +107,7 @@ const draggingColumn = ref("");
 function dragColumn(event: DragEvent, key: string) {
   if (
     key === "description" ||
+    key === "note" ||
     (event.target as HTMLElement).closest("button,.col-resize,.popover-anchor")
   ) {
     event.preventDefault();
@@ -177,6 +183,146 @@ function dragRowEnd() {
   draggingTask.value = "";
   dropSlot.value = null;
 }
+// ── 附件单元格拖放 ────────────────────────────────────
+const attachmentDragTarget = ref("");
+const attachmentUploads = ref<
+  Record<string, { completed: number; total: number }>
+>({});
+const attachmentPreviews = ref<Record<string, Attachment[]>>({});
+const attachmentPreviewCounts = new Map<string, number>();
+const attachmentPreviewLoads = new Map<string, Promise<void>>();
+function visibleAttachmentPreviews(attachments: Attachment[]) {
+  return attachments.slice(0, attachments.length > 3 ? 2 : 3);
+}
+function hiddenAttachmentCount(attachments: Attachment[]) {
+  return attachments.length - visibleAttachmentPreviews(attachments).length;
+}
+function loadAttachmentPreviews(task: Task) {
+  const count = task.attachment_count ?? 0;
+  if (!count) {
+    delete attachmentPreviews.value[task.id];
+    attachmentPreviewCounts.set(task.id, 0);
+    return;
+  }
+  if (
+    attachmentPreviewCounts.get(task.id) === count ||
+    attachmentPreviewLoads.has(task.id)
+  )
+    return;
+  const request = (async () => {
+    try {
+      const attachments = await api.listAttachments(task.id);
+      if (!tasks.tasks.some((current) => current.id === task.id)) return;
+      attachmentPreviews.value[task.id] = attachments;
+      attachmentPreviewCounts.set(task.id, count);
+    } catch {
+      // 列表仍保留附件数量作为降级展示，后续计数变化时自动重试。
+      if (tasks.tasks.some((current) => current.id === task.id)) {
+        delete attachmentPreviews.value[task.id];
+        attachmentPreviewCounts.set(task.id, count);
+      }
+    } finally {
+      attachmentPreviewLoads.delete(task.id);
+      const latest = tasks.tasks.find((current) => current.id === task.id);
+      if (
+        latest &&
+        (latest.attachment_count ?? 0) > 0 &&
+        attachmentPreviewCounts.get(task.id) !== latest.attachment_count
+      )
+        loadAttachmentPreviews(latest);
+    }
+  })();
+  attachmentPreviewLoads.set(task.id, request);
+}
+watch(
+  () =>
+    tasks.tasks
+      .map((task) => `${task.id}:${task.attachment_count ?? 0}`)
+      .join("|"),
+  () => {
+    const visibleIds = new Set(tasks.tasks.map((task) => task.id));
+    Object.keys(attachmentPreviews.value).forEach((id) => {
+      if (!visibleIds.has(id)) {
+        delete attachmentPreviews.value[id];
+        attachmentPreviewCounts.delete(id);
+      }
+    });
+    tasks.tasks.forEach(loadAttachmentPreviews);
+  },
+  { immediate: true },
+);
+function isFileDrag(event: DragEvent) {
+  const transfer = event.dataTransfer;
+  return (
+    !!transfer &&
+    (transfer.files.length > 0 || Array.from(transfer.types).includes("Files"))
+  );
+}
+function dragOverAttachments(event: DragEvent, task: Task) {
+  if (!isFileDrag(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  attachmentDragTarget.value = task.id;
+}
+function leaveAttachmentCell(event: DragEvent, task: Task) {
+  if (attachmentDragTarget.value !== task.id) return;
+  const cell = event.currentTarget as HTMLElement;
+  if (
+    !(event.relatedTarget instanceof Node) ||
+    !cell.contains(event.relatedTarget)
+  )
+    attachmentDragTarget.value = "";
+}
+function dropAttachments(event: DragEvent, task: Task) {
+  if (!isFileDrag(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  attachmentDragTarget.value = "";
+  const files = Array.from(event.dataTransfer?.files ?? []);
+  if (files.length) void uploadAttachments(task, files);
+}
+async function uploadAttachments(task: Task, files: File[]) {
+  if (attachmentUploads.value[task.id]) {
+    notify("该任务的附件正在上传，请稍后再试", "info");
+    return;
+  }
+  const baseline = task.attachment_count ?? 0;
+  attachmentUploads.value[task.id] = { completed: 0, total: files.length };
+  let uploaded = 0;
+  let lastError = "";
+  for (const file of files) {
+    try {
+      await api.uploadAttachment(task.id, file);
+      uploaded++;
+    } catch (e) {
+      lastError = errorText(e);
+    } finally {
+      const progress = attachmentUploads.value[task.id];
+      if (progress) progress.completed++;
+    }
+  }
+  delete attachmentUploads.value[task.id];
+  if (uploaded) {
+    const latest = tasks.records[task.id] ?? task;
+    tasks.acceptTask({
+      ...latest,
+      attachment_count: Math.max(
+        latest.attachment_count ?? baseline,
+        baseline + uploaded,
+      ),
+    });
+    tasks.scheduleRefresh();
+  }
+  const failed = files.length - uploaded;
+  if (!failed) notify(`已上传 ${uploaded} 个附件`);
+  else if (uploaded)
+    notify(
+      `已上传 ${uploaded} 个附件，${failed} 个失败：${lastError}`,
+      "error",
+    );
+  else notify(`附件上传失败：${lastError}`, "error");
+}
 watch(rows, (current) => {
   if (active.value && !current.some((t) => t.id === active.value?.id))
     active.value = null;
@@ -211,12 +357,27 @@ function cell(id: string, key: string) {
     '[data-task-id="' + CSS.escape(id) + '"][data-column="' + key + '"]',
   );
 }
-function startEdit(task: Task) {
+function clearActiveCellOnOutsideClick(event: MouseEvent) {
+  if (!active.value || !(event.target instanceof Element)) return;
+  const clickedCell = event.target.closest<HTMLElement>(
+    '[role="gridcell"][data-task-id]',
+  );
+  if (
+    (clickedCell && root.value?.contains(clickedCell)) ||
+    event.target.closest(".grid-cell-editor")
+  )
+    return;
+  const activeCell = cell(active.value.id, active.value.key);
+  active.value = null;
+  if (activeCell && document.activeElement === activeCell) activeCell.blur();
+}
+function startEdit(task: Task, key: "description" | "note") {
   if (editingId.value && editingId.value !== task.id) return;
   editingTask.value = task;
   editingId.value = task.id;
-  void select(task, "description", false);
-  const rect = cell(task.id, "description")?.getBoundingClientRect();
+  editingKey.value = key;
+  void select(task, key, false);
+  const rect = cell(task.id, key)?.getBoundingClientRect();
   editorPosition.value = {
     left:
       Math.max(12, Math.min(rect?.left ?? 100, window.innerWidth - 432)) + "px",
@@ -226,15 +387,16 @@ function startEdit(task: Task) {
 }
 function closeEditor() {
   const restore = !!document.activeElement?.closest(".grid-cell-editor");
-  const id = editingId.value;
+  const id = editingId.value,
+    key = editingKey.value;
   editingId.value = null;
   editingTask.value = null;
   void nextTick(() => {
-    if (id && restore) cell(id, "description")?.focus({ preventScroll: true });
+    if (id && restore) cell(id, key)?.focus({ preventScroll: true });
   });
 }
 function activate(task: Task, key: string) {
-  if (key === "description") startEdit(task);
+  if (key === "description" || key === "note") startEdit(task, key);
   else if (["project", "type", "status"].includes(key))
     cell(task.id, key)
       ?.querySelector<HTMLButtonElement>(".select-trigger")
@@ -320,7 +482,11 @@ function resize(e: PointerEvent, key: string) {
   e.preventDefault();
   e.stopPropagation();
 }
-onBeforeUnmount(() => stopResize?.());
+onMounted(() => document.addEventListener("click", clearActiveCellOnOutsideClick));
+onBeforeUnmount(() => {
+  stopResize?.();
+  document.removeEventListener("click", clearActiveCellOnOutsideClick);
+});
 async function remove(task: Task) {
   if (
     !(await askConfirm(
@@ -397,9 +563,13 @@ defineExpose({ reveal });
       <colgroup>
         <col style="width: 64px" />
         <col
-          v-for="column in view.visibleColumns"
+          v-for="(column, colIndex) in view.visibleColumns"
           :key="column.key"
-          :style="{ width: column.width + 'px' }"
+          :style="
+            colIndex === view.visibleColumns.length - 1
+              ? undefined
+              : { width: column.width + 'px' }
+          "
         />
       </colgroup>
       <thead>
@@ -420,13 +590,14 @@ defineExpose({ reveal });
             />
           </th>
           <th
-            v-for="column in view.visibleColumns"
+            v-for="(column, colIndex) in view.visibleColumns"
             :key="column.key"
+            :data-column="column.key"
             :class="{
               'pinned-description': column.key === 'description',
               'column-dragging': draggingColumn === column.key,
             }"
-            :draggable="column.key !== 'description'"
+            :draggable="column.key !== 'description' && column.key !== 'note'"
             @dragstart="dragColumn($event, column.key)"
             @dragover.prevent
             @drop.prevent="dropColumn($event, column.key)"
@@ -536,6 +707,7 @@ defineExpose({ reveal });
               >
             </div>
             <span
+              v-if="colIndex < view.visibleColumns.length - 1"
               class="col-resize"
               @pointerdown="resize($event, column.key)"
             ></span>
@@ -647,7 +819,11 @@ defineExpose({ reveal });
                 role="gridcell"
                 :data-task-id="task.id"
                 :data-column="column.key"
-                :aria-label="column.label"
+                :aria-label="
+                  column.key === 'attachments'
+                    ? `附件 ${task.attachment_count ?? 0} 个，可拖入文件上传`
+                    : column.label
+                "
                 :aria-selected="selected(task, column.key)"
                 :tabindex="
                   selected(task, column.key) ||
@@ -659,11 +835,28 @@ defineExpose({ reveal });
                   'pinned-description': column.key === 'description',
                   'cell-selected': selected(task, column.key),
                   'cell-editing':
-                    editingId === task.id && column.key === 'description',
+                    editingId === task.id && column.key === editingKey,
+                  'attachment-drop-target':
+                    column.key === 'attachments' &&
+                    attachmentDragTarget === task.id,
+                  'attachment-uploading':
+                    column.key === 'attachments' &&
+                    !!attachmentUploads[task.id],
                 }"
                 @click="select(task, column.key)"
                 @dblclick="activate(task, column.key)"
                 @keydown="keyboard($event, rowIndex(task.id), column.key)"
+                @dragover="
+                  column.key === 'attachments' &&
+                  dragOverAttachments($event, task)
+                "
+                @dragleave="
+                  column.key === 'attachments' &&
+                  leaveAttachmentCell($event, task)
+                "
+                @drop="
+                  column.key === 'attachments' && dropAttachments($event, task)
+                "
               >
                 <div
                   v-if="column.key === 'description'"
@@ -700,6 +893,13 @@ defineExpose({ reveal });
                   "
                 />
                 <span
+                  v-else-if="column.key === 'note'"
+                  class="note-cell"
+                  :class="{ subtle: !task.note }"
+                  :title="task.note"
+                  >{{ task.note || "—" }}</span
+                >
+                <span
                   v-else-if="column.key === 'submitter'"
                   class="submitter-tag"
                   :class="task.submitter === 'Agent' ? 'agent' : 'human'"
@@ -713,11 +913,70 @@ defineExpose({ reveal });
                   v-else-if="column.key === 'attachments'"
                   class="attachment-cell"
                   :class="{ subtle: !task.attachment_count }"
+                  ><span
+                    v-if="attachmentUploads[task.id]"
+                    class="spinner"
+                  ></span
                   ><UiIcon
-                    v-if="task.attachment_count"
+                    v-else-if="attachmentDragTarget === task.id"
+                    name="upload"
+                    :size="14"
+                  /><template v-else-if="attachmentPreviews[task.id]?.length"
+                    ><span class="attachment-preview-list"
+                      ><template
+                        v-for="attachment in visibleAttachmentPreviews(
+                          attachmentPreviews[task.id],
+                        )"
+                        :key="attachment.id"
+                        ><button
+                          v-if="attachmentKind(attachment) !== 'file'"
+                          type="button"
+                          class="attachment-preview"
+                          :class="
+                            'attachment-preview-' + attachmentKind(attachment)
+                          "
+                          :title="attachment.filename"
+                          :aria-label="'预览：' + attachment.filename"
+                          @click.stop="preview = attachment"
+                          @dblclick.stop
+                        >
+                          <img
+                            v-if="attachmentKind(attachment) === 'image'"
+                            :src="api.attachmentUrl(attachment.id)"
+                            :alt="attachment.filename"
+                          /><UiIcon v-else name="video" :size="14" /></button
+                        ><span
+                          v-else
+                          class="attachment-preview attachment-preview-file"
+                          :title="attachment.filename"
+                          ><UiIcon name="file" :size="14" /></span
+                      ></template
+                      ><span
+                        v-if="
+                          hiddenAttachmentCount(
+                            attachmentPreviews[task.id],
+                          ) > 0
+                        "
+                        class="attachment-preview-overflow"
+                        >+{{
+                          hiddenAttachmentCount(attachmentPreviews[task.id])
+                        }}</span
+                      ></span
+                    ></template
+                  ><UiIcon
+                    v-else-if="task.attachment_count"
                     name="attachment"
                     :size="14"
-                  />{{ task.attachment_count || "—" }}</span
+                  /><template v-if="attachmentUploads[task.id]"
+                    >{{ attachmentUploads[task.id].completed }}/{{
+                      attachmentUploads[task.id].total
+                    }}</template
+                  ><template v-else-if="attachmentDragTarget === task.id"
+                    >松开上传</template
+                  ><template
+                    v-else-if="!attachmentPreviews[task.id]?.length"
+                    >{{ task.attachment_count || "—" }}</template
+                  ></span
                 >
                 <span
                   v-else-if="column.key === 'id'"
@@ -802,7 +1061,8 @@ defineExpose({ reveal });
       <DescriptionEditor
         ref="editor"
         :task-id="editingId"
-        :value="currentEditingTask.description"
+        :value="currentEditingTask[editingKey]"
+        :field="editingKey"
         inline
         @close="closeEditor"
       /></div
@@ -885,4 +1145,9 @@ defineExpose({ reveal });
           /></button></template
     ></UiPopover>
   </footer>
+  <AttachmentPreviewDialog
+    v-if="preview"
+    :attachment="preview"
+    @close="preview = null"
+  />
 </template>

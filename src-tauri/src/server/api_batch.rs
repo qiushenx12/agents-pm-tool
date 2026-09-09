@@ -77,6 +77,7 @@ pub async fn batch_tasks(
                     task_type: patch.task_type.clone(),
                     status: patch.status.clone(),
                     description: None,
+                    note: None,
                 },
             )
             .map(Some),

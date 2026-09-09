@@ -63,6 +63,7 @@ pub async fn create_task(
             project: project.trim(),
             task_type: task_type.trim(),
             description: description.trim(),
+            note: "",
             submitter: "Agent",
         },
     )?;

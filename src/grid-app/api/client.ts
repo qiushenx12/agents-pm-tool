@@ -84,6 +84,7 @@ export const api = {
     project: string;
     type: TaskType;
     description?: string;
+    note?: string;
   }) =>
     request<Task>("/api/web/tasks", {
       method: "POST",
@@ -96,6 +97,7 @@ export const api = {
       project: string;
       type: TaskType;
       description: string;
+      note: string;
       status: TaskStatus;
     }>,
   ) =>
@@ -110,6 +112,13 @@ export const api = {
   /** 手动排序：把任务移到 prev/next 之间（只给一侧即贴到该侧之外） */
   reorderTask: (id: string, body: { prev_id?: string; next_id?: string }) =>
     request<Task>(`/api/web/tasks/${encodeURIComponent(id)}/reorder`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /** 以指定排序重铺手动位置：切入手动排序时以当前视图为基线 */
+  rebaseOrder: (body: { sort_by?: string; sort_order?: string }) =>
+    request<void>("/api/web/tasks/rebase-order", {
       method: "POST",
       body: JSON.stringify(body),
     }),

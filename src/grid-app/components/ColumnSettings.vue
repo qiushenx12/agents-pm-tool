@@ -5,7 +5,7 @@ import { useViewStore } from "../stores/viewStore";
 const view = useViewStore(),
   dragging = ref("");
 function start(event: DragEvent, key: string) {
-  if (key === "description") {
+  if (key === "description" || key === "note") {
     event.preventDefault();
     return;
   }
@@ -27,7 +27,7 @@ function drop(event: DragEvent, key: string) {
     :key="column.key"
     class="column-option"
     :class="{ dragging: dragging === column.key }"
-    :draggable="column.key !== 'description'"
+    :draggable="column.key !== 'description' && column.key !== 'note'"
     @dragstart="start($event, column.key)"
     @dragover.prevent
     @drop.prevent="drop($event, column.key)"
@@ -40,8 +40,10 @@ function drop(event: DragEvent, key: string) {
         :disabled="column.key === 'description'"
       /><UiIcon :name="column.icon" :size="14" />{{ column.label }}</label
     >
-    <span v-if="column.key === 'description'" class="subtle column-fixed"
-      >固定主列</span
+    <span
+      v-if="column.key === 'description' || column.key === 'note'"
+      class="subtle column-fixed"
+      >{{ column.key === "description" ? "固定主列" : "固定末列" }}</span
     >
     <template v-else
       ><button

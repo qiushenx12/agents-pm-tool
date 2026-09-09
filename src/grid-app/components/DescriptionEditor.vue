@@ -6,6 +6,7 @@ const props = defineProps<{
   taskId: string;
   value: string;
   inline?: boolean;
+  field?: "description" | "note";
 }>();
 const emit = defineEmits<{ close: []; saved: [] }>();
 const tasks = useTaskStore();
@@ -16,6 +17,10 @@ const draft = ref(props.value),
 const input = ref<HTMLTextAreaElement>();
 const root = ref<HTMLElement>();
 let ended = false;
+const field = computed(() => props.field ?? "description");
+const fieldLabel = computed(() =>
+  field.value === "note" ? "备注" : "任务描述",
+);
 const changedExternally = computed(() => props.value !== baseline.value);
 const dirty = computed(() => draft.value !== baseline.value);
 async function save(explicit = true) {
@@ -29,8 +34,10 @@ async function save(explicit = true) {
     if (!explicit) return;
     if (
       !(await askConfirm(
-        "任务描述已更新",
-        "其他操作已修改了这段描述。你的草稿仍被保留，确认用当前草稿覆盖最新描述？",
+        fieldLabel.value + "已更新",
+        "其他操作已修改了这段" +
+          fieldLabel.value +
+          "。你的草稿仍被保留，确认用当前草稿覆盖最新内容？",
         "保存草稿",
       ))
     )
@@ -39,7 +46,12 @@ async function save(explicit = true) {
   saving.value = true;
   error.value = "";
   try {
-    await tasks.updateTask(props.taskId, { description: draft.value });
+    await tasks.updateTask(
+      props.taskId,
+      field.value === "note"
+        ? { note: draft.value }
+        : { description: draft.value },
+    );
     ended = true;
     emit("saved");
     emit("close");
@@ -76,13 +88,13 @@ defineExpose({ dirty, saving, save, cancel });
     @keydown.stop
   >
     <div v-if="changedExternally" class="info-banner">
-      描述已被其他操作更新，当前草稿已保留。保存前请确认。
+      {{ fieldLabel }}已被其他操作更新，当前草稿已保留。保存前请确认。
     </div>
     <textarea
       ref="input"
       v-model="draft"
       class="input"
-      aria-label="编辑任务描述"
+      :aria-label="'编辑' + fieldLabel"
       rows="5"
       :disabled="saving"
       @keydown.esc.prevent="cancel"

@@ -231,6 +231,27 @@ export const useTaskStore = defineStore("tasks", () => {
       scheduleRefresh();
     }
   }
+  /**
+   * 切入手动排序前的基线：以当前排序字段/方向重铺全部任务的 position。
+   * 成功后由调用方把 sort_by 设为 manual（触发刷新），列表视觉顺序不变。
+   */
+  async function rebaseManualOrder() {
+    if (saving.value) throw new Error("还有更改正在保存，请稍后重试");
+    generation++;
+    controller?.abort();
+    batchBusy.value = true;
+    try {
+      await api.rebaseOrder({
+        sort_by: filters.value.sort_by,
+        sort_order: filters.value.sort_order,
+      });
+    } catch (e) {
+      notify(errorText(e), "error");
+      throw e;
+    } finally {
+      batchBusy.value = false;
+    }
+  }
   function toggleSelection(task: Task, selected = !selection.value[task.id]) {
     if (batchBusy.value || !isCurrentPage.value) return;
     if (!selected) {
@@ -389,6 +410,7 @@ export const useTaskStore = defineStore("tasks", () => {
     updateTask,
     removeTask,
     moveTask,
+    rebaseManualOrder,
     toggleFilter,
     clearFilters,
     setProject,

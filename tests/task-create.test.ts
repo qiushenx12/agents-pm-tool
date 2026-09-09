@@ -34,6 +34,7 @@ it("creates the task only once when retrying an attachment failure in the new-ta
     project: "测试项目",
     type: "新增需求",
     description: "创建流程测试",
+    note: "创建备注",
     status: "未开始",
     submitter: "用户",
     created_at: "",
@@ -66,6 +67,9 @@ it("creates the task only once when retrying an attachment failure in the new-ta
     value: [new File(["a"], "a.txt"), new File(["b"], "b.txt")],
   });
   input.dispatchEvent(new Event("change", { bubbles: true }));
+  const note = document.querySelector<HTMLTextAreaElement>("#create-note")!;
+  note.value = "创建备注";
+  note.dispatchEvent(new Event("input", { bubbles: true }));
   await nextTick();
   const button = (label: string) =>
     Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
@@ -74,6 +78,12 @@ it("creates the task only once when retrying an attachment failure in the new-ta
   button("创建任务").click();
   await flush();
   expect(api.createTask).toHaveBeenCalledTimes(1);
+  expect(api.createTask).toHaveBeenCalledWith({
+    project: "测试项目",
+    type: "新增需求",
+    description: "",
+    note: "创建备注",
+  });
   expect(onCreated).not.toHaveBeenCalled();
   expect(document.body.textContent).toContain("任务已创建，部分附件上传失败");
   button("重试失败附件").click();

@@ -25,7 +25,8 @@ const initialProject =
     : (meta.projects[0]?.name ?? "");
 const project = ref(initialProject),
   type = ref<TaskType>("新增需求"),
-  description = ref("");
+  description = ref(""),
+  note = ref("");
 const createdTask = ref<Task | null>(null),
   error = ref(""),
   submitting = ref(false);
@@ -67,6 +68,7 @@ async function close() {
   }
   if (
     (description.value ||
+      note.value ||
       queue.items.value.length ||
       type.value !== "新增需求" ||
       project.value !== initialProject) &&
@@ -90,6 +92,7 @@ async function submit() {
         project: project.value,
         type: type.value,
         description: description.value,
+        note: note.value,
       });
       tasks.acceptTask(createdTask.value);
     }
@@ -148,6 +151,18 @@ async function submit() {
         @keydown.enter.ctrl.prevent="submit"
       />
       <p class="form-hint">写下目标、背景或验收要求，方便后续跟进。</p>
+    </div>
+    <div class="form-field">
+      <label for="create-note">备注</label
+      ><textarea
+        id="create-note"
+        v-model="note"
+        class="input"
+        rows="3"
+        placeholder="补充记录（可选）"
+        :disabled="busy || !!createdTask"
+        @keydown.enter.ctrl.prevent="submit"
+      />
     </div>
     <div class="form-field">
       <label>附件 <span class="subtle optional-label">可选</span></label

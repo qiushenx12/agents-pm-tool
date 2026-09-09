@@ -44,6 +44,7 @@ const paths: Record<string, string> = {
   minus: "M5 12h14",
   window: "M4 4h16v16H4z",
   file: "M4 2h10l6 6v14H4z M14 2v6h6",
+  video: "M4 5h11v14H4z M15 10l5-3v10l-5-3z",
 };
 </script>
 <template>

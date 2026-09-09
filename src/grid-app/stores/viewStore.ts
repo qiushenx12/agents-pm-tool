@@ -46,6 +46,7 @@ export const DEFAULT_COLUMNS = [
     visible: false,
   },
   { key: "id", label: "ID", icon: "text", width: 200, visible: false },
+  { key: "note", label: "备注", icon: "edit", width: 240, visible: true },
 ];
 export const useViewStore = defineStore("view", () => {
   let saved: {
@@ -64,8 +65,9 @@ export const useViewStore = defineStore("view", () => {
   const order = [
     ...new Set([
       "description",
-      ...previousColumns.map((p) => p.key),
-      ...DEFAULT_COLUMNS.map((c) => c.key),
+      ...previousColumns.map((p) => p.key).filter((key) => key !== "note"),
+      ...DEFAULT_COLUMNS.map((c) => c.key).filter((key) => key !== "note"),
+      "note",
     ]),
   ];
   const columns = ref(
@@ -102,7 +104,13 @@ export const useViewStore = defineStore("view", () => {
   function moveColumn(key: string, direction: -1 | 1) {
     const index = columns.value.findIndex((c) => c.key === key),
       target = index + direction;
-    if (index <= 0 || target <= 0 || target >= columns.value.length) return;
+    if (
+      key === "note" ||
+      index <= 0 ||
+      target <= 0 ||
+      target >= columns.value.length - 1
+    )
+      return;
     const [column] = columns.value.splice(index, 1);
     columns.value.splice(target, 0, column);
   }
@@ -110,6 +118,7 @@ export const useViewStore = defineStore("view", () => {
     if (
       source === target ||
       source === "description" ||
+      source === "note" ||
       target === "description"
     )
       return;

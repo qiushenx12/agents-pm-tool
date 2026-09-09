@@ -189,6 +189,7 @@ fn print_task_detail(t: &serde_json::Value) {
     println!("创建时间： {}", t["created_at"].as_str().unwrap_or(""));
     println!("完成时间： {}", t["finished_at"].as_str().unwrap_or("—"));
     println!("描述：     {}", t["description"].as_str().unwrap_or(""));
+    println!("备注：     {}", t["note"].as_str().unwrap_or(""));
 }
 
 #[tokio::main]

@@ -77,16 +77,36 @@ async fn web_crud_and_filter() {
     let t = create_task(&app, false, "网页创建的任务").await;
     assert_eq!(t["submitter"], "用户");
     assert_eq!(t["status"], "未开始");
+    assert_eq!(t["note"], "");
     assert_eq!(t["id"].as_str().unwrap().len(), 18);
+
+    // 网页端可修改备注，且关键词会匹配备注
+    let id = t["id"].as_str().unwrap();
+    let res = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{id}"))
+        .json(&json!({"note": "仅备注中的检索词"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["note"],
+        "仅备注中的检索词"
+    );
 
     // 网页创建描述可空
     let res = app
         .web(reqwest::Method::POST, "/tasks")
-        .json(&json!({"project": "agents-pm-tool", "type": "优化"}))
+        .json(&json!({
+            "project": "agents-pm-tool",
+            "type": "优化",
+            "note": "创建时备注"
+        }))
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 201);
+    assert_eq!(res.json::<Value>().await.unwrap()["note"], "创建时备注");
 
     // 筛选
     let res = app
@@ -98,8 +118,18 @@ async fn web_crud_and_filter() {
     assert_eq!(list.as_array().unwrap().len(), 1);
     assert_eq!(list[0]["type"], "优化");
 
-    // 关键字匹配 ID 与描述
+    // 关键字匹配 ID、描述与备注
     let kw = url::form_urlencoded::byte_serialize("网页创建".as_bytes()).collect::<String>();
+    let res = app
+        .web(reqwest::Method::GET, &format!("/tasks?keyword={kw}"))
+        .send()
+        .await
+        .unwrap();
+    let list: Value = res.json().await.unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1);
+
+    let kw =
+        url::form_urlencoded::byte_serialize("仅备注中的检索词".as_bytes()).collect::<String>();
     let res = app
         .web(reqwest::Method::GET, &format!("/tasks?keyword={kw}"))
         .send()
@@ -181,6 +211,16 @@ async fn manual_reorder() {
         .await
         .unwrap();
     assert_eq!(res.status(), 404);
+
+    // 以创建时间降序重铺 → 手动顺序重置为创建倒序（切入手动排序时的基线）
+    let res = app
+        .web(reqwest::Method::POST, "/tasks/rebase-order")
+        .json(&json!({"sort_by": "created_at", "sort_order": "desc"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert_eq!(manual_order().await, vec![c.clone(), b.clone(), a.clone()]);
 }
 
 // ── 状态机与完成时间（规划 §4.3） ─────────────────────────
@@ -301,6 +341,7 @@ async fn agent_permission_matrix() {
     let agent_task = create_task(&app, true, "Agent 的任务").await;
     let agent_id = agent_task["id"].as_str().unwrap().to_string();
     assert_eq!(agent_task["submitter"], "Agent");
+    assert_eq!(agent_task["note"], "");
 
     let user_task = create_task(&app, false, "用户的任务").await;
     let user_id = user_task["id"].as_str().unwrap().to_string();
@@ -365,14 +406,20 @@ async fn agent_permission_matrix() {
         .unwrap();
     assert_eq!(res.status(), 403);
 
-    // Agent 不可改项目/类型（路由不存在 → 4xx，不产生变更）
+    // Agent 不可改项目/类型/备注（路由不存在 → 4xx，不产生变更）
     let res = app
         .agent(reqwest::Method::PATCH, &format!("/tasks/{agent_id}"))
-        .json(&json!({"project": "x"}))
+        .json(&json!({"note": "Agent 越权备注"}))
         .send()
         .await
         .unwrap();
     assert!(res.status().is_client_error());
+    let res = app
+        .agent(reqwest::Method::GET, &format!("/tasks/{agent_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.json::<Value>().await.unwrap()["note"], "");
 
     // Agent 不可删任务 → 4xx
     let res = app

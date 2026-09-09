@@ -83,6 +83,8 @@ it("keeps description pinned while persisting column order and migrating old pre
   view.moveBefore("project", "status");
   view.moveColumn("description", 1);
   view.moveBefore("status", "description");
+  view.moveColumn("note", -1);
+  view.moveBefore("note", "status");
   await nextTick();
   expect(view.columns.slice(0, 3).map((c) => c.key)).toEqual([
     "description",
@@ -92,5 +94,11 @@ it("keeps description pinned while persisting column order and migrating old pre
   const persisted = JSON.parse(localStorage.getItem("pm-table-view-v1")!);
   expect(persisted.columns[1].key).toBe("project");
   expect(view.columns.some((c) => c.key === "obsolete")).toBe(false);
-  expect(view.columns).toHaveLength(9);
+  expect(view.columns).toHaveLength(10);
+  expect(view.columns[view.columns.length - 1]).toMatchObject({
+    key: "note",
+    label: "备注",
+    visible: true,
+  });
+  expect(view.visibleColumns[view.visibleColumns.length - 1]?.key).toBe("note");
 });

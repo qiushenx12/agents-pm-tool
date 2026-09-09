@@ -34,6 +34,29 @@ function mountEditor() {
   app.mount(host);
   return state;
 }
+function mountNoteEditor() {
+  const state = reactive({ value: "原始备注", open: true });
+  pinia = createPinia();
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp({
+    render: () =>
+      state.open
+        ? h(DescriptionEditor, {
+            taskId: "1",
+            value: state.value,
+            field: "note",
+            inline: true,
+            onClose: () => {
+              state.open = false;
+            },
+          })
+        : null,
+  });
+  app.use(pinia);
+  app.mount(host);
+  return state;
+}
 function input(value: string) {
   const el = host.querySelector("textarea")!;
   el.value = value;
@@ -99,4 +122,17 @@ describe("description editor draft safety", () => {
     expect(api.patchTask).not.toHaveBeenCalled();
     expect(state.open).toBe(true);
   });
+});
+
+it("updates the note when the editor is used for the note field", async () => {
+  mountNoteEditor();
+  input("新的备注");
+  vi.mocked(api.patchTask).mockResolvedValueOnce({
+    id: "1",
+    note: "新的备注",
+  } as never);
+  host.querySelector<HTMLButtonElement>(".btn-primary")!.click();
+  await flush();
+  expect(api.patchTask).toHaveBeenCalledWith("1", { note: "新的备注" });
+  expect(host.querySelector("textarea")).toBeNull();
 });

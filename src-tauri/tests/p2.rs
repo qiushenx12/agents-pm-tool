@@ -19,6 +19,7 @@ fn seed(conn: &mut rusqlite::Connection, count: usize) -> Vec<String> {
                     project: "agents-pm-tool",
                     task_type: if index % 2 == 0 { "优化" } else { "BUG" },
                     description: &format!("验收任务 {index}"),
+                    note: "",
                     submitter: "用户",
                 },
             )
