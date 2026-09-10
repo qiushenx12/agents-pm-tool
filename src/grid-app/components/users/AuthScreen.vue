@@ -84,14 +84,13 @@ async function hostLogin() {
         <div>
           <span class="auth-product-label">AGENTS PM TOOL</span>
           <h1>让用户与 Agent<br />在同一个工作台协作</h1>
-          <p>任务、权限与进度都留在你的本地环境中。</p>
         </div>
         <ul class="auth-feature-list">
           <li><span><UiIcon name="folder" :size="15" /></span><div><strong>按项目授权</strong><small>只查看和操作被授权的项目</small></div></li>
           <li><span><UiIcon name="settings" :size="15" /></span><div><strong>细粒度权限</strong><small>字段、状态和附件权限独立控制</small></div></li>
           <li><span><UiIcon name="bot" :size="15" /></span><div><strong>独立 Agent 接入</strong><small>每位用户拥有自己的访问凭据</small></div></li>
         </ul>
-        <div class="auth-local-note"><UiIcon name="check" :size="14" />数据默认保存在本机</div>
+        <div class="auth-local-note"><UiIcon name="check" :size="14" />数据由工作台主机统一保存</div>
       </aside>
 
       <div class="auth-form-panel">

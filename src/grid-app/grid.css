@@ -1695,22 +1695,18 @@ button.attachment-preview:focus-visible {
 }
 .auth-product-label {
   display: block;
-  margin-bottom: 12px;
-  color: #d9e4ff;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 1.5px;
+  margin-bottom: 18px;
+  color: #fff;
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: 1.8px;
 }
 .auth-intro-panel h1 {
   margin: 0;
   font-size: 25px;
   line-height: 1.38;
   letter-spacing: -0.5px;
-}
-.auth-intro-panel > div > p {
-  margin-top: 12px;
-  color: #d9e4ff;
-  font-size: 12px;
 }
 .auth-feature-list {
   display: flex;
@@ -1752,8 +1748,8 @@ button.attachment-preview:focus-visible {
   align-items: center;
   gap: 7px;
   margin-top: auto;
-  color: #c7d7ff;
-  font-size: 10px;
+  color: #d9e4ff;
+  font-size: 11px;
 }
 .auth-form-panel {
   display: flex;

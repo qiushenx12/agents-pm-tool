@@ -29,6 +29,21 @@ function mount() {
 }
 
 describe("authentication screen", () => {
+  it("describes host-managed storage without implying remote data is local", () => {
+    const app = mount();
+
+    expect(host!.querySelector(".auth-product-label")?.textContent).toBe(
+      "AGENTS PM TOOL",
+    );
+    expect(host!.querySelector(".auth-local-note")?.textContent).toContain(
+      "数据由工作台主机统一保存",
+    );
+    expect(host!.textContent).not.toContain("任务、权限与进度都留在你的本地环境中");
+    expect(host!.textContent).not.toContain("数据默认保存在本机");
+
+    app.unmount();
+  });
+
   it("offers loopback host login and emits the authenticated user", async () => {
     const user = {
       id: "host",
