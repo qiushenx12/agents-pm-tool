@@ -12,6 +12,7 @@ import { errorText, notify } from "@/shared/feedback";
 import TaskCreateModal from "./components/TaskCreateModal.vue";
 import TaskDetailDrawer from "./components/TaskDetailDrawer.vue";
 import ProjectOptionPopover from "./components/ProjectOptionPopover.vue";
+import SidebarProjects from "./components/SidebarProjects.vue";
 import TaskGrid from "./components/TaskGrid.vue";
 import AuthScreen from "./components/users/AuthScreen.vue";
 import UserManagementDialog from "./components/users/UserManagementDialog.vue";
@@ -29,6 +30,7 @@ const showCreate = ref(false),
   showProjects = ref(false),
   showUsers = ref(false),
   showAgentAccess = ref(false);
+const projectDialogName = ref<string | null>(null);
 const quickCreating = ref(false);
 const currentUser = ref<User | null>(null);
 const authLoading = ref(true);
@@ -99,6 +101,18 @@ function renamed(oldName: string, newName: string) {
     p === oldName ? newName : p,
   );
 }
+function openProjectCreate() {
+  projectDialogName.value = null;
+  showProjects.value = true;
+}
+function openProjectSettings(name: string) {
+  projectDialogName.value = name;
+  showProjects.value = true;
+}
+function closeProjects() {
+  showProjects.value = false;
+  projectDialogName.value = null;
+}
 let unsubscribe: (() => void) | undefined;
 let metaTimer: ReturnType<typeof setTimeout> | undefined;
 function keyboard(e: KeyboardEvent) {
@@ -159,6 +173,7 @@ async function logout() {
     unsubscribe?.();
     unsubscribe = undefined;
     currentUser.value = null;
+    showProjects.value = false;
     showUsers.value = false;
     showAgentAccess.value = false;
     setAgentPromptAccess();
@@ -211,45 +226,16 @@ onBeforeUnmount(() => {
             <UiIcon :name="preset.icon" /><span>{{ preset.label }}</span>
           </button>
         </nav>
-        <div class="nav-section-label project-section-label">
-          <span>项目</span
-          ><button
-            v-if="isAdmin"
-            class="icon-btn"
-            aria-label="管理项目"
-            title="管理项目"
-            @click="showProjects = true"
-          >
-            <UiIcon name="plus" :size="14" />
-          </button>
-        </div>
-        <nav class="workspace-nav project-nav">
-          <button
-            v-for="project in meta.projects"
-            :key="project.name"
-            class="nav-item"
-            :class="{ active: activeProject === project.name }"
-            :aria-current="activeProject === project.name ? 'page' : undefined"
-            :title="project.name"
-            @click="tasks.setProject(project.name)"
-          >
-            <span class="project-symbol" :style="{ color: project.color }"
-              ><UiIcon name="folder" /></span
-            ><span class="nav-label">{{ project.name }}</span>
-          </button>
-        </nav>
-        <button
-          v-if="isAdmin && !meta.projects.length && !meta.error"
-          class="nav-item subtle"
-          @click="showProjects = true"
-        >
-          <UiIcon name="plus" /><span>创建第一个项目</span>
-        </button>
+        <SidebarProjects
+          :active-project="activeProject"
+          :is-admin="isAdmin"
+          @select="tasks.setProject"
+          @create="openProjectCreate"
+          @edit="openProjectSettings"
+        />
       </div>
       <div class="sidebar-footer">
-        <button v-if="isAdmin" class="nav-item" title="项目管理" @click="showProjects = true">
-          <UiIcon name="settings" /><span>项目管理</span></button
-        ><button v-if="isAdmin" class="nav-item" title="用户管理" @click="showUsers = true">
+        <button v-if="isAdmin" class="nav-item" title="用户管理" @click="showUsers = true">
           <UiIcon name="user" /><span>用户管理</span></button
         ><button class="nav-item" title="Agent 访问" @click="showAgentAccess = true">
           <UiIcon name="bot" /><span>我的 Agent 访问</span></button
@@ -346,7 +332,7 @@ onBeforeUnmount(() => {
       v-if="showCreate"
       @close="showCreate = false"
       @created="onCreated"
-      @manage-projects="showProjects = true"
+      @manage-projects="openProjectCreate"
     />
     <TaskDetailDrawer
       v-if="detailTask"
@@ -356,7 +342,8 @@ onBeforeUnmount(() => {
     />
     <ProjectOptionPopover
       v-if="showProjects && isAdmin"
-      @close="showProjects = false"
+      :project-name="projectDialogName"
+      @close="closeProjects"
       @renamed="renamed"
     />
     <UserManagementDialog

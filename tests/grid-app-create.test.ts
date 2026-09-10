@@ -161,8 +161,20 @@ vi.mock("@/grid-app/components/BulkActions.vue", async () => {
 });
 
 vi.mock("@/grid-app/components/ProjectOptionPopover.vue", async () => {
-  const { defineComponent } = await import("vue");
-  return { default: defineComponent({ template: "<div />" }) };
+  const { defineComponent, h } = await import("vue");
+  return {
+    default: defineComponent({
+      props: { projectName: String },
+      setup(props) {
+        return () =>
+          h(
+            "div",
+            { "data-testid": "project-dialog" },
+            props.projectName || "new-project",
+          );
+      },
+    }),
+  };
 });
 
 vi.mock("@/shared/AppFeedback.vue", async () => {
@@ -243,4 +255,32 @@ it("creates a blank task directly from the list footer", async () => {
   });
   expect(host.querySelector('[data-testid="complete-create"]')).toBeNull();
   expect(reveal).toHaveBeenCalledWith(quickTask.id);
+});
+
+it("opens settings from a project's three-dot button without a footer management entry", async () => {
+  localStorage.setItem("pm-theme", "light");
+  window.history.replaceState(null, "", "/");
+  pinia = createPinia();
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp(GridApp);
+  app.use(pinia);
+  app.mount(host);
+  await vi.waitFor(() => {
+    expect(
+      host.querySelector<HTMLButtonElement>(
+        '[aria-label="项目设置：测试项目"]',
+      ),
+    ).not.toBeNull();
+  });
+
+  expect(host.querySelector('[title="项目管理"]')).toBeNull();
+  host
+    .querySelector<HTMLButtonElement>('[aria-label="项目设置：测试项目"]')!
+    .click();
+  await nextTick();
+
+  expect(
+    host.querySelector('[data-testid="project-dialog"]')?.textContent,
+  ).toBe("测试项目");
 });
