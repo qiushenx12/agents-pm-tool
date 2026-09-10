@@ -14,6 +14,8 @@ pub struct Settings {
     pub close_behavior: String,
     /// 监听范围：local（127.0.0.1，仅本机）/ lan（0.0.0.0，局域网可达）
     pub listen_scope: String,
+    /// 远程 Agent 建议连接地址；空值表示自动探测局域网 IPv4。
+    pub agent_server_url: String,
 }
 
 impl Default for Settings {
@@ -23,6 +25,7 @@ impl Default for Settings {
             autostart: true,
             close_behavior: "keep_service".into(),
             listen_scope: "local".into(),
+            agent_server_url: String::new(),
         }
     }
 }
@@ -76,6 +79,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.listen_scope, "local");
+        assert_eq!(s.agent_server_url, "");
         assert_eq!(s.bind_host(), [127, 0, 0, 1]);
     }
 }

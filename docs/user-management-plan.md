@@ -4,16 +4,16 @@
 
 ## 0. 接手须知（给下一个 Agent）
 
-- **当前进度**：只有规划，**尚未写任何实现代码**；§10 TODO 全部未勾选。完成一项勾一项，并用 pm-cli 同步任务状态（推进规则见 §10 末尾）。
+- **当前进度**：T1–T12 已于 2026-09-10 实现并进入验证；§10 记录具体交付项和验收命令。
 - **先读 `AGENTS.md`**：项目架构、命令、业务不变量以它为准。关键命令：Rust 测试 `cargo test --manifest-path src-tauri/Cargo.toml`；前端 `npm run build` + `npx vitest run`；无头联调 `PM_DATA_DIR=<临时目录> cargo run --example serve`（不要污染根目录 `data/`）。
 - **本文件中的设计冲突时**：以本文件 §2/§3/§4 的规则为准（它比 AGENTS.md 新）；实现后由 T12 反向同步 AGENTS.md。
 - **§9 的开放问题已全部给出默认决策**，直接按默认实现，不要停工等待确认；Paul 另有指示时以对话为准并回写本节。
-- **需要联网查证的点**：Codex 的 skill 目录约定（`~/.codex/skills/`）与 SKILL.md frontmatter 字段，实现 T9 前先查官方文档核实，不要凭记忆写。
+- **已查证的兼容点**：Codex 当前用户级 skill 目录为 `~/.agents/skills/`，旧版 `~/.codex/skills/` 作为兼容探测；SKILL.md 使用官方要求的 `name`、`description` frontmatter。
 - **不要**为了图省事把权限校验做在前端或 CLI 里——所有权限边界都在 Rust 服务端（这是本项目的核心架构原则）。
 
 ## 1. 背景与目标
 
-当前实现中：
+实施前基线：
 
 - `/api/web/*` **没有任何鉴权**，`listen_scope=lan` 时局域网内任何人都能完整操作所有数据；
 - `/api/agent/*` 只有一个全局 Bearer token（写在 `data/runtime.json`），pm-cli 在**本机**读取该文件完成服务发现；
@@ -149,7 +149,7 @@ CREATE TABLE agent_tokens (
    - 本机用户不传这些变量时行为完全不变（仍读 `runtime.json` 用主机 token）；
 3. **pm-cli-skill 打包分发**（核心交付物，不再是裸 exe）：
    - Skill 包结构（zip）：`pm-cli-skill/SKILL.md`（用法说明、远程配置步骤、错误排查）+ `pm-cli-skill/bin/pm-cli.exe`；SKILL.md 中不写死 token，只指引设置环境变量；
-   - 兼容 Claude Code（`~/.claude/skills/`）与 Codex（`~/.codex/skills/`）的 skill 目录约定，SKILL.md frontmatter 按两者通用字段编写；
+   - 兼容 Claude Code（`~/.claude/skills/`）、Codex（`~/.agents/skills/`）与旧版 Codex（`~/.codex/skills/`）的 skill 目录约定，SKILL.md frontmatter 按通用字段编写；
    - **分发三条路径**：
      a. **网页手动下载**：「我的 Agent 访问」面板提供「下载 pm-cli-skill」按钮（`GET /api/web/skill/download`，zip 由服务端在构建/启动时打好），用户解压到自己前端的 skill 目录——这是用户在网页上手动操作的路径；
      b. **Agent 自助下载安装**：`GET /api/agent/skill/download`（Bearer token 鉴权），Agent 拿到任务 Prompt 后可自行下载 zip 并解压安装到当前前端的 skill 目录，全程无需人介入；`/api/agent/help` 的返回中给出该接口地址与安装说明；
@@ -201,27 +201,27 @@ CREATE TABLE agent_tokens (
 
 ### 阶段 1：数据层与鉴权地基
 
-- [ ] **T1 用户数据表迁移**：新增 `users / sessions / agent_tokens / user_permissions` 四张表（`db/schema.rs`，USER_VERSION +1，追加式迁移）；`domain/user.rs` 定义角色枚举与校验规则；`src/shared/types.ts` 同步类型。验收：`cargo test` 覆盖旧库顺序升级与新库初始化两条路径。
-- [ ] **T2 内置主机账号**：服务启动时 `INSERT OR IGNORE id='host'` 并强制 role 纠偏为 `super_admin`；对主机账号的降级/删除/停用/密码登录请求一律 403。验收：集成测试覆盖四种拒绝场景 + 纠偏场景。
-- [ ] **T3 Web 会话鉴权**：`require_web_auth` 中间件挂载 `/api/web`；登录/注销/会话过期；密码 argon2/bcrypt 哈希；loopback 双入口（主机登录免密 / 用户登录），非 loopback 请求主机登录拒绝。验收：未登录 401、非 loopback 主机登录 403、会话过期 401 的集成测试。
+- [x] **T1 用户数据表迁移**（2026-09-10）：新增 `users / sessions / agent_tokens / user_permissions` 四张表（`db/schema.rs`，USER_VERSION +1，追加式迁移）；`domain/user.rs` 定义角色枚举与校验规则；`src/shared/types.ts` 同步类型。验收：`cargo test` 覆盖旧库顺序升级与新库初始化两条路径。
+- [x] **T2 内置主机账号**（2026-09-10）：服务启动时 `INSERT OR IGNORE id='host'` 并强制 role 纠偏为 `super_admin`；对主机账号的降级/删除/停用/密码登录请求一律 403。验收：集成测试覆盖四种拒绝场景 + 纠偏场景。
+- [x] **T3 Web 会话鉴权**（2026-09-10）：`require_web_auth` 中间件挂载 `/api/web`；登录/注销/会话过期；密码 argon2/bcrypt 哈希；loopback 双入口（主机登录免密 / 用户登录），非 loopback 请求主机登录拒绝。验收：未登录 401、非 loopback 主机登录 403、会话过期 401 的集成测试。
 
 ### 阶段 2：权限体系
 
-- [ ] **T4 权限校验层**：`db/permissions.rs`；项目可见性过滤（列表/分页/详情/分组计数/附件/SSE）；写接口字段级校验（未授权字段整单 403 并列出字段名）；枚举字段 `allowed_values` 校验（含「是否允许验收」）。验收：权限矩阵测试，对齐 `tests/api.rs` 现有 Agent 矩阵写法。
-- [ ] **T5 用户管理 API**：`/api/web/users/*`（列表/改名/设角色/提升降级超管/删除/停用），仅管理员以上；管理员操作普通用户、超管操作一切的矩阵在服务端强制。验收：越权操作全部 403 的矩阵测试。
-- [ ] **T6 用户管理面板（前端）**：`components/users/` 用户列表 + 权限编辑器（项目勾选 → 字段勾选 → 枚举选项勾选）；主机账号置顶徽标、隐藏危险按钮；「我的 Agent 访问」面板（查看/重新生成/吊销 token）。验收：`npm run build` + Vitest 组件/Store 测试。
+- [x] **T4 权限校验层**（2026-09-10）：`db/permissions.rs`；项目可见性过滤（列表/分页/详情/分组计数/附件/SSE）；写接口字段级校验（未授权字段整单 403 并列出字段名）；枚举字段 `allowed_values` 校验（含「是否允许验收」）。验收：权限矩阵测试，对齐 `tests/api.rs` 现有 Agent 矩阵写法。
+- [x] **T5 用户管理 API**（2026-09-10）：`/api/web/users/*`（列表/改名/设角色/提升降级超管/删除/停用），仅管理员以上；管理员操作普通用户、超管操作一切的矩阵在服务端强制。验收：越权操作全部 403 的矩阵测试。
+- [x] **T6 用户管理面板（前端）**（2026-09-10）：`components/users/` 用户列表 + 权限编辑器（项目勾选 → 字段勾选 → 枚举选项勾选）；主机账号置顶徽标、隐藏危险按钮；「我的 Agent 访问」面板（查看/重新生成/吊销 token）。验收：`npm run build` + Vitest 组件/Store 测试。
 
 ### 阶段 3：Agent 接入与 pm-cli-skill
 
-- [ ] **T7 按用户 agent token**：`agent_tokens` 签发/吊销 API；`/api/agent` 中间件改为按 token 查用户并注入 `user_id`；Agent 权限 = 用户权限 ∩ Agent 固有权限；`GET /api/agent/help` 自描述接口（含 skill 下载地址说明）。验收：token 归属、吊销即失效、越界项目/字段拒绝的集成测试。
-- [ ] **T8 pm-cli 远程模式**：`PM_SERVER_URL` / `PM_AGENT_TOKEN` 环境变量优先于 `runtime.json`；`pm-cli config set` 写 `%APPDATA%\agents-pm-tool\cli.json`；本机无变量时行为不变。验收：CLI 单测 + 对无头服务的远程联调用例。
-- [ ] **T9 pm-cli-skill 打包**（任务 202609091822120008）：编写 `SKILL.md`（frontmatter 兼容 Claude Code / Codex，含远程配置与 curl 兜底说明）+ `bin/pm-cli.exe` 的 zip 构建脚本（纳入 `npm run build:cli` 链路）。验收：zip 解压到 `~/.claude/skills/` 与 `~/.codex/skills/` 均能被对应前端识别。
-- [ ] **T10 skill 分发接口**：`GET /api/web/skill/download`（面板按钮）与 `GET /api/agent/skill/download`（Bearer，响应头带版本号）；主机端 Claude Code / Codex skill 目录检测 + 一键安装/更新（服务端写本机文件系统）。验收：Agent 凭 token 可完成「下载 → 解压 → 安装」全流程的自动化测试。
-- [ ] **T11 复制 Prompt 微改**：`GET /api/web/me/agent-access` 下发当前用户接入文案；`buildAgentTaskPrompt` 参数化并保持单模板；固定追加 `pm-cli --help` / `GET /api/agent/help` 自助入口；skill 就绪时切换短模式（① pm-cli-skill 用法 ② 任务 ID + 命令）。验收：Vitest 覆盖主机长文案 / 远程长文案 / 短模式三种输出。
+- [x] **T7 按用户 agent token**（2026-09-10）：`agent_tokens` 签发/吊销 API；`/api/agent` 中间件改为按 token 查用户并注入 `user_id`；Agent 权限 = 用户权限 ∩ Agent 固有权限；`GET /api/agent/help` 自描述接口（含 skill 下载地址说明）。验收：token 归属、吊销即失效、越界项目/字段拒绝的集成测试。
+- [x] **T8 pm-cli 远程模式**（2026-09-10）：`PM_SERVER_URL` / `PM_AGENT_TOKEN` 环境变量优先于 `runtime.json`；`pm-cli config set` 写 `%APPDATA%\agents-pm-tool\cli.json`；本机无变量时行为不变。验收：CLI 单测 + 对无头服务的远程联调用例。
+- [x] **T9 pm-cli-skill 打包**（2026-09-10，任务 202609091822120008）：编写 `SKILL.md`（frontmatter 兼容 Claude Code / Codex，含远程配置与 curl 兜底说明）+ `bin/pm-cli.exe` 的 zip 构建脚本（纳入 `npm run build:cli` 链路）。验收：zip 解压到 `~/.claude/skills/`、`~/.agents/skills/`（以及旧版 `~/.codex/skills/`）均能被对应前端识别。
+- [x] **T10 skill 分发接口**（2026-09-10）：`GET /api/web/skill/download`（面板按钮）与 `GET /api/agent/skill/download`（Bearer，响应头带版本号）；主机端 Claude Code / Codex skill 目录检测 + 一键安装/更新（服务端写本机文件系统）。验收：Agent 凭 token 可完成「下载 → 解压 → 安装」全流程的自动化测试。
+- [x] **T11 复制 Prompt 微改**（2026-09-10）：`GET /api/web/me/agent-access` 下发当前用户接入文案；`buildAgentTaskPrompt` 参数化并保持单模板；固定追加 `pm-cli --help` / `GET /api/agent/help` 自助入口；skill 就绪时切换短模式（① pm-cli-skill 用法 ② 任务 ID + 命令）。验收：Vitest 覆盖主机长文案 / 远程长文案 / 短模式三种输出。
 
 ### 阶段 4：收尾
 
-- [ ] **T12 文档与兼容**：README 局域网章节重写（注册授权 + `data/` 物理安全警告）；`AGENTS.md` §5/§8 同步新枚举与新接口；旧库升级后主机账号与原全局 token 迁移说明。验收：`git diff --check` + 按 README 步骤在干净环境走通注册→授权→Agent 接入全流程。
+- [x] **T12 文档与兼容**（2026-09-10）：README 局域网章节重写（注册授权 + `data/` 物理安全警告）；`AGENTS.md` §5/§8 同步新枚举与新接口；旧库升级后主机账号与原全局 token 迁移说明。验收：`git diff --check` + 干净临时数据库集成测试走通注册→授权→Agent 接入全流程。
 
 ### 依赖关系
 

@@ -21,6 +21,7 @@ fn seed(conn: &mut rusqlite::Connection, count: usize) -> Vec<String> {
                     description: &format!("验收任务 {index}"),
                     note: "",
                     submitter: "用户",
+                    owner_user_id: None,
                 },
             )
             .unwrap();
@@ -121,7 +122,31 @@ async fn batch_reports_partial_success_and_preserves_agent_boundaries() {
     let token = core.token.read().await.clone();
     let handle = server::start_server(core, 0, [127, 0, 0, 1]).await.unwrap();
     let base = format!("http://127.0.0.1:{}", handle.port);
-    let client = reqwest::Client::new();
+    let bootstrap = reqwest::Client::new();
+    let login = bootstrap
+        .post(format!("{base}/api/web/auth/host-login"))
+        .header("X-PM-Client", "web")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 200);
+    let cookie = login
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("X-PM-Client", "web".parse().unwrap());
+    headers.insert(reqwest::header::COOKIE, cookie.parse().unwrap());
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap();
     let response = client.post(format!("{base}/api/web/tasks/batch")).json(&json!({
         "action":"update", "ids":[ids[0], "missing", ids[1], ids[0]], "patch":{"status":"进行中"}
     })).send().await.unwrap();

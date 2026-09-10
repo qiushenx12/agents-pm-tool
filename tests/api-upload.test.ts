@@ -15,6 +15,7 @@ it("lets the browser generate a multipart boundary for attachments", async () =>
   await api.uploadAttachment("task", file);
   const init = fetchMock.mock.calls[0][1];
   expect(init.body).toBeInstanceOf(FormData);
-  expect(init.headers?.["Content-Type"]).toBeUndefined();
+  expect((init.headers as Headers).has("Content-Type")).toBe(false);
+  expect((init.headers as Headers).get("X-PM-Client")).toBe("web");
   expect(init.body.get("file").name).toBe("test.txt");
 });

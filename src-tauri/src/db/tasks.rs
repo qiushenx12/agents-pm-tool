@@ -13,6 +13,8 @@ pub struct TaskFilter {
     pub keyword: Option<String>,
     pub sort_by: Option<String>,
     pub sort_order: Option<String>,
+    /// None = 全部项目（管理员）；Some = 仅这些项目（普通用户，可为空）。
+    pub visible_projects: Option<Vec<String>>,
 }
 
 pub(super) fn row_to_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
@@ -30,6 +32,7 @@ pub(super) fn row_to_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
         updated_at: r.get("updated_at")?,
         position: r.get("position")?,
         attachment_count: r.get("attachment_count")?,
+        owner_user_id: r.get("owner_user_id")?,
     })
 }
 
@@ -41,6 +44,17 @@ FROM tasks t
 pub(super) fn filter_sql(f: &TaskFilter) -> (String, Vec<String>) {
     let mut conds = Vec::new();
     let mut values = Vec::new();
+    if let Some(projects) = &f.visible_projects {
+        if projects.is_empty() {
+            conds.push("1 = 0".into());
+        } else {
+            conds.push(format!(
+                "t.project IN ({})",
+                vec!["?"; projects.len()].join(",")
+            ));
+            values.extend(projects.iter().cloned());
+        }
+    }
     for (column, items) in [
         ("project", &f.project),
         ("type", &f.task_type),
@@ -121,6 +135,7 @@ pub struct NewTask<'a> {
     pub description: &'a str,
     pub note: &'a str,
     pub submitter: &'a str,
+    pub owner_user_id: Option<&'a str>,
 }
 
 /// 校验 + 创建（ID 生成与插入在同一事务，规划 §4.2）
@@ -139,8 +154,8 @@ pub fn create(conn: &mut Connection, n: &NewTask) -> ApiResult<Task> {
     let (id, seq) = idgen::next_task_id(&tx)?;
     // 新任务排在手动排序末尾：position 取递增的 seq 即可
     tx.execute(
-        "INSERT INTO tasks (id, seq, project, type, description, note, status, submitter, created_at, updated_at, position)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, '未开始', ?7, ?8, ?8, ?2)",
+        "INSERT INTO tasks (id, seq, project, type, description, note, status, submitter, created_at, updated_at, position, owner_user_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, '未开始', ?7, ?8, ?8, ?2, ?9)",
         params![
             id,
             seq,
@@ -149,7 +164,8 @@ pub fn create(conn: &mut Connection, n: &NewTask) -> ApiResult<Task> {
             n.description,
             n.note,
             n.submitter,
-            now
+            now,
+            n.owner_user_id,
         ],
     )?;
     tx.commit()?;
@@ -318,6 +334,36 @@ pub fn rebase_positions(
     Ok(())
 }
 
+/// 仅重铺指定项目，避免普通用户的排序操作影响不可见项目。
+pub fn rebase_positions_for_projects(
+    conn: &Connection,
+    sort_by: Option<&str>,
+    sort_order: Option<&str>,
+    projects: &[String],
+) -> ApiResult<()> {
+    if projects.is_empty() {
+        return Ok(());
+    }
+    let order = sort_sql(&TaskFilter {
+        sort_by: sort_by.map(str::to_string),
+        sort_order: sort_order.map(str::to_string),
+        ..Default::default()
+    });
+    let marks = vec!["?"; projects.len()].join(",");
+    conn.execute(
+        &format!(
+            "WITH ranked AS (
+               SELECT t.id AS rid, ROW_NUMBER() OVER (ORDER BY {order}) AS r
+               FROM tasks t WHERE t.project IN ({marks})
+             )
+             UPDATE tasks SET position = (SELECT 1024.0 * r FROM ranked WHERE rid=tasks.id)
+             WHERE id IN (SELECT rid FROM ranked)"
+        ),
+        rusqlite::params_from_iter(projects.iter()),
+    )?;
+    Ok(())
+}
+
 /// 把任务移到 prev_id/next_id 之间；只给一侧则贴到该侧邻居之外。
 /// 都为空或落点即自身 → 原样返回。邻居不存在 → 404。
 pub fn reorder(
@@ -407,17 +453,21 @@ mod tests {
                 description: desc,
                 note: "",
                 submitter: "用户",
+                owner_user_id: None,
             },
         )
         .unwrap()
     }
 
     fn manual_order(conn: &Connection) -> Vec<String> {
-        list(conn, &TaskFilter {
-            sort_by: Some("manual".into()),
-            sort_order: Some("asc".into()),
-            ..Default::default()
-        })
+        list(
+            conn,
+            &TaskFilter {
+                sort_by: Some("manual".into()),
+                sort_order: Some("asc".into()),
+                ..Default::default()
+            },
+        )
         .unwrap()
         .into_iter()
         .map(|t| t.description)
@@ -460,11 +510,14 @@ mod tests {
         add(&mut conn, "A");
         add(&mut conn, "B");
         let ids = |order: &str| {
-            list(&conn, &TaskFilter {
-                sort_by: Some("manual".into()),
-                sort_order: Some(order.into()),
-                ..Default::default()
-            })
+            list(
+                &conn,
+                &TaskFilter {
+                    sort_by: Some("manual".into()),
+                    sort_order: Some(order.into()),
+                    ..Default::default()
+                },
+            )
             .unwrap()
             .into_iter()
             .map(|t| t.description)

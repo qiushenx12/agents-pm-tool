@@ -123,10 +123,14 @@ agents-pm-tool/
 │  ├─ src/settings.rs            # 端口、访问范围、关闭行为
 │  ├─ src/server/
 │  │  ├─ mod.rs                  # Axum 路由、端口选择、runtime.json
+│  │  ├─ api_auth.rs             # 注册、登录、主机登录与会话
 │  │  ├─ api_web.rs              # 网页端完整 CRUD
 │  │  ├─ api_agent.rs            # Agent 受限 API
+│  │  ├─ api_users.rs            # 用户、角色与权限管理
+│  │  ├─ api_agent_access.rs     # 当前用户 Agent token 与接入文案
+│  │  ├─ api_skill.rs            # pm-cli-skill 下载与本机安装
 │  │  ├─ api_batch.rs            # 批量更新/删除
-│  │  ├─ auth.rs                 # Bearer token 校验
+│  │  ├─ auth.rs                 # Web 会话、CSRF 头与 Agent token 校验
 │  │  ├─ events.rs               # SSE 事件总线
 │  │  └─ static_site.rs          # rust-embed 静态资源
 │  ├─ src/db/
@@ -134,12 +138,15 @@ agents-pm-tool/
 │  │  ├─ schema.rs               # 初始 Schema 和种子项目
 │  │  ├─ tasks.rs                # 任务 CRUD、筛选、排序、状态规则
 │  │  ├─ task_page.rs            # 分页、分组计数和锚点定位
-│  │  └─ projects.rs             # 项目 CRUD、重命名级联
+│  │  ├─ projects.rs             # 项目 CRUD、重命名级联
+│  │  ├─ users.rs                # 用户、会话和 Agent token
+│  │  └─ permissions.rs          # 项目/字段/枚举选项授权
 │  ├─ src/domain/                # Task、ID、附件白名单等领域规则
 │  ├─ src/cli/main.rs            # pm-cli
 │  ├─ examples/serve.rs          # 无头服务
 │  └─ tests/                     # Rust API/权限/分页集成测试
 ├─ tests/                         # Vitest 测试
+├─ pm-cli-skill/                  # pm-cli skill 源文件
 ├─ scripts/                       # 前端和 CLI 增量构建脚本
 ├─ docs/                          # 规划与验收资料
 ├─ dev.py                         # 交互式开发启动器
@@ -154,7 +161,7 @@ agents-pm-tool/
 ### 任务字段与枚举
 
 - 类型只有：`新增需求`、`优化`、`BUG`。
-- 状态只有：`未开始`、`进行中`、`待验证`、`已完成`、`验收未通过`、`验收通过`。
+- 状态只有：`未开始`、`进行中`、`待验证`、`已完成`、`验收未通过`、`验收通过`、`取消`。
 - 提交人只有：`用户`、`Agent`。
 - Web 创建任务时提交人固定为“用户”；Agent API 创建时固定为“Agent”。
 - 创建状态固定为“未开始”。
@@ -173,17 +180,28 @@ agents-pm-tool/
 - 任务每次进入 `待验证`、`已完成`、`验收通过` 时刷新 `finished_at`。
 - 离开上述状态时不清空已有 `finished_at`。
 
+### 用户、会话与 Web 权限
+
+- 固定 `users.id='host'` 的主机账号在每次打开数据库时确保存在并纠偏为 `super_admin`；只能从 loopback 免密登录，不能密码登录、停用、删除或降级。
+- 命名用户密码仅保存 Argon2 哈希；登录会话保存在 `sessions`，通过 HttpOnly、`SameSite=Lax` Cookie 传递，默认 7 天滑动过期。
+- 除公开注册/登录接口外，`/api/web/*` 均需有效会话；所有 Web 写请求还必须携带 `X-PM-Client: web`。前端统一由 `src/grid-app/api/client.ts` 附加，不要在组件中散落裸 `fetch`。
+- 角色为 `super_admin`、`admin`、`user`。管理员可管理普通用户与项目；超级管理员可调整其他非主机账号角色；普通用户只能访问 `user_permissions` 授权的项目、字段和枚举值。
+- 任务的 `owner_user_id` 记录 Agent 创建任务所属用户。命名用户的 Agent 只能修改自己创建的 Agent 任务描述；v8 迁移会把旧版全局 Agent 创建的存量任务归属到主机账号。
+- 项目可见性必须覆盖列表、分页、详情、分组/锚点和附件入口。SSE 只发送“数据变化”信号，不得夹带未授权任务内容。
+
 ### Agent 权限
 
 `/api/agent/*` 是真正的权限边界，CLI 只是一层薄封装。不能只在 CLI 中做校验。
 
 Agent 可以：
 
-- 查看、筛选任务；
-- 只读查看项目；
+- 查看、筛选已授权项目中的任务；
+- 只读查看已授权项目；
 - 创建任务，但项目、类型和非空描述三项必填；
 - 将任务切换到 `进行中`、`待验证`、`已完成`；
-- 修改提交人为 `Agent` 的任务描述，且不能清空描述。
+- 修改属于当前 token 用户、且提交人为 `Agent` 的任务描述，且不能清空描述。
+
+上述能力还必须与 token 所属用户的 `user_permissions` 取交集。主机/管理员并不绕过 Agent API 自身的固有限制。
 
 Agent 不可以：
 
@@ -206,8 +224,8 @@ Agent 不可以：
 
 ## 6. API 与前端状态约定
 
-- Web API 前缀：`/api/web`，提供完整用户能力。
-- Agent API 前缀：`/api/agent`，全部经过 Bearer token 中间件。
+- Web API 前缀：`/api/web`。`/auth/register`、`/auth/login`、`/auth/host-login` 为公开入口，其余接口全部经过会话中间件；用户管理、权限、当前用户 Agent 接入和 skill 下载也在此前缀下。
+- Agent API 前缀：`/api/agent`，全部按用户 Bearer token 鉴权并注入用户上下文；`/help` 提供自描述帮助，`/skill/download` 提供 skill 包。
 - 错误响应统一为：
 
   ```json
@@ -258,11 +276,13 @@ SQLite 连接启用了 WAL、外键和 5 秒 busy timeout。多步一致性操�
 - `data/pm.db`：数据库
 - `data/attachments/`：附件
 - `data/settings.json`：用户设置
-- `data/runtime.json`：运行端口、PID、Agent token
+- `data/runtime.json`：运行端口、PID、本机主机 Agent token
 
 `data/` 已被 Git 忽略。不要提交数据库、附件、token 或真实用户路径。测试应使用临时目录或 `PM_DATA_DIR` 隔离。
 
-默认仅监听 `127.0.0.1`。`listen_scope=lan` 会绑定 `0.0.0.0`，而 Web API 本身没有账号鉴权；任何局域网相关改动都必须保留清晰的风险提示。Agent token 只保护 `/api/agent/*`，不要误写成对整个 Web 工作台的认证。
+默认仅监听 `127.0.0.1`。`listen_scope=lan` 会绑定 `0.0.0.0`；局域网 Web 用户必须注册、登录并获得授权，但系统不提供互联网级 HTTPS、防爆破或外部身份认证。任何局域网相关改动都必须保留清晰的可信网络风险提示。
+
+`data/` 的物理安全等同于最高权限：完整复制数据库到另一台机器后，那台机器的 loopback 主机账号会自动获得超级管理员身份。不要提交或分享数据库、`runtime.json`、用户 Agent token 或 `%APPDATA%\agents-pm-tool\cli.json`。
 
 服务默认端口为 `17890`，占用时最多向后尝试 20 个端口。CLI 必须读取 `runtime.json` 获取实际端口，不能假定始终是 17890。
 
@@ -279,7 +299,7 @@ SQLite 连接启用了 WAL、外键和 5 秒 busy timeout。多步一致性操�
 
 `scripts/build-frontend.mjs` 和 `scripts/build-cli.mjs` 使用输入指纹跳过无变化构建。若确实需要强制重建 CLI，可设置 `FORCE_CLI_BUILD=1`，但不要把该环境变量持久化到项目文件。
 
-`npm run build:cli` 会把 `pm-cli` 复制成 Tauri target-triple 命名的 sidecar 文件。涉及安装包时，不要只看到 `src-tauri/binaries/` 中存在文件就断言已随安装器发布；还要核对 `src-tauri/tauri.conf.json` 的 bundle 配置和最终安装目录。
+`npm run build:cli` 会把 `pm-cli` 复制成 Tauri target-triple 命名的 sidecar 文件，并用 `pm-cli-skill/SKILL.md`、`pm-cli.exe` 和版本号生成 `src-tauri/binaries/pm-cli-skill.zip`。涉及安装包时，不要只看到 `src-tauri/binaries/` 中存在文件就断言已随安装器发布；还要核对 `src-tauri/tauri.conf.json` 的 bundle 配置和最终安装目录。
 
 ## 10. 测试定位
 
@@ -295,7 +315,7 @@ SQLite 连接启用了 WAL、外键和 5 秒 busy timeout。多步一致性操�
 
 Rust 测试：
 
-- `src-tauri/tests/api.rs`：Web CRUD、Agent 权限、项目级联、附件清理、局域网监听和静态站点等集成路径
+- `src-tauri/tests/api.rs`：Web CRUD、会话、用户/角色/权限矩阵、Agent token、项目级联、附件清理、局域网监听和静态站点等集成路径
 - `src-tauri/tests/p2.rs`：分页、分组、锚点和批量操作
 - 各 Rust 模块中的 `#[cfg(test)]`：领域规则、设置、排序与 ID 生成
 

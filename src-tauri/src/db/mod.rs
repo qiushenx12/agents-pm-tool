@@ -1,7 +1,9 @@
+pub mod permissions;
 pub mod projects;
 pub mod schema;
 pub mod task_page;
 pub mod tasks;
+pub mod users;
 
 use std::path::Path;
 
@@ -9,7 +11,7 @@ use rusqlite::Connection;
 
 use crate::error::ApiResult;
 
-const USER_VERSION: i32 = 7;
+const USER_VERSION: i32 = 8;
 
 fn configure(conn: &Connection) -> ApiResult<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -25,6 +27,7 @@ fn configure(conn: &Connection) -> ApiResult<()> {
 /// v5：tasks 增加 note（用户维护的备注）
 /// v6：tasks 状态 CHECK 增加「取消」（SQLite 不能 ALTER CHECK，需重建表）
 /// v7：meta 增加 id_ts / id_suffix（任务 ID 后缀改为同一秒内递增，0000 起）
+/// v8：用户、Web 会话、按用户 Agent token 与细粒度权限
 fn migrate(conn: &Connection) -> ApiResult<()> {
     let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version < 1 {
@@ -33,15 +36,11 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
         conn.pragma_update(None, "user_version", 1)?;
     }
     if version < 2 {
-        conn.execute_batch(
-            "ALTER TABLE projects ADD COLUMN local_path TEXT NOT NULL DEFAULT '';",
-        )?;
+        conn.execute_batch("ALTER TABLE projects ADD COLUMN local_path TEXT NOT NULL DEFAULT '';")?;
         conn.pragma_update(None, "user_version", 2)?;
     }
     if version < 3 {
-        conn.execute_batch(
-            "ALTER TABLE projects ADD COLUMN git_url TEXT NOT NULL DEFAULT '';",
-        )?;
+        conn.execute_batch("ALTER TABLE projects ADD COLUMN git_url TEXT NOT NULL DEFAULT '';")?;
         conn.pragma_update(None, "user_version", 3)?;
     }
     if version < 4 {
@@ -96,6 +95,56 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
         )?;
         conn.pragma_update(None, "user_version", 7)?;
     }
+    if version < 8 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE users (
+               id            TEXT PRIMARY KEY,
+               username      TEXT NOT NULL UNIQUE,
+               password_hash TEXT NOT NULL DEFAULT '',
+               role          TEXT NOT NULL DEFAULT 'user'
+                             CHECK (role IN ('super_admin','admin','user')),
+               created_at    TEXT NOT NULL,
+               disabled      INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0,1))
+             );
+             CREATE TABLE sessions (
+               token      TEXT PRIMARY KEY,
+               user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+               created_at TEXT NOT NULL,
+               expires_at TEXT NOT NULL
+             );
+             CREATE INDEX idx_sessions_user ON sessions(user_id);
+             CREATE INDEX idx_sessions_expiry ON sessions(expires_at);
+             CREATE TABLE user_permissions (
+               user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+               project        TEXT NOT NULL,
+               field          TEXT NOT NULL,
+               allowed_values TEXT,
+               PRIMARY KEY (user_id, project, field)
+             );
+             CREATE INDEX idx_user_permissions_project ON user_permissions(project);
+             CREATE TABLE agent_tokens (
+               token      TEXT PRIMARY KEY,
+               user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+               created_at TEXT NOT NULL,
+               revoked    INTEGER NOT NULL DEFAULT 0 CHECK (revoked IN (0,1))
+             );
+             CREATE INDEX idx_agent_tokens_user ON agent_tokens(user_id);
+             ALTER TABLE tasks ADD COLUMN owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+             CREATE INDEX idx_tasks_owner_user ON tasks(owner_user_id);
+             PRAGMA user_version = 8;
+             COMMIT;",
+        )?;
+    }
+    users::ensure_host(conn)?;
+    if version < 8 {
+        // 旧版只有全局主机 token，因此存量 Agent 任务归属主机账号。
+        conn.execute(
+            "UPDATE tasks SET owner_user_id=?1
+             WHERE submitter='Agent' AND owner_user_id IS NULL",
+            [crate::domain::user::HOST_USER_ID],
+        )?;
+    }
     debug_assert!(version <= USER_VERSION);
     Ok(())
 }
@@ -147,6 +196,93 @@ mod tests {
     }
 
     #[test]
+    fn fresh_database_contains_user_tables_and_host_account() {
+        let conn = open_memory().unwrap();
+        for table in ["users", "sessions", "user_permissions", "agent_tokens"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "missing table {table}");
+        }
+        let host = users::get(&conn, crate::domain::user::HOST_USER_ID).unwrap();
+        assert_eq!(host.username, crate::domain::user::DEFAULT_HOST_USERNAME);
+        assert_eq!(host.role, "super_admin");
+        assert!(!host.disabled);
+    }
+
+    #[test]
+    fn version_seven_database_migrates_users_and_preserves_tasks() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(schema::SCHEMA_V1).unwrap();
+        conn.execute_batch(schema::SEED).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE projects ADD COLUMN local_path TEXT NOT NULL DEFAULT '';
+             ALTER TABLE projects ADD COLUMN git_url TEXT NOT NULL DEFAULT '';
+             ALTER TABLE tasks ADD COLUMN position REAL NOT NULL DEFAULT 0;
+             ALTER TABLE tasks ADD COLUMN note TEXT NOT NULL DEFAULT '';
+             INSERT INTO meta(key, value) VALUES ('id_ts', ''), ('id_suffix', '0');
+             INSERT INTO tasks
+               (id, seq, project, type, description, status, submitter, created_at, updated_at, position, note)
+             VALUES
+               ('legacy-v7', 1, 'default-project', '优化', '保留数据', '未开始', 'Agent', '2026-01-01', '2026-01-01', 1, '');",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 7).unwrap();
+
+        migrate(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE id='legacy-v7'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        let owner: Option<String> = conn
+            .query_row(
+                "SELECT owner_user_id FROM tasks WHERE id='legacy-v7'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(owner.as_deref(), Some("host"));
+        assert_eq!(users::get(&conn, "host").unwrap().role, "super_admin");
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, USER_VERSION);
+    }
+
+    #[test]
+    fn opening_database_repairs_host_role_and_disabled_flag() {
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "UPDATE users SET role='user', disabled=1, password_hash='bad' WHERE id='host'",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let host = users::get(&conn, "host").unwrap();
+        assert_eq!(host.role, "super_admin");
+        assert!(!host.disabled);
+        let password_hash: String = conn
+            .query_row(
+                "SELECT password_hash FROM users WHERE id='host'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(password_hash.is_empty());
+    }
+
+    #[test]
     fn version_four_database_migrates_existing_tasks_with_empty_note() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(schema::SCHEMA_V1).unwrap();
@@ -170,7 +306,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(note, "");
-        assert_eq!(task_columns(&conn).last().map(String::as_str), Some("note"));
+        assert!(task_columns(&conn).iter().any(|column| column == "note"));
     }
 
     #[test]

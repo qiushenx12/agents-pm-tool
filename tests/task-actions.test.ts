@@ -46,6 +46,25 @@ describe("task row actions", () => {
     );
   });
 
+  it("uses server-provided remote access instructions", () => {
+    const prompt = buildAgentTaskPrompt(task, {
+      access_instructions: "请设置 PM_SERVER_URL=http://192.168.1.9:17890 与 PM_AGENT_TOKEN。",
+      skill_ready: false,
+    });
+    expect(prompt).toContain("PM_SERVER_URL=http://192.168.1.9:17890");
+    expect(prompt).toContain("GET /api/agent/help");
+  });
+
+  it("uses the short prompt when the matching skill is ready", () => {
+    const prompt = buildAgentTaskPrompt(task, {
+      access_instructions: "不会出现在短模式",
+      skill_ready: true,
+    });
+    expect(prompt).toContain("请使用 pm-cli-skill");
+    expect(prompt).toContain("pm-cli get 202609091234560001 --json");
+    expect(prompt).not.toContain("2. 可用命令");
+  });
+
   it("copies the generated prompt through the registered action", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {

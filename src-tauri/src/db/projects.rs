@@ -129,6 +129,10 @@ pub fn patch(conn: &mut Connection, name: &str, p: &ProjectPatch) -> ApiResult<P
             "UPDATE tasks SET project = ?2, updated_at = ?3 WHERE project = ?1",
             params![name, new_name, now_str()],
         )?;
+        tx.execute(
+            "UPDATE user_permissions SET project = ?2 WHERE project = ?1",
+            params![name, new_name],
+        )?;
         tx.commit()?;
     } else {
         conn.execute(
@@ -160,5 +164,9 @@ pub fn remove(conn: &Connection, name: &str) -> ApiResult<()> {
         .with_details(serde_json::json!({ "ref_count": refs })));
     }
     conn.execute("DELETE FROM projects WHERE name = ?1", params![name])?;
+    conn.execute(
+        "DELETE FROM user_permissions WHERE project = ?1",
+        params![name],
+    )?;
     Ok(())
 }

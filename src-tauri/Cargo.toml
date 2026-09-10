@@ -28,12 +28,14 @@ rust-embed = { version = "8", features = ["compression"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
+argon2 = "0.5"
 dirs = "5"
 mime_guess = "2"
 tower-http = { version = "0.6", features = ["fs"] }
 async-stream = "0.3"
 url = "2"
 rfd = "0.15"
+zip = { version = "2", default-features = false }
 
 # pm-cli 专用
 clap = { version = "4", features = ["derive"] }

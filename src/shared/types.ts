@@ -20,6 +20,45 @@ export const AGENT_STATUSES = ["进行中", "待验证", "已完成"] as const;
 export const SUBMITTERS = ["用户", "Agent"] as const;
 export type Submitter = (typeof SUBMITTERS)[number];
 
+export const USER_ROLES = ["super_admin", "admin", "user"] as const;
+export type UserRole = (typeof USER_ROLES)[number];
+
+export interface User {
+  id: string;
+  username: string;
+  role: UserRole;
+  created_at: string;
+  disabled: boolean;
+  is_host: boolean;
+  /** 用户管理列表中返回；普通用户是否至少拥有一个项目访问授权。 */
+  has_permissions?: boolean;
+}
+
+export interface UserPermission {
+  project: string;
+  field: string;
+  allowed_values: string[] | null;
+}
+
+export interface UserPermissionsResponse {
+  user: User;
+  permissions: UserPermission[];
+}
+
+export interface AgentAccess {
+  server_url: string;
+  token: string | null;
+  access_instructions: string;
+  skill_ready: boolean;
+}
+
+export interface LocalSkillTarget {
+  frontend: string;
+  path: string;
+  installed: boolean;
+  version: string | null;
+}
+
 export interface Task {
   id: string;
   seq: number;
@@ -35,6 +74,7 @@ export interface Task {
   /** 手动排序位置（sort_by=manual 时生效） */
   position: number;
   attachment_count?: number;
+  owner_user_id?: string | null;
 }
 
 export interface Project {

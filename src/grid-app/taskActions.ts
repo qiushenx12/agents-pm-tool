@@ -13,15 +13,44 @@ function promptValue(value: string) {
   return JSON.stringify(value);
 }
 
+export interface AgentPromptAccess {
+  access_instructions: string;
+  skill_ready: boolean;
+}
+
+const DEFAULT_ACCESS: AgentPromptAccess = {
+  access_instructions:
+    "Agents PM Tool 是本地任务管理工具，Agent 通过受限客户端 pm-cli 读取和推进任务。请先确保桌面应用正在运行；安装版会注册 pm-cli 到用户 PATH，并自动读取实际端口和临时 token，无需手动配置。安装或升级后需重新打开终端/Agent 前端。",
+  skill_ready: false,
+};
+
+let activeAccess = DEFAULT_ACCESS;
+
+export function setAgentPromptAccess(access?: AgentPromptAccess) {
+  activeAccess = access ?? DEFAULT_ACCESS;
+}
+
 /** 生成可直接交给任意具备本机终端能力的 Agent 的完整任务说明。 */
-export function buildAgentTaskPrompt(task: Task) {
+export function buildAgentTaskPrompt(
+  task: Task,
+  access: AgentPromptAccess = DEFAULT_ACCESS,
+) {
+  if (access.skill_ready) {
+    return [
+      "请使用 pm-cli-skill 了解 Agents PM Tool 与 pm-cli 的完整用法。",
+      "",
+      `任务 ID：${promptValue(task.id)}`,
+      `项目：${promptValue(task.project)}`,
+      `请先运行 pm-cli get ${task.id} --json 读取任务，然后完成并推进状态。`,
+    ].join("\n");
+  }
   return [
     "请使用 Agents PM Tool 完成以下任务：",
     `- 任务 ID：${promptValue(task.id)}`,
     `- 项目：${promptValue(task.project)}`,
     "",
     "1. 工具介绍与访问方式",
-    "Agents PM Tool 是本地任务管理工具，Agent 通过受限客户端 pm-cli 读取和推进任务。请先确保桌面应用正在运行；安装版会注册 pm-cli 到用户 PATH，并自动读取实际端口和临时 token，无需手动配置。安装或升级后需重新打开终端/Agent 前端。",
+    access.access_instructions,
     `使用 pm-cli get ${task.id} --json 读取本任务。`,
     "",
     "2. 可用命令",
@@ -34,6 +63,7 @@ export function buildAgentTaskPrompt(task: Task) {
     "pm-cli describe <任务ID> --description <描述> [--json]",
     "pm-cli --help                                   查看完整帮助",
     "```",
+    "完整用法见 pm-cli --help 或 GET /api/agent/help（需带 token）。",
     "",
     "3. Agent 权限",
     "- 可以查看/筛选任务、只读查看项目、创建任务。",
@@ -57,6 +87,6 @@ export const TASK_ROW_ACTIONS: readonly TaskRowAction[] = [
     label: "复制 Prompt",
     title: "复制 Agent 任务 Prompt",
     icon: "copy",
-    run: (task: Task) => copyText(buildAgentTaskPrompt(task)),
+    run: (task: Task) => copyText(buildAgentTaskPrompt(task, activeAccess)),
   },
 ];

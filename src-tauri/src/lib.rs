@@ -120,6 +120,11 @@ fn get_server_status(state: State<'_, AppState>) -> ServerStatus {
 #[tauri::command]
 async fn regenerate_token(state: State<'_, AppState>) -> Result<(), String> {
     let new_token = uuid::Uuid::new_v4().to_string();
+    {
+        let connection = state.core.db.lock().unwrap();
+        db::users::set_agent_token(&connection, domain::user::HOST_USER_ID, &new_token)
+            .map_err(|error| error.message)?;
+    }
     *state.core.token.write().await = new_token;
     // 立即写 runtime.json，让 CLI 用上新 token（规划 §5.6）
     let port = state.server.lock().unwrap().as_ref().map(|h| h.port);

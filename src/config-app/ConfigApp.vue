@@ -13,6 +13,7 @@ interface Settings {
   autostart: boolean;
   close_behavior: string;
   listen_scope: string;
+  agent_server_url: string;
 }
 interface ServerStatus {
   running: boolean;
@@ -33,6 +34,7 @@ const settings = ref<Settings>({
   autostart: true,
   close_behavior: "keep_service",
   listen_scope: "local",
+  agent_server_url: "",
 });
 const status = ref<ServerStatus | null>(null);
 const baseline = ref(""),
@@ -318,8 +320,18 @@ onMounted(load);
               </div></label
             >
             <div v-if="settings.listen_scope === 'lan'" class="scope-warning">
-              同一网络中的设备可查看和修改任务，请在可信网络中使用。
+              局域网用户需要注册并经管理员授权。请在可信网络中使用，且不要复用重要口令。
             </div>
+          </div>
+          <div class="settings-row vertical">
+            <label for="agent-server-url">远程 Agent 服务地址（可选）</label>
+            <p>多网卡时可手工指定给远程用户的地址；留空会自动探测。</p>
+            <input
+              id="agent-server-url"
+              v-model="settings.agent_server_url"
+              class="input"
+              placeholder="例如 http://192.168.1.10:17890"
+            />
           </div>
         </fieldset>
       </section>

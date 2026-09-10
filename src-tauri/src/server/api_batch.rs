@@ -1,10 +1,14 @@
 use crate::{
-    db::tasks,
+    db::{permissions, tasks},
     domain::task::Task,
+    domain::user::User,
     error::{ApiError, ApiResult},
     server::CoreState,
 };
-use axum::{extract::State, Json};
+use axum::{
+    extract::{Extension, State},
+    Json,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -44,6 +48,7 @@ pub struct BatchResponse {
 
 pub async fn batch_tasks(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     Json(body): Json<BatchRequest>,
 ) -> ApiResult<Json<BatchResponse>> {
     let (ids, patch) = match body {
@@ -68,24 +73,52 @@ pub async fn batch_tasks(
     let mut cleanup = Vec::new();
     let mut succeeded = 0;
     for id in ids {
-        let result: ApiResult<Option<Task>> = match &patch {
-            Some(patch) => tasks::patch(
-                &mut conn,
-                &id,
-                &tasks::TaskPatch {
-                    project: patch.project.clone(),
-                    task_type: patch.task_type.clone(),
-                    status: patch.status.clone(),
-                    description: None,
-                    note: None,
-                },
-            )
-            .map(Some),
-            None => tasks::remove(&conn, &id).map(|paths| {
-                cleanup.extend(paths);
-                None
-            }),
-        };
+        let result: ApiResult<Option<Task>> = (|| {
+            let current = tasks::get(&conn, &id)?;
+            match &patch {
+                Some(patch) => {
+                    let mut fields = Vec::new();
+                    if patch.project.is_some() {
+                        fields.push(("project", None));
+                    }
+                    if let Some(value) = patch.task_type.as_deref() {
+                        fields.push(("type", Some(value)));
+                    }
+                    if let Some(value) = patch.status.as_deref() {
+                        fields.push(("status", Some(value)));
+                    }
+                    permissions::require_fields(&conn, &user, &current.project, &fields)?;
+                    if let Some(project) = patch.project.as_deref() {
+                        permissions::require_project(&conn, &user, project)?;
+                    }
+                    tasks::patch(
+                        &mut conn,
+                        &id,
+                        &tasks::TaskPatch {
+                            project: patch.project.clone(),
+                            task_type: patch.task_type.clone(),
+                            status: patch.status.clone(),
+                            description: None,
+                            note: None,
+                        },
+                    )
+                    .map(Some)
+                }
+                None => {
+                    permissions::require_field(
+                        &conn,
+                        &user,
+                        &current.project,
+                        "task_delete",
+                        None,
+                    )?;
+                    tasks::remove(&conn, &id).map(|paths| {
+                        cleanup.extend(paths);
+                        None
+                    })
+                }
+            }
+        })();
         match result {
             Ok(task) => {
                 succeeded += 1;

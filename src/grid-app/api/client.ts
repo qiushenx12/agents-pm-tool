@@ -10,6 +10,12 @@ import type {
   TaskListQuery,
   TaskStatus,
   TaskType,
+  User,
+  UserRole,
+  UserPermission,
+  UserPermissionsResponse,
+  AgentAccess,
+  LocalSkillTarget,
 } from "@/shared/types";
 
 export class ApiRequestError extends Error {
@@ -26,12 +32,17 @@ export class ApiRequestError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.body && !(init.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json");
+  }
+  if (init?.method && !["GET", "HEAD", "OPTIONS"].includes(init.method)) {
+    headers.set("X-PM-Client", "web");
+  }
   const res = await fetch(path, {
-    headers:
-      init?.body && !(init.body instanceof FormData)
-        ? { "Content-Type": "application/json" }
-        : undefined,
     ...init,
+    headers,
+    credentials: "same-origin",
   });
   if (!res.ok) {
     let err: ApiError["error"] = {
@@ -68,6 +79,21 @@ function buildQuery(q: TaskPageQuery): string {
 }
 
 export const api = {
+  me: () => request<User>("/api/web/auth/me"),
+  register: (body: { username: string; password: string }) =>
+    request<{ user: User }>("/api/web/auth/register", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  login: (body: { username: string; password: string }) =>
+    request<{ user: User }>("/api/web/auth/login", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  hostLogin: () =>
+    request<{ user: User }>("/api/web/auth/host-login", { method: "POST" }),
+  logout: () => request<void>("/api/web/auth/logout", { method: "POST" }),
+
   pageTasks: (q: TaskPageQuery = {}, signal?: AbortSignal) =>
     request<TaskPage>(`/api/web/tasks/page${buildQuery(q)}`, { signal }),
   getTask: (id: string) =>
@@ -178,6 +204,40 @@ export const api = {
 
   deleteAttachment: (id: string) =>
     request<void>(`/api/web/attachments/${id}`, { method: "DELETE" }),
+
+  listUsers: () => request<User[]>("/api/web/users"),
+  patchUser: (
+    id: string,
+    body: Partial<{ username: string; role: UserRole; disabled: boolean }>,
+  ) =>
+    request<User>(`/api/web/users/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteUser: (id: string) =>
+    request<void>(`/api/web/users/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  getUserPermissions: (id: string) =>
+    request<UserPermissionsResponse>(
+      `/api/web/users/${encodeURIComponent(id)}/permissions`,
+    ),
+  putUserPermissions: (id: string, permissions: UserPermission[]) =>
+    request<UserPermissionsResponse>(
+      `/api/web/users/${encodeURIComponent(id)}/permissions`,
+      { method: "PUT", body: JSON.stringify({ permissions }) },
+    ),
+  getAgentAccess: () => request<AgentAccess>("/api/web/me/agent-access"),
+  regenerateAgentToken: () =>
+    request<AgentAccess>("/api/web/me/agent-token", { method: "POST" }),
+  revokeAgentToken: () =>
+    request<void>("/api/web/me/agent-token", { method: "DELETE" }),
+  listLocalSkills: () =>
+    request<LocalSkillTarget[]>("/api/web/local-skills"),
+  installLocalSkills: () =>
+    request<LocalSkillTarget[]>("/api/web/local-skills/install", {
+      method: "POST",
+    }),
 };
 
 /** SSE 订阅：任务变更时触发 onChange；断线自动降级为 10s 轮询 */

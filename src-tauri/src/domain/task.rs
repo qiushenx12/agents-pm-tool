@@ -2,7 +2,15 @@ use chrono::Local;
 use serde::{Deserialize, Serialize};
 
 pub const TASK_TYPES: [&str; 3] = ["新增需求", "优化", "BUG"];
-pub const STATUSES: [&str; 7] = ["未开始", "进行中", "待验证", "已完成", "验收未通过", "验收通过", "取消"];
+pub const STATUSES: [&str; 7] = [
+    "未开始",
+    "进行中",
+    "待验证",
+    "已完成",
+    "验收未通过",
+    "验收通过",
+    "取消",
+];
 /// Agent 仅可切到的状态（验收类状态留给用户，规划 §5.4）
 pub const AGENT_STATUSES: [&str; 3] = ["进行中", "待验证", "已完成"];
 pub const SUBMITTERS: [&str; 2] = ["用户", "Agent"];
@@ -26,6 +34,7 @@ pub struct Task {
     pub position: f64,
     #[serde(default)]
     pub attachment_count: i64,
+    pub owner_user_id: Option<String>,
 }
 
 /// 当前本地时间，统一 'YYYY-MM-DD HH:MM:SS'

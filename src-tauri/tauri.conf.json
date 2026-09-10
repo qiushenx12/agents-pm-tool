@@ -32,6 +32,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "externalBin": ["binaries/pm-cli"],
     "icon": ["icons/icon.ico"],
     "windows": {
       "certificateThumbprint": null,

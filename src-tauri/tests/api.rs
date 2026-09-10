@@ -27,18 +27,132 @@ async fn spawn_app_with_host(bind_host: [u8; 4]) -> TestApp {
         conn,
         Settings::default(),
     ));
-    let token = "test-token".to_string();
-    *core.token.write().await = token.clone();
+    let token = core.token.read().await.clone();
     let handle = server::start_server(core, 0, bind_host).await.unwrap();
     // 0.0.0.0 绑定时用回环地址访问（测试机本机）
     let base = format!("http://127.0.0.1:{}", handle.port);
+    let bootstrap = reqwest::Client::new();
+    let login = bootstrap
+        .post(format!("{base}/api/web/auth/host-login"))
+        .header("X-PM-Client", "web")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 200, "主机测试会话创建失败");
+    let cookie = login
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("X-PM-Client", "web".parse().unwrap());
+    headers.insert(reqwest::header::COOKIE, cookie.parse().unwrap());
+    let http = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap();
     TestApp {
         base,
         token,
-        http: reqwest::Client::new(),
+        http,
         _handle: handle,
         _tmp: tmp,
     }
+}
+
+#[tokio::test]
+async fn web_requires_session_and_csrf_header() {
+    let app = spawn_app().await;
+    let anonymous = reqwest::Client::new();
+    let response = anonymous
+        .get(format!("{}/api/web/projects", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+
+    let response = anonymous
+        .post(format!("{}/api/web/auth/register", app.base))
+        .json(&json!({"username":"alice","password":"password-123"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+}
+
+#[tokio::test]
+async fn register_login_logout_and_session_expiry() {
+    let app = spawn_app().await;
+    let raw = reqwest::Client::new();
+    let register = raw
+        .post(format!("{}/api/web/auth/register", app.base))
+        .header("X-PM-Client", "web")
+        .json(&json!({"username":"alice","password":"password-123"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(register.status(), 201);
+    assert_eq!(
+        register.json::<Value>().await.unwrap()["user"]["role"],
+        "user"
+    );
+
+    let wrong = raw
+        .post(format!("{}/api/web/auth/login", app.base))
+        .header("X-PM-Client", "web")
+        .json(&json!({"username":"alice","password":"wrong-password"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 401);
+
+    let login = raw
+        .post(format!("{}/api/web/auth/login", app.base))
+        .header("X-PM-Client", "web")
+        .json(&json!({"username":"alice","password":"password-123"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 200);
+    let cookie = login
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let me = raw
+        .get(format!("{}/api/web/auth/me", app.base))
+        .header(reqwest::header::COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), 200);
+    assert_eq!(me.json::<Value>().await.unwrap()["username"], "alice");
+
+    let logout = raw
+        .post(format!("{}/api/web/auth/logout", app.base))
+        .header("X-PM-Client", "web")
+        .header(reqwest::header::COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), 204);
+    let expired = raw
+        .get(format!("{}/api/web/auth/me", app.base))
+        .header(reqwest::header::COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(expired.status(), 401);
 }
 
 impl TestApp {
@@ -51,6 +165,355 @@ impl TestApp {
         self.http
             .request(method, format!("{}/api/web{}", self.base, path))
     }
+}
+
+async fn register_user(app: &TestApp, username: &str) -> (Value, reqwest::Client) {
+    let raw = reqwest::Client::new();
+    let response = raw
+        .post(format!("{}/api/web/auth/register", app.base))
+        .header("X-PM-Client", "web")
+        .json(&json!({"username": username, "password": "password-123"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201);
+    let cookie = response
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let user = response.json::<Value>().await.unwrap()["user"].clone();
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("X-PM-Client", "web".parse().unwrap());
+    headers.insert(reqwest::header::COOKIE, cookie.parse().unwrap());
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap();
+    (user, client)
+}
+
+#[tokio::test]
+async fn agent_help_and_skill_download_are_authenticated_and_versioned() {
+    let app = spawn_app().await;
+    let help = app
+        .agent(reqwest::Method::GET, "/help")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(help.status(), 200);
+    assert_eq!(
+        help.json::<Value>().await.unwrap()["skill_download"],
+        "/api/agent/skill/download"
+    );
+
+    let response = app
+        .agent(reqwest::Method::GET, "/skill/download")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get("X-PM-Skill-Version")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        env!("CARGO_PKG_VERSION")
+    );
+    let bytes = response.bytes().await.unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    assert!(archive.by_name("pm-cli-skill/SKILL.md").is_ok());
+    assert!(archive.by_name("pm-cli-skill/bin/pm-cli.exe").is_ok());
+    assert!(archive.by_name("pm-cli-skill/VERSION").is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_cli_uses_environment_connection() {
+    let app = spawn_app().await;
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pm-cli"))
+        .args(["projects", "--json"])
+        .env("PM_SERVER_URL", &app.base)
+        .env("PM_AGENT_TOKEN", &app.token)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "pm-cli failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let projects: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(projects[0]["name"], "default-project");
+}
+
+#[tokio::test]
+async fn ordinary_user_permissions_filter_projects_fields_and_values() {
+    let app = spawn_app().await;
+    let task = create_task(&app, false, "权限任务").await;
+    let task_id = task["id"].as_str().unwrap();
+    let (alice, alice_http) = register_user(&app, "alice-permissions").await;
+    let alice_id = alice["id"].as_str().unwrap();
+
+    let projects = alice_http
+        .get(format!("{}/api/web/projects", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(projects.status(), 200);
+    assert!(projects
+        .json::<Value>()
+        .await
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let denied = alice_http
+        .get(format!("{}/api/web/tasks/{task_id}", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 403);
+
+    let grant = app
+        .web(
+            reqwest::Method::PUT,
+            &format!("/users/{alice_id}/permissions"),
+        )
+        .json(&json!({"permissions":[
+            {"project":"default-project","field":"project_access","allowed_values":null},
+            {"project":"default-project","field":"status","allowed_values":["进行中"]}
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(grant.status(), 200);
+
+    let visible = alice_http
+        .get(format!("{}/api/web/tasks", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(visible.status(), 200);
+    assert_eq!(
+        visible
+            .json::<Value>()
+            .await
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let allowed = alice_http
+        .patch(format!("{}/api/web/tasks/{task_id}", app.base))
+        .json(&json!({"status":"进行中"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(allowed.status(), 200);
+    let denied_value = alice_http
+        .patch(format!("{}/api/web/tasks/{task_id}", app.base))
+        .json(&json!({"status":"验收通过"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied_value.status(), 403);
+    let denied_field = alice_http
+        .patch(format!("{}/api/web/tasks/{task_id}", app.base))
+        .json(&json!({"description":"越权改写"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied_field.status(), 403);
+    let unchanged = app
+        .web(reqwest::Method::GET, &format!("/tasks/{task_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(unchanged["description"], "权限任务");
+}
+
+#[tokio::test]
+async fn user_management_role_matrix_and_host_protection() {
+    let app = spawn_app().await;
+    let (alice, _alice_http) = register_user(&app, "alice-admin-target").await;
+    let (bob, bob_http) = register_user(&app, "bob-admin").await;
+    let (charlie, _charlie_http) = register_user(&app, "charlie-admin").await;
+    let alice_id = alice["id"].as_str().unwrap();
+    let bob_id = bob["id"].as_str().unwrap();
+    let charlie_id = charlie["id"].as_str().unwrap();
+
+    let promoted = app
+        .web(reqwest::Method::PATCH, &format!("/users/{bob_id}"))
+        .json(&json!({"role":"admin"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(promoted.status(), 200);
+    let promoted_peer = app
+        .web(reqwest::Method::PATCH, &format!("/users/{charlie_id}"))
+        .json(&json!({"role":"admin"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(promoted_peer.status(), 200);
+
+    let listed = bob_http
+        .get(format!("{}/api/web/users", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), 200);
+    let listed = listed.json::<Value>().await.unwrap();
+    assert!(listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|user| user["role"] == "user"));
+
+    let admin_disable_admin = bob_http
+        .patch(format!("{}/api/web/users/{charlie_id}", app.base))
+        .json(&json!({"disabled":true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(admin_disable_admin.status(), 403);
+
+    let admin_role_change = bob_http
+        .patch(format!("{}/api/web/users/{alice_id}", app.base))
+        .json(&json!({"role":"admin"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(admin_role_change.status(), 403);
+    let admin_disable_user = bob_http
+        .patch(format!("{}/api/web/users/{alice_id}", app.base))
+        .json(&json!({"disabled":true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(admin_disable_user.status(), 200);
+
+    for (method, body) in [
+        (reqwest::Method::PATCH, Some(json!({"role":"user"}))),
+        (reqwest::Method::PATCH, Some(json!({"disabled":true}))),
+        (reqwest::Method::DELETE, None),
+    ] {
+        let mut request = app.web(method, "/users/host");
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), 403);
+    }
+    let host_password = reqwest::Client::new()
+        .post(format!("{}/api/web/auth/login", app.base))
+        .header("X-PM-Client", "web")
+        .json(&json!({"username":"主机","password":"password-123"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(host_password.status(), 403);
+}
+
+#[tokio::test]
+async fn user_agent_token_ownership_permissions_and_revocation() {
+    let app = spawn_app().await;
+    let user_task = create_task(&app, false, "用户任务").await;
+    let user_task_id = user_task["id"].as_str().unwrap();
+    let (alice, alice_http) = register_user(&app, "alice-agent").await;
+    let alice_id = alice["id"].as_str().unwrap();
+    let grant = app
+        .web(
+            reqwest::Method::PUT,
+            &format!("/users/{alice_id}/permissions"),
+        )
+        .json(&json!({"permissions":[
+            {"project":"default-project","field":"project_access","allowed_values":null},
+            {"project":"default-project","field":"task_create","allowed_values":null},
+            {"project":"default-project","field":"type","allowed_values":["BUG"]},
+            {"project":"default-project","field":"description","allowed_values":null},
+            {"project":"default-project","field":"status","allowed_values":["进行中","待验证","已完成","验收通过"]}
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(grant.status(), 200);
+
+    let access = alice_http
+        .post(format!("{}/api/web/me/agent-token", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(access.status(), 200);
+    let token = access.json::<Value>().await.unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let agent = reqwest::Client::new();
+    let created = agent
+        .post(format!("{}/api/agent/tasks", app.base))
+        .bearer_auth(&token)
+        .json(&json!({"project":"default-project","type":"BUG","description":"Agent owned"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+    let created = created.json::<Value>().await.unwrap();
+    let id = created["id"].as_str().unwrap();
+    assert_eq!(created["owner_user_id"], alice_id);
+
+    let own_edit = agent
+        .patch(format!("{}/api/agent/tasks/{id}/description", app.base))
+        .bearer_auth(&token)
+        .json(&json!({"description":"更新后的描述"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(own_edit.status(), 200);
+    let user_edit = agent
+        .patch(format!(
+            "{}/api/agent/tasks/{user_task_id}/description",
+            app.base
+        ))
+        .bearer_auth(&token)
+        .json(&json!({"description":"不应成功"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(user_edit.status(), 403);
+    let acceptance = agent
+        .patch(format!("{}/api/agent/tasks/{id}/status", app.base))
+        .bearer_auth(&token)
+        .json(&json!({"status":"验收通过"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(acceptance.status(), 403);
+
+    let revoke = alice_http
+        .delete(format!("{}/api/web/me/agent-token", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoke.status(), 204);
+    let revoked = agent
+        .get(format!("{}/api/agent/tasks", app.base))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), 401);
 }
 
 async fn create_task(app: &TestApp, via_agent: bool, desc: &str) -> Value {
@@ -173,11 +636,7 @@ async fn manual_reorder() {
             .await
             .unwrap();
         let list: Value = res.json().await.unwrap();
-        list.as_array()
-            .unwrap()
-            .iter()
-            .map(ids)
-            .collect::<Vec<_>>()
+        list.as_array().unwrap().iter().map(ids).collect::<Vec<_>>()
     };
 
     // 默认按创建顺序
@@ -385,7 +844,11 @@ async fn agent_permission_matrix() {
     assert_eq!(res.status(), 200);
 
     // 空描述（trim 后为空）→ 422，与 create 校验对齐（review P3-2）
-    for body in [json!({"description": ""}), json!({"description": "   "}), json!({})] {
+    for body in [
+        json!({"description": ""}),
+        json!({"description": "   "}),
+        json!({}),
+    ] {
         let res = app
             .agent(
                 reqwest::Method::PATCH,
@@ -434,7 +897,11 @@ async fn agent_permission_matrix() {
     assert!(res.status().is_client_error());
 
     // Agent 项目选项只读：GET OK，POST 不可
-    let res = app.agent(reqwest::Method::GET, "/projects").send().await.unwrap();
+    let res = app
+        .agent(reqwest::Method::GET, "/projects")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let res = app
         .agent(reqwest::Method::POST, "/projects")
@@ -517,10 +984,7 @@ async fn project_rename_cascade_and_delete_protection() {
 
     // 重命名 → 存量任务级联更新
     let res = app
-        .web(
-            reqwest::Method::PATCH,
-            "/projects/default-project",
-        )
+        .web(reqwest::Method::PATCH, "/projects/default-project")
         .json(&json!({"new_name": "pm工具"}))
         .send()
         .await
@@ -624,6 +1088,10 @@ async fn lan_bind_serves_on_all_interfaces() {
     let res = app.http.get(&app.base).send().await.unwrap();
     assert_eq!(res.status(), 200);
     // API 也应可达
-    let res = app.web(reqwest::Method::GET, "/projects").send().await.unwrap();
+    let res = app
+        .web(reqwest::Method::GET, "/projects")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
 }

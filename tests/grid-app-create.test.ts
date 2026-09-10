@@ -25,6 +25,20 @@ const { createdTask, reveal } = vi.hoisted(() => ({
 
 vi.mock("@/grid-app/api/client", () => ({
   api: {
+    me: vi.fn().mockResolvedValue({
+      id: "host",
+      username: "主机",
+      role: "super_admin",
+      created_at: "",
+      disabled: false,
+      is_host: true,
+    }),
+    getAgentAccess: vi.fn().mockResolvedValue({
+      server_url: "http://127.0.0.1:17890",
+      token: "token",
+      access_instructions: "本机访问",
+      skill_ready: false,
+    }),
     listProjects: vi.fn().mockResolvedValue([]),
     pageTasks: vi.fn().mockResolvedValue({
       items: [],
@@ -139,6 +153,11 @@ it("does not open the detail drawer after creating a task", async () => {
   app = createApp(GridApp);
   app.use(pinia);
   app.mount(host);
+  await vi.waitFor(() => {
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="open-create"]'),
+    ).not.toBeNull();
+  });
 
   host
     .querySelector<HTMLButtonElement>('[data-testid="open-create"]')!

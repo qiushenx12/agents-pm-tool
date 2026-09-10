@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{Multipart, Path, RawQuery, State},
+    extract::{Extension, Multipart, Path, RawQuery, State},
     http::{header, StatusCode},
     response::{sse::KeepAlive, IntoResponse, Response, Sse},
     Json,
@@ -8,27 +8,33 @@ use axum::{
 use serde::Deserialize;
 
 pub use super::api_batch::batch_tasks;
-use crate::db::{projects, tasks};
+use crate::db::{permissions, projects, tasks};
 use crate::domain::attachment as attach;
 use crate::domain::task::now_str;
+use crate::domain::user::User;
 use crate::error::{ApiError, ApiResult};
 use crate::server::{parse_task_filter, CoreState};
 
 pub async fn get_task(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     Path(id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
     let conn = core.db.lock().unwrap();
-    Ok(Json(tasks::get(&conn, &id)?))
+    let task = tasks::get(&conn, &id)?;
+    permissions::require_project(&conn, &user, &task.project)?;
+    Ok(Json(task))
 }
 
 pub async fn page_tasks(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     RawQuery(query): RawQuery,
 ) -> ApiResult<impl IntoResponse> {
-    let filter = parse_task_filter(query.as_deref())?;
+    let mut filter = parse_task_filter(query.as_deref())?;
     let options = crate::db::task_page::PageOptions::parse(query.as_deref())?;
     let conn = core.db.lock().unwrap();
+    filter.visible_projects = permissions::visible_projects(&conn, &user)?;
     Ok(Json(crate::db::task_page::list_page(
         &conn, &filter, &options,
     )?))
@@ -38,10 +44,12 @@ pub async fn page_tasks(
 
 pub async fn list_tasks(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     RawQuery(q): RawQuery,
 ) -> ApiResult<impl IntoResponse> {
-    let filter = parse_task_filter(q.as_deref())?;
+    let mut filter = parse_task_filter(q.as_deref())?;
     let conn = core.db.lock().unwrap();
+    filter.visible_projects = permissions::visible_projects(&conn, &user)?;
     Ok(Json(tasks::list(&conn, &filter)?))
 }
 
@@ -56,6 +64,7 @@ pub struct CreateTaskBody {
 
 pub async fn create_task(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     Json(body): Json<CreateTaskBody>,
 ) -> ApiResult<impl IntoResponse> {
     let project = body
@@ -68,6 +77,14 @@ pub async fn create_task(
         .ok_or_else(|| ApiError::unprocessable("任务类型为必填项"))?;
 
     let mut conn = core.db.lock().unwrap();
+    let mut fields = vec![("task_create", None), ("type", Some(task_type.trim()))];
+    if body.description.is_some() {
+        fields.push(("description", None));
+    }
+    if body.note.is_some() {
+        fields.push(("note", None));
+    }
+    permissions::require_fields(&conn, &user, project.trim(), &fields)?;
     let task = tasks::create(
         &mut conn,
         &tasks::NewTask {
@@ -76,6 +93,7 @@ pub async fn create_task(
             description: body.description.as_deref().unwrap_or(""),
             note: body.note.as_deref().unwrap_or(""),
             submitter: "用户", // 网页端固定（规划 §4.3）
+            owner_user_id: None,
         },
     )?;
     drop(conn);
@@ -95,10 +113,32 @@ pub struct PatchTaskBody {
 
 pub async fn patch_task(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     Path(id): Path<String>,
     Json(body): Json<PatchTaskBody>,
 ) -> ApiResult<impl IntoResponse> {
     let mut conn = core.db.lock().unwrap();
+    let current = tasks::get(&conn, &id)?;
+    let mut fields = Vec::new();
+    if body.project.is_some() {
+        fields.push(("project", None));
+    }
+    if let Some(value) = body.task_type.as_deref() {
+        fields.push(("type", Some(value)));
+    }
+    if body.description.is_some() {
+        fields.push(("description", None));
+    }
+    if body.note.is_some() {
+        fields.push(("note", None));
+    }
+    if let Some(value) = body.status.as_deref() {
+        fields.push(("status", Some(value)));
+    }
+    permissions::require_fields(&conn, &user, &current.project, &fields)?;
+    if let Some(project) = body.project.as_deref() {
+        permissions::require_project(&conn, &user, project)?;
+    }
     let task = tasks::patch(
         &mut conn,
         &id,
@@ -117,9 +157,12 @@ pub async fn patch_task(
 
 pub async fn delete_task(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     Path(id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
     let conn = core.db.lock().unwrap();
+    let task = tasks::get(&conn, &id)?;
+    permissions::require_field(&conn, &user, &task.project, "task_delete", None)?;
     let attach_paths = tasks::remove(&conn, &id)?;
     drop(conn);
     // 级联删除的附件行已清除，这里清理磁盘文件；失败仅告警不回滚（规划：删除任务仅网页端）
@@ -141,10 +184,20 @@ pub struct ReorderTaskBody {
 /// 手动排序：把任务移到 prev_id/next_id 之间（sort_by=manual 时前端拖拽调用）
 pub async fn reorder_task(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     Path(id): Path<String>,
     Json(body): Json<ReorderTaskBody>,
 ) -> ApiResult<impl IntoResponse> {
     let mut conn = core.db.lock().unwrap();
+    let task = tasks::get(&conn, &id)?;
+    permissions::require_field(&conn, &user, &task.project, "reorder", None)?;
+    for neighbor in [body.prev_id.as_deref(), body.next_id.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        let neighbor = tasks::get(&conn, neighbor)?;
+        permissions::require_project(&conn, &user, &neighbor.project)?;
+    }
     let task = tasks::reorder(
         &mut conn,
         &id,
@@ -165,10 +218,26 @@ pub struct RebaseOrderBody {
 /// 以指定排序重铺手动位置：切入手动排序时以当前视图为基线（视觉顺序不变）
 pub async fn rebase_order(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     Json(body): Json<RebaseOrderBody>,
 ) -> ApiResult<impl IntoResponse> {
     let conn = core.db.lock().unwrap();
-    tasks::rebase_positions(&conn, body.sort_by.as_deref(), body.sort_order.as_deref())?;
+    match permissions::visible_projects(&conn, &user)? {
+        None => {
+            tasks::rebase_positions(&conn, body.sort_by.as_deref(), body.sort_order.as_deref())?
+        }
+        Some(projects) => {
+            for project in &projects {
+                permissions::require_field(&conn, &user, project, "reorder", None)?;
+            }
+            tasks::rebase_positions_for_projects(
+                &conn,
+                body.sort_by.as_deref(),
+                body.sort_order.as_deref(),
+                &projects,
+            )?;
+        }
+    }
     drop(conn);
     core.events.notify();
     Ok(StatusCode::NO_CONTENT)
@@ -176,9 +245,16 @@ pub async fn rebase_order(
 
 // ── 项目选项 ─────────────────────────────────────────────
 
-pub async fn list_projects(State(core): State<CoreState>) -> ApiResult<impl IntoResponse> {
+pub async fn list_projects(
+    State(core): State<CoreState>,
+    Extension(user): Extension<User>,
+) -> ApiResult<impl IntoResponse> {
     let conn = core.db.lock().unwrap();
-    Ok(Json(projects::list(&conn)?))
+    let mut result = projects::list(&conn)?;
+    if let Some(visible) = permissions::visible_projects(&conn, &user)? {
+        result.retain(|project| visible.contains(&project.name));
+    }
+    Ok(Json(result))
 }
 
 #[derive(Deserialize)]
@@ -191,8 +267,12 @@ pub struct CreateProjectBody {
 
 pub async fn create_project(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     Json(body): Json<CreateProjectBody>,
 ) -> ApiResult<impl IntoResponse> {
+    if !user.is_admin() {
+        return Err(ApiError::forbidden("仅管理员可以创建项目"));
+    }
     let conn = core.db.lock().unwrap();
     let p = projects::create(
         &conn,
@@ -217,9 +297,13 @@ pub struct PatchProjectBody {
 
 pub async fn patch_project(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     Path(name): Path<String>,
     Json(body): Json<PatchProjectBody>,
 ) -> ApiResult<impl IntoResponse> {
+    if !user.is_admin() {
+        return Err(ApiError::forbidden("仅管理员可以修改项目"));
+    }
     let mut conn = core.db.lock().unwrap();
     let p = projects::patch(
         &mut conn,
@@ -238,7 +322,10 @@ pub async fn patch_project(
 }
 
 /// 弹系统文件夹选择框（对话框开在本机服务端），返回所选路径；用户取消 → 204
-pub async fn pick_folder() -> ApiResult<Response> {
+pub async fn pick_folder(Extension(user): Extension<User>) -> ApiResult<Response> {
+    if !user.is_admin() {
+        return Err(ApiError::forbidden("仅管理员可以选择主机上的项目目录"));
+    }
     let folder = rfd::AsyncFileDialog::new()
         .set_title("选择项目本地路径")
         .pick_folder()
@@ -254,8 +341,12 @@ pub async fn pick_folder() -> ApiResult<Response> {
 
 pub async fn delete_project(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     Path(name): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
+    if !user.is_admin() {
+        return Err(ApiError::forbidden("仅管理员可以删除项目"));
+    }
     let conn = core.db.lock().unwrap();
     projects::remove(&conn, &name)?;
     drop(conn);
@@ -267,10 +358,12 @@ pub async fn delete_project(
 
 pub async fn list_attachments(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     Path(task_id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
     let conn = core.db.lock().unwrap();
-    tasks::get(&conn, &task_id)?; // 任务不存在 → 404
+    let task = tasks::get(&conn, &task_id)?; // 任务不存在 → 404
+    permissions::require_project(&conn, &user, &task.project)?;
     let mut stmt =
         conn.prepare("SELECT * FROM attachments WHERE task_id = ?1 ORDER BY created_at ASC")?;
     let rows = stmt.query_map([task_id], |r| {
@@ -293,9 +386,15 @@ pub async fn list_attachments(
 
 pub async fn upload_attachment(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     Path(task_id): Path<String>,
     mut multipart: Multipart,
 ) -> ApiResult<impl IntoResponse> {
+    {
+        let conn = core.db.lock().unwrap();
+        let task = tasks::get(&conn, &task_id)?;
+        permissions::require_field(&conn, &user, &task.project, "attachment_upload", None)?;
+    }
     let mut filename: Option<String> = None;
     let mut data: Vec<u8> = Vec::new();
 
@@ -394,9 +493,15 @@ fn load_attachment(core: &CoreState, id: &str) -> ApiResult<attach::Attachment> 
 
 pub async fn download_attachment(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
     let a = load_attachment(&core, &id)?;
+    {
+        let conn = core.db.lock().unwrap();
+        let task = tasks::get(&conn, &a.task_id)?;
+        permissions::require_project(&conn, &user, &task.project)?;
+    }
     let bytes = std::fs::read(core.data_dir.join(&a.stored_path))
         .map_err(|_| ApiError::not_found("附件文件已丢失"))?;
     let mime = a
@@ -419,10 +524,13 @@ pub async fn download_attachment(
 
 pub async fn delete_attachment(
     State(core): State<CoreState>,
+    Extension(user): Extension<User>,
     Path(id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
     let a = load_attachment(&core, &id)?;
     let conn = core.db.lock().unwrap();
+    let task = tasks::get(&conn, &a.task_id)?;
+    permissions::require_field(&conn, &user, &task.project, "attachment_delete", None)?;
     conn.execute("DELETE FROM attachments WHERE id = ?1", [id])?;
     drop(conn);
     let _ = std::fs::remove_file(core.data_dir.join(&a.stored_path));
@@ -432,7 +540,10 @@ pub async fn delete_attachment(
 
 // ── SSE ──────────────────────────────────────────────────
 
-pub async fn events(State(core): State<CoreState>) -> impl IntoResponse {
+pub async fn events(
+    State(core): State<CoreState>,
+    Extension(_user): Extension<User>,
+) -> impl IntoResponse {
     let mut rx = core.events.subscribe();
     let stream = async_stream::stream! {
         loop {

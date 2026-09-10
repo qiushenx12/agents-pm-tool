@@ -44,6 +44,8 @@ function inputFiles() {
     "src-tauri/build.rs",
     "scripts/build-cli.mjs",
     "scripts/copy-cli.mjs",
+    "scripts/package-cli-skill.mjs",
+    "pm-cli-skill/SKILL.md",
     ".cargo/config.toml",
     ".cargo/config",
     "src-tauri/.cargo/config.toml",
@@ -102,42 +104,48 @@ const sidecarPath = path.join(binariesDir, sidecarName);
 const currentFingerprint = fingerprint(inputFiles(), compilerInfo, target);
 const stamp = readStamp();
 
-if (
+const canSkipBuild =
   !forceBuild &&
   existsSync(sidecarPath) &&
   stamp?.schemaVersion === 1 &&
   stamp?.target === target &&
-  stamp?.fingerprint === currentFingerprint
-) {
+  stamp?.fingerprint === currentFingerprint;
+
+if (canSkipBuild) {
   console.log(`pm-cli 未变化，跳过 release 编译：src-tauri/binaries/${sidecarName}`);
-  process.exit(0);
+} else {
+  console.log("pm-cli 源码或构建环境已变化，执行 cargo build --release --bin pm-cli……");
+  execFileSync(
+    "cargo",
+    ["build", "--release", "--bin", "pm-cli", "--manifest-path", manifestArg],
+    { cwd: root, stdio: "inherit" },
+  );
+
+  execFileSync(process.execPath, [path.join(root, "scripts", "copy-cli.mjs")], {
+    cwd: root,
+    stdio: "inherit",
+  });
+
+  const finalFiles = inputFiles();
+  writeFileSync(
+    stampPath,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        target,
+        fingerprint: fingerprint(finalFiles, compilerInfo, target),
+        rustc: compilerInfo,
+        builtAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
 }
 
-console.log("pm-cli 源码或构建环境已变化，执行 cargo build --release --bin pm-cli……");
 execFileSync(
-  "cargo",
-  ["build", "--release", "--bin", "pm-cli", "--manifest-path", manifestArg],
+  process.execPath,
+  [path.join(root, "scripts", "package-cli-skill.mjs"), sidecarPath],
   { cwd: root, stdio: "inherit" },
-);
-
-execFileSync(process.execPath, [path.join(root, "scripts", "copy-cli.mjs")], {
-  cwd: root,
-  stdio: "inherit",
-});
-
-const finalFiles = inputFiles();
-writeFileSync(
-  stampPath,
-  `${JSON.stringify(
-    {
-      schemaVersion: 1,
-      target,
-      fingerprint: fingerprint(finalFiles, compilerInfo, target),
-      rustc: compilerInfo,
-      builtAt: new Date().toISOString(),
-    },
-    null,
-    2,
-  )}\n`,
-  "utf8",
 );

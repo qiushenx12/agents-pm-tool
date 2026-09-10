@@ -1,5 +1,9 @@
 pub mod api_agent;
+pub mod api_agent_access;
+pub mod api_auth;
 pub mod api_batch;
+pub mod api_skill;
+pub mod api_users;
 pub mod api_web;
 pub mod auth;
 pub mod events;
@@ -26,18 +30,24 @@ pub struct CoreStateInner {
     pub settings: RwLock<Settings>,
     pub data_dir: PathBuf,
     pub events: EventBus,
+    pub actual_port: RwLock<u16>,
 }
 
 pub type CoreState = Arc<CoreStateInner>;
 
 impl CoreStateInner {
     pub fn new(data_dir: PathBuf, db: rusqlite::Connection, settings: Settings) -> Self {
+        let token = uuid::Uuid::new_v4().to_string();
+        // runtime.json 中的本机 token 归属内置主机账号；每次启动令旧 token 失效。
+        crate::db::users::set_agent_token(&db, crate::domain::user::HOST_USER_ID, &token)
+            .expect("初始化主机 Agent token 失败");
         Self {
             db: Mutex::new(db),
-            token: tokio::sync::RwLock::new(uuid::Uuid::new_v4().to_string()),
+            token: tokio::sync::RwLock::new(token),
             settings: RwLock::new(settings),
             data_dir,
             events: EventBus::new(),
+            actual_port: RwLock::new(0),
         }
     }
 }
@@ -61,7 +71,7 @@ pub fn parse_task_filter(raw: Option<&str>) -> ApiResult<TaskFilter> {
 }
 
 fn build_router(core: CoreState) -> Router {
-    let web = Router::new()
+    let protected_web = Router::new()
         .route(
             "/tasks",
             get(api_web::list_tasks).post(api_web::create_task),
@@ -99,7 +109,47 @@ fn build_router(core: CoreState) -> Router {
             "/attachments/{id}",
             get(api_web::download_attachment).delete(api_web::delete_attachment),
         )
-        .route("/events", get(api_web::events));
+        .route("/events", get(api_web::events))
+        .route("/skill/download", get(api_skill::web_download))
+        .route("/local-skills", get(api_skill::local_targets))
+        .route(
+            "/local-skills/install",
+            axum::routing::post(api_skill::install_local),
+        )
+        .route("/users", get(api_users::list_users))
+        .route(
+            "/users/{id}",
+            axum::routing::patch(api_users::patch_user).delete(api_users::delete_user),
+        )
+        .route(
+            "/users/{id}/permissions",
+            get(api_users::get_permissions).put(api_users::put_permissions),
+        )
+        .route("/auth/me", get(api_auth::me))
+        .route("/auth/logout", axum::routing::post(api_auth::logout))
+        .route("/me/agent-access", get(api_agent_access::get_access))
+        .route(
+            "/me/agent-token",
+            axum::routing::post(api_agent_access::regenerate_token)
+                .delete(api_agent_access::revoke_token),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            core.clone(),
+            auth::require_web_auth,
+        ));
+
+    let public_web = Router::new()
+        .route("/auth/register", axum::routing::post(api_auth::register))
+        .route("/auth/login", axum::routing::post(api_auth::login))
+        .route(
+            "/auth/host-login",
+            axum::routing::post(api_auth::host_login),
+        );
+
+    let web = Router::new()
+        .merge(public_web)
+        .merge(protected_web)
+        .route_layer(middleware::from_fn(auth::require_web_client_header));
 
     let agent = Router::new()
         .route(
@@ -116,6 +166,8 @@ fn build_router(core: CoreState) -> Router {
             axum::routing::patch(api_agent::patch_description),
         )
         .route("/projects", get(api_agent::list_projects))
+        .route("/help", get(api_agent::help))
+        .route("/skill/download", get(api_skill::agent_download))
         .route_layer(middleware::from_fn_with_state(
             core.clone(),
             auth::require_agent_token,
@@ -154,7 +206,7 @@ struct RuntimeInfo {
 }
 
 /// 写 data/runtime.json 供 pm-cli 服务发现（规划 §5.5）
-async fn write_runtime_json(core: &CoreState, port: u16) -> ApiResult<()> {
+pub(crate) async fn write_runtime_json(core: &CoreState, port: u16) -> ApiResult<()> {
     let info = RuntimeInfo {
         port,
         token: core.token.read().await.clone(),
@@ -196,6 +248,7 @@ pub async fn start_server(
     })?;
     // preferred_port = 0 时取 OS 分配的实际端口（测试用）
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+    *core.actual_port.write().unwrap() = port;
 
     write_runtime_json(&core, port).await?;
 
@@ -203,7 +256,11 @@ pub async fn start_server(
     let app = build_router(core);
 
     let join = tokio::spawn(async move {
-        let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        let server = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
             let _ = shutdown_rx.changed().await;
         });
         if let Err(e) = server.await {
