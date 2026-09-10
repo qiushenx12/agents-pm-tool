@@ -61,15 +61,50 @@ describe("authentication screen", () => {
     const app = mount();
     const tabs = host!.querySelectorAll<HTMLButtonElement>(".auth-tabs button");
     tabs[1].click();
+    await nextTick();
     const inputs = host!.querySelectorAll<HTMLInputElement>(".auth-form input");
     inputs[0].value = "alice";
     inputs[0].dispatchEvent(new Event("input"));
     inputs[1].value = "password-123";
     inputs[1].dispatchEvent(new Event("input"));
+    inputs[2].value = "password-123";
+    inputs[2].dispatchEvent(new Event("input"));
     await nextTick();
     host!.querySelector<HTMLFormElement>(".auth-form")!.dispatchEvent(new Event("submit"));
     await vi.waitFor(() =>
       expect(api.register).toHaveBeenCalledWith({ username: "alice", password: "password-123" }),
+    );
+    app.unmount();
+  });
+
+  it("rejects registration when the two passwords differ", async () => {
+    const app = mount();
+    host!.querySelectorAll<HTMLButtonElement>(".auth-tabs button")[1].click();
+    await nextTick();
+    const inputs = host!.querySelectorAll<HTMLInputElement>(".auth-form input");
+    for (const [input, value] of [
+      [inputs[0], "alice"],
+      [inputs[1], "password-123"],
+      [inputs[2], "password-456"],
+    ] as const) {
+      input.value = value;
+      input.dispatchEvent(new Event("input"));
+    }
+    await nextTick();
+
+    expect(host!.querySelector(".auth-field-error")?.textContent).toContain(
+      "密码不一致",
+    );
+    expect(
+      host!.querySelector<HTMLButtonElement>(".auth-submit")?.disabled,
+    ).toBe(true);
+    host!
+      .querySelector<HTMLFormElement>(".auth-form")!
+      .dispatchEvent(new Event("submit"));
+    await nextTick();
+    expect(api.register).not.toHaveBeenCalled();
+    expect(host!.querySelector("[role='alert']")?.textContent).toContain(
+      "两次输入的密码不一致",
     );
     app.unmount();
   });
