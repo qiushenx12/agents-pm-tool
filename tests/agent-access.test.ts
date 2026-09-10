@@ -58,7 +58,6 @@ it("opens targets and installs Codex and Claude Code skills independently", asyn
     server_url: "http://127.0.0.1:17890",
     token: "host-token",
     access_instructions: "本机 pm-cli 会自动读取连接信息。",
-    skill_ready: false,
   });
   vi.mocked(api.listLocalSkills).mockResolvedValue(targets);
   vi.mocked(api.openLocalSkillDirectory).mockResolvedValue(undefined);
@@ -119,5 +118,56 @@ it("opens targets and installs Codex and Claude Code skills independently", asyn
     .click();
   await vi.waitFor(() =>
     expect(api.installLocalSkills).toHaveBeenCalledWith("claude_code"),
+  );
+});
+
+it("renders and installs the WorkBuddy skill target", async () => {
+  const user: User = {
+    id: "host",
+    username: "主机",
+    role: "super_admin",
+    created_at: "2026-09-10 10:00:00",
+    disabled: false,
+    is_host: true,
+  };
+  const workbuddy: LocalSkillTarget = {
+    frontend_id: "workbuddy",
+    frontend: "WorkBuddy",
+    path: "C:/Users/test/.workbuddy/skills/pm-cli",
+    installed: false,
+    version: null,
+  };
+  vi.mocked(api.getAgentAccess).mockResolvedValue({
+    server_url: "http://127.0.0.1:17890",
+    token: "host-token",
+    access_instructions: "本机 pm-cli 会自动读取连接信息。",
+  });
+  vi.mocked(api.listLocalSkills).mockResolvedValue([workbuddy]);
+  vi.mocked(api.installLocalSkills).mockResolvedValue([
+    { ...workbuddy, installed: true, version: "1.0.0" },
+  ]);
+
+  root = document.createElement("div");
+  document.body.append(root);
+  app = createApp(AgentAccessDialog, { user });
+  app.mount(root);
+
+  await vi.waitFor(() =>
+    expect(
+      document.querySelector('[data-frontend="workbuddy"] .skill-path')?.textContent,
+    ).toContain(".workbuddy"),
+  );
+  document
+    .querySelector<HTMLButtonElement>(
+      '[data-frontend="workbuddy"] .skill-install-button',
+    )!
+    .click();
+  await vi.waitFor(() =>
+    expect(api.installLocalSkills).toHaveBeenCalledWith("workbuddy"),
+  );
+  await vi.waitFor(() =>
+    expect(
+      document.querySelector('[data-frontend="workbuddy"] .skill-state')?.textContent,
+    ).toContain("已就绪"),
   );
 });

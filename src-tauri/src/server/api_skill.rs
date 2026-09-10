@@ -128,6 +128,11 @@ fn skill_roots() -> Vec<SkillRoot> {
             "Claude Code",
             home.join(".claude").join("skills"),
         ),
+        (
+            "workbuddy",
+            "WorkBuddy",
+            home.join(".workbuddy").join("skills"),
+        ),
     ]
     .into_iter()
     .filter(|(_, _, root)| root.is_dir())
@@ -152,12 +157,6 @@ pub fn local_skill_targets() -> Vec<SkillTarget> {
             }
         })
         .collect()
-}
-
-pub fn local_skill_ready() -> bool {
-    local_skill_targets()
-        .iter()
-        .any(|target| target.installed && target.version.as_deref() == Some(VERSION))
 }
 
 fn find_sidecar() -> Option<PathBuf> {
@@ -216,9 +215,9 @@ fn install_into_roots(roots: &[SkillRoot], executable_bytes: &[u8]) -> ApiResult
 }
 
 fn select_frontend_roots(roots: Vec<SkillRoot>, frontend_id: &str) -> ApiResult<Vec<SkillRoot>> {
-    if !matches!(frontend_id, "codex" | "claude_code") {
+    if !matches!(frontend_id, "codex" | "claude_code" | "workbuddy") {
         return Err(ApiError::unprocessable(
-            "frontend 仅支持 codex 或 claude_code",
+            "frontend 仅支持 codex、claude_code 或 workbuddy",
         ));
     }
     let selected = roots
@@ -228,7 +227,8 @@ fn select_frontend_roots(roots: Vec<SkillRoot>, frontend_id: &str) -> ApiResult<
     if selected.is_empty() {
         return Err(ApiError::not_found(match frontend_id {
             "codex" => "未检测到 Codex skill 目录",
-            _ => "未检测到 Claude Code skill 目录",
+            "claude_code" => "未检测到 Claude Code skill 目录",
+            _ => "未检测到 WorkBuddy skill 目录",
         }));
     }
     Ok(selected)
@@ -328,6 +328,28 @@ mod tests {
                 .trim(),
             VERSION
         );
+    }
+
+    #[test]
+    fn workbuddy_install_selection_is_supported() {
+        let temporary = tempfile::tempdir().unwrap();
+        let roots = vec![
+            (
+                "workbuddy",
+                "WorkBuddy",
+                temporary.path().join("workbuddy"),
+            ),
+            ("codex", "Codex", temporary.path().join("codex")),
+        ];
+        let selected = select_frontend_roots(roots, "workbuddy").unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].0, "workbuddy");
+        install_into_roots(&selected, b"fake executable").unwrap();
+        assert!(selected[0]
+            .2
+            .join(SKILL_NAME)
+            .join("SKILL.md")
+            .is_file());
     }
 
     #[test]

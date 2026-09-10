@@ -32,21 +32,26 @@ const frontendCards = computed(() =>
       id: "codex" as const,
       title: "Codex",
       mark: "CX",
-      description: "安装到当前 Codex 用户级 skill 目录，并兼容已存在的旧版目录。",
     },
     {
       id: "claude_code" as const,
       title: "Claude Code",
       mark: "CL",
-      description: "安装到当前 Windows 用户的 Claude Code skill 目录。",
+    },
+    {
+      id: "workbuddy" as const,
+      title: "WorkBuddy",
+      mark: "WB",
     },
   ].map((frontend) => {
     const detected = targets.value.filter(
       (target) => target.frontend_id === frontend.id,
     );
+    const primary = detected.find((target) => target.installed) ?? detected[0];
     return {
       ...frontend,
-      targets: detected,
+      primary,
+      extraCount: Math.max(detected.length - 1, 0),
       allInstalled:
         detected.length > 0 && detected.every((target) => target.installed),
       someInstalled: detected.some((target) => target.installed),
@@ -233,57 +238,59 @@ onMounted(load);
           >
             <header>
               <span class="skill-frontend-mark">{{ frontend.mark }}</span>
-              <div>
-                <strong>{{ frontend.title }}</strong>
-                <span
-                  class="skill-state"
-                  :class="{ ready: frontend.allInstalled, partial: frontend.someInstalled && !frontend.allInstalled }"
-                >
-                  {{
-                    !frontend.targets.length
-                      ? "未检测到"
-                      : frontend.allInstalled
-                        ? "已就绪"
-                        : frontend.someInstalled
-                          ? "部分已安装"
-                          : "可安装"
-                  }}
-                </span>
-              </div>
+              <strong>{{ frontend.title }}</strong>
+              <span
+                class="skill-state"
+                :class="{ ready: frontend.allInstalled, partial: frontend.someInstalled && !frontend.allInstalled }"
+              >
+                {{
+                  !frontend.primary
+                    ? "未检测到"
+                    : frontend.allInstalled
+                      ? "已就绪"
+                      : frontend.someInstalled
+                        ? "部分已安装"
+                        : "可安装"
+                }}
+              </span>
             </header>
-            <p>{{ frontend.description }}</p>
-            <div class="skill-path-list">
-              <div v-for="target in frontend.targets" :key="target.path" class="skill-path-item">
-                <span>{{ target.frontend }}</span>
-                <small>{{ target.installed ? `已安装 ${target.version || ''}` : "等待安装" }}</small>
-                <code>{{ target.path }}</code>
-              </div>
-              <div v-if="!frontend.targets.length" class="skill-not-detected">
-                启动或安装 {{ frontend.title }} 后重新检测。
-              </div>
-            </div>
+            <code
+              v-if="frontend.primary"
+              class="skill-path"
+              :title="
+                frontend.primary.path +
+                (frontend.extraCount ? ` 等 ${frontend.extraCount + 1} 个目录` : '')
+              "
+            >
+              <span>{{ frontend.primary.path }}</span>
+              <em v-if="frontend.primary.version">v{{ frontend.primary.version }}</em>
+            </code>
+            <span v-else class="skill-path empty">
+              启动或安装 {{ frontend.title }} 后重新检测
+            </span>
             <div class="skill-card-actions">
               <button
-                class="btn skill-open-button"
-                :disabled="busy || !frontend.targets.length"
-                @click="openDirectory(frontend.id)"
-              >
-                <UiIcon name="folder" />
-                {{ opening === frontend.id ? "正在打开…" : "打开目标目录" }}
-              </button>
-              <button
                 class="btn btn-primary skill-install-button"
-                :disabled="busy || !frontend.targets.length"
+                :disabled="busy || !frontend.primary"
                 @click="install(frontend.id)"
               >
                 <UiIcon :name="frontend.allInstalled ? 'refresh' : 'download'" />
                 {{
                   installing === frontend.id
-                    ? "正在安装…"
+                    ? "安装中…"
                     : frontend.allInstalled
-                      ? `更新 ${frontend.title} skill`
-                      : `安装到 ${frontend.title}`
+                      ? "更新"
+                      : "安装"
                 }}
+              </button>
+              <button
+                class="icon-btn skill-open-button"
+                :disabled="busy || !frontend.primary"
+                :title="opening === frontend.id ? '正在打开…' : `打开 ${frontend.title} 的 skill 目录`"
+                :aria-label="`打开 ${frontend.title} 的 skill 目录`"
+                @click="openDirectory(frontend.id)"
+              >
+                <UiIcon name="folder" :size="15" />
               </button>
             </div>
           </article>

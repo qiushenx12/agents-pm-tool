@@ -52,7 +52,6 @@ vi.mock("@/grid-app/api/client", () => ({
       server_url: "http://127.0.0.1:17890",
       token: "token",
       access_instructions: "本机访问",
-      skill_ready: false,
     }),
     listProjects: vi.fn().mockResolvedValue([
       {
