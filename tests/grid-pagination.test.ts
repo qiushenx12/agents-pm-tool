@@ -49,12 +49,17 @@ it("requests only the desired server page and reaches records after 2000", async
   await tasks.refresh();
   host = document.createElement("div");
   document.body.append(host);
-  app = createApp({ render: () => h(TaskGrid) });
+  const quickCreate = vi.fn();
+  app = createApp({
+    render: () => h(TaskGrid, { onQuickCreate: quickCreate }),
+  });
   app.use(pinia);
   app.mount(host);
   host.querySelector<HTMLElement>(".grid-wrap")!.scrollTo = vi.fn();
   expect(tasks.tasks).toHaveLength(100);
   expect(host.querySelectorAll(".task-row")).toHaveLength(100);
+  host.querySelector<HTMLButtonElement>(".add-record-row")!.click();
+  expect(quickCreate).toHaveBeenCalledOnce();
   const input = host.querySelector<HTMLInputElement>(
     '[aria-label="跳转页码"]',
   )!;

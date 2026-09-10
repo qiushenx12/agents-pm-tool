@@ -15,7 +15,12 @@ import { useTaskStore } from "../stores/taskStore";
 import { useViewStore } from "../stores/viewStore";
 import { askConfirm, copyText, errorText, notify } from "@/shared/feedback";
 import { formatDateTime, type Attachment, type Task } from "@/shared/types";
-const emit = defineEmits<{ "open-detail": [task: Task]; create: [] }>();
+defineProps<{ quickCreating?: boolean }>();
+const emit = defineEmits<{
+  "open-detail": [task: Task];
+  create: [];
+  "quick-create": [];
+}>();
 const tasks = useTaskStore(),
   view = useViewStore();
 const root = ref<HTMLElement>();
@@ -1088,8 +1093,16 @@ defineExpose({ reveal });
         }}
       </button>
     </div>
-    <button v-else class="add-record-row" @click="emit('create')">
-      <UiIcon name="plus" :size="15" />添加一条任务
+    <button
+      v-else
+      class="add-record-row"
+      :disabled="quickCreating"
+      @click="emit('quick-create')"
+    >
+      <span v-if="quickCreating" class="spinner"></span
+      ><UiIcon v-else name="plus" :size="15" />{{
+        quickCreating ? "正在添加…" : "添加一条任务"
+      }}
     </button>
   </div>
   <Teleport to="body"

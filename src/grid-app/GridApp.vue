@@ -29,6 +29,7 @@ const showCreate = ref(false),
   showProjects = ref(false),
   showUsers = ref(false),
   showAgentAccess = ref(false);
+const quickCreating = ref(false);
 const currentUser = ref<User | null>(null);
 const authLoading = ref(true);
 const detailTask = ref<Task | null>(null);
@@ -64,6 +65,29 @@ function onCreated(task: Task) {
   const latest = tasks.records[task.id] ?? task;
   tasks.acceptTask(latest);
   table.value?.reveal(task.id);
+}
+async function quickCreate() {
+  if (quickCreating.value) return;
+  const project = activeProject.value || meta.projects[0]?.name || "";
+  if (!project) {
+    notify("请先创建或选择一个项目", "error");
+    return;
+  }
+  quickCreating.value = true;
+  try {
+    const task = await api.createTask({
+      project,
+      type: "新增需求",
+      description: "",
+      note: "",
+    });
+    onCreated(task);
+    notify("任务已创建", "success");
+  } catch (e) {
+    notify(errorText(e), "error");
+  } finally {
+    quickCreating.value = false;
+  }
 }
 function renamed(oldName: string, newName: string) {
   try {
@@ -312,8 +336,10 @@ onBeforeUnmount(() => {
       </div>
       <TaskGrid
         ref="table"
+        :quick-creating="quickCreating"
         @open-detail="detailTask = $event"
         @create="showCreate = true"
+        @quick-create="quickCreate"
       />
     </main>
     <TaskCreateModal

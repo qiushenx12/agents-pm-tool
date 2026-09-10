@@ -3,9 +3,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 import { createPinia, disposePinia, type Pinia } from "pinia";
 import GridApp from "@/grid-app/GridApp.vue";
+import { api } from "@/grid-app/api/client";
 import { useTaskStore } from "@/grid-app/stores/taskStore";
 
-const { createdTask, reveal } = vi.hoisted(() => ({
+const { createdTask, quickTask, reveal } = vi.hoisted(() => ({
   createdTask: {
     id: "new-task",
     seq: 1,
@@ -19,6 +20,20 @@ const { createdTask, reveal } = vi.hoisted(() => ({
     updated_at: "",
     finished_at: null,
     position: 1,
+  },
+  quickTask: {
+    id: "quick-task",
+    seq: 2,
+    project: "测试项目",
+    type: "新增需求" as const,
+    description: "",
+    note: "",
+    status: "未开始" as const,
+    submitter: "用户" as const,
+    created_at: "",
+    updated_at: "",
+    finished_at: null,
+    position: 2,
   },
   reveal: vi.fn(),
 }));
@@ -39,7 +54,17 @@ vi.mock("@/grid-app/api/client", () => ({
       access_instructions: "本机访问",
       skill_ready: false,
     }),
-    listProjects: vi.fn().mockResolvedValue([]),
+    listProjects: vi.fn().mockResolvedValue([
+      {
+        name: "测试项目",
+        color: "#2563eb",
+        sort_order: 0,
+        local_path: "",
+        git_url: "",
+        created_at: "",
+      },
+    ]),
+    createTask: vi.fn(),
     pageTasks: vi.fn().mockResolvedValue({
       items: [],
       total: 0,
@@ -93,9 +118,22 @@ vi.mock("@/grid-app/components/TaskGrid.vue", async () => {
   const { defineComponent, h } = await import("vue");
   return {
     default: defineComponent({
-      setup(_, { expose }) {
+      props: { quickCreating: Boolean },
+      emits: ["quick-create"],
+      setup(props, { emit, expose }) {
         expose({ reveal });
-        return () => h("div", { "data-testid": "task-grid" });
+        return () =>
+          h("div", { "data-testid": "task-grid" }, [
+            h(
+              "button",
+              {
+                "data-testid": "quick-create",
+                disabled: props.quickCreating,
+                onClick: () => emit("quick-create"),
+              },
+              "快捷新增",
+            ),
+          ]);
       },
     }),
   };
@@ -140,7 +178,7 @@ afterEach(() => {
   app?.unmount();
   disposePinia(pinia);
   host?.remove();
-  reveal.mockReset();
+  vi.clearAllMocks();
   localStorage.clear();
 });
 
@@ -172,4 +210,37 @@ it("does not open the detail drawer after creating a task", async () => {
   expect(host.querySelector('[data-testid="task-detail-drawer"]')).toBeNull();
   expect(useTaskStore(pinia).records[createdTask.id]).toMatchObject(createdTask);
   expect(reveal).toHaveBeenCalledWith(createdTask.id);
+});
+
+it("creates a blank task directly from the list footer", async () => {
+  vi.mocked(api.createTask).mockResolvedValueOnce(quickTask);
+  localStorage.setItem("pm-theme", "light");
+  window.history.replaceState(null, "", "/");
+  pinia = createPinia();
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp(GridApp);
+  app.use(pinia);
+  app.mount(host);
+  await vi.waitFor(() => {
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="quick-create"]'),
+    ).not.toBeNull();
+  });
+
+  host
+    .querySelector<HTMLButtonElement>('[data-testid="quick-create"]')!
+    .click();
+
+  await vi.waitFor(() => {
+    expect(api.createTask).toHaveBeenCalledWith({
+      project: "测试项目",
+      type: "新增需求",
+      description: "",
+      note: "",
+    });
+    expect(useTaskStore(pinia).records[quickTask.id]).toMatchObject(quickTask);
+  });
+  expect(host.querySelector('[data-testid="complete-create"]')).toBeNull();
+  expect(reveal).toHaveBeenCalledWith(quickTask.id);
 });

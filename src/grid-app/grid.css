@@ -774,6 +774,14 @@ button.attachment-preview:focus-visible {
   background: var(--hover);
   color: var(--primary);
 }
+.add-record-row:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+.add-record-row .spinner {
+  width: 13px;
+  height: 13px;
+}
 .grid-empty {
   position: sticky;
   left: 0;
