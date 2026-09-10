@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   writeFileSync,
@@ -115,6 +116,11 @@ if (canSkipBuild) {
   console.log(`pm-cli 未变化，跳过 release 编译：src-tauri/binaries/${sidecarName}`);
 } else {
   console.log("pm-cli 源码或构建环境已变化，执行 cargo build --release --bin pm-cli……");
+  // ponytail: 首次构建时 sidecar 尚不存在，tauri-build 会因 externalBin 缺失拒绝编译 pm-cli 本身；先占位，copy-cli.mjs 随后覆盖为真实二进制
+  if (!existsSync(sidecarPath)) {
+    mkdirSync(binariesDir, { recursive: true });
+    writeFileSync(sidecarPath, "");
+  }
   execFileSync(
     "cargo",
     ["build", "--release", "--bin", "pm-cli", "--manifest-path", manifestArg],
