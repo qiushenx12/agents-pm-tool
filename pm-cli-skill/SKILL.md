@@ -11,16 +11,22 @@ description: 使用 Agents PM Tool 的受限 pm-cli 查看、创建和推进项�
 
 ## 连接
 
-本机安装版会自动从应用的 `data/runtime.json` 读取实际端口与主机临时 token。开始前确保 Agents PM Tool 桌面应用正在运行；安装或升级后重新打开终端或 Agent 前端。
+连接信息有两项：**服务地址**和 **Agent token**。两者都由网页「我的 Agent 访问」面板签发，token 与该登录账号绑定。
 
-远程连接优先使用环境变量：
+### 方式一：手动部署或远程使用（下载 ZIP / 未安装桌面应用）
+
+必须先配置，任选一种：
+
+环境变量（两者必须同时设置，适合 CI 或临时使用；只设其中一个会直接报错，不会回落到用户配置）：
 
 ```powershell
 $env:PM_SERVER_URL = "http://192.168.1.10:17890"
 $env:PM_AGENT_TOKEN = "网页中签发的 token"
 ```
 
-也可保存到用户配置：
+若已只设了其中一个导致报错：补齐另一个，或 `Remove-Item Env:PM_SERVER_URL` 清掉它、改用下面的用户配置。
+
+或保存到用户配置（推荐，长期有效）：
 
 ```powershell
 pm-cli config set server-url http://192.168.1.10:17890
@@ -28,12 +34,25 @@ pm-cli config set token "网页中签发的 token"
 pm-cli config show
 ```
 
-不要把 token 写入仓库、任务描述、日志或本技能文件。
+桌面应用未安装时不需要、也不会生成 `data/runtime.json`；遇到「尚未配置连接」按上面的命令配置即可。
+
+### 方式二：应用一键安装到本机前端
+
+由桌面应用安装到本机 Agent 前端时，exe 同级会存在 `data/runtime.json`，pm-cli 自动读取实际端口与 token，无需手动配置。确保桌面应用正在运行；安装或升级后重新打开终端或 Agent 前端。
+
+## token 安全
+
+- token 等同身份：pm-cli 完全以 token 所属账号的身份操作，权限也按该账号的授权。
+- 不要把 token 写入仓库、任务描述、日志或本技能文件，也不要转给其他人使用。
+- 重新生成 token 会让旧 token 立即失效，需同步更新配置。
+
+## 安装位置
 
 手动安装时，将整个 `pm-cli-skill` 目录解压到以下位置之一：
 
 - Codex：`$HOME/.agents/skills/pm-cli`（当前官方用户级目录）；旧版 Codex 可使用 `$HOME/.codex/skills/pm-cli`。
 - Claude Code：`$HOME/.claude/skills/pm-cli`。
+- WorkBuddy：`$HOME/.workbuddy/skills/pm-cli`。
 
 安装后如未被识别，重新启动对应 Agent 前端。
 
@@ -64,10 +83,24 @@ pm-cli --help
 
 Agent 可以列出和下载已授权项目中任务的附件，但不能上传或删除附件。Agent 只能把任务切换到进行中、待验证或已完成；只能修改由 Agent 创建的任务描述；不能设置验收状态、删除任务，或修改用户创建任务的描述。用户的项目与字段授权会进一步收窄这些能力。
 
-如 `pm-cli` 不可执行，可使用 Windows 10+ 自带的 `curl.exe` 调用相同接口：
+## 排障
+
+连接异常时先运行 `pm-cli doctor`（加 `--json` 便于解析）。它会报告：
+
+- 实际生效的**连接来源**（环境变量 / 用户配置 / 本机 `data/runtime.json`）与脱敏后的 token；
+- 连通性与 HTTP 状态，以及当前 token 可见的项目数；
+- skill 目录版本与 exe 版本是否一致；
+- 针对结论的下一步命令。
+
+退出码与其它命令一致：`0` 正常，`2` 参数或鉴权失败，`3` 未配置或连不上。Agent 可据此分支处理。
+
+如 `pm-cli` 不可执行，可使用 Windows 10+ 自带的 `curl.exe` 调用相同接口。注意 `GET /api/agent/help` **无需 token**——没有 pm-cli、没有 skill 时应先访问它，按返回的 `bootstrap` 步骤提示用户签发 token：
 
 ```powershell
-curl.exe -H "Authorization: Bearer $env:PM_AGENT_TOKEN" "$env:PM_SERVER_URL/api/agent/help"
+curl.exe "$env:PM_SERVER_URL/api/agent/help"
+curl.exe -H "Authorization: Bearer $env:PM_AGENT_TOKEN" "$env:PM_SERVER_URL/api/agent/tasks"
 ```
 
-遇到 401 时检查 token 是否已吊销；遇到 403 时检查网页端项目/字段授权；连接失败时确认服务监听范围为局域网、地址和端口正确、防火墙允许访问。完整接口说明可请求 `GET /api/agent/help`。
+`bootstrap` 里给出三类信息：`ask_the_user`（要让用户做什么）、`configure`（拿到 token 后执行的命令）、`if_pm_cli_missing`（没有 pm-cli 时怎么办）。除此之外所有 `/api/agent/*` 接口仍需 token。
+
+遇到 401 时检查 token 是否已吊销；遇到 403 时检查网页端项目/字段授权；连接失败时确认服务监听范围为局域网、地址和端口正确、防火墙允许访问。报「环境变量必须成对设置」说明 `PM_SERVER_URL` / `PM_AGENT_TOKEN` 只设了其一或其一为空，按报错提示补齐，或清掉已设的那个改走用户配置。完整接口说明可请求 `GET /api/agent/help`。

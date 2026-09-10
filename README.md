@@ -117,7 +117,13 @@ pm-cli config set token <我的AgentToken>
 pm-cli config show
 ```
 
-配置保存在 `%APPDATA%\agents-pm-tool\cli.json`。临时环境变量 `PM_SERVER_URL` 与 `PM_AGENT_TOKEN` 的优先级更高，适合 CI 或不希望落盘的场景；两者必须成对设置。网页的“我的 Agent 访问”面板会给出当前用户可直接复制的配置，并提供 pm-cli-skill 下载。本机还可将 skill 一键安装到已存在的 Codex、旧版 Codex 或 Claude Code skill 目录。
+配置保存在 `%APPDATA%\agents-pm-tool\cli.json`。临时环境变量 `PM_SERVER_URL` 与 `PM_AGENT_TOKEN` 的优先级更高，适合 CI 或不希望落盘的场景；两者必须成对设置——只设其中一个（或其一为空）会直接报错，不会回落到用户配置，需补齐另一个或 `unset` 已设的那个（Windows：`Remove-Item Env:PM_SERVER_URL`）。网页的“我的 Agent 访问”面板会给出当前用户可直接复制的配置，并提供 pm-cli-skill 下载。本机还可将 skill 一键安装到已存在的 Codex、旧版 Codex、Claude Code 或 WorkBuddy（`~/.workbuddy/skills`）skill 目录。面板为每个前端显示一张卡片，包含状态、安装目录和「安装 / 更新」与「打开目录」操作。
+
+**未安装桌面应用时如何使用 pm-cli**：从面板下载 skill ZIP 解压后即可使用，但必须先用上面的方式配置服务地址与 token —— 这类环境下没有、也不需要 `data/runtime.json`（该文件由桌面应用启动时写入，记录实际端口与 token，只存在于应用目录）。未配置时 pm-cli 会提示具体的配置命令。
+
+**连接排障**：运行 `pm-cli doctor`（加 `--json` 便于 Agent 解析）。它会报告实际生效的连接来源（环境变量 / 用户配置 / 本机 `data/runtime.json`）、脱敏后的 token、连通性与可见项目数、skill 版本是否与 exe 一致，并给出下一步命令。退出码与其它命令一致：`0` 正常，`2` 鉴权失败，`3` 未配置或连不上。
+
+**token 等同身份**：pm-cli 完全以 token 所属账号的身份操作，权限也按该账号的授权。不要转给他人使用；重新生成 token 会让旧 token 立即失效。
 
 从源码运行 CLI 时，在命令前使用：
 
@@ -126,6 +132,8 @@ cargo run --manifest-path src-tauri/Cargo.toml --bin pm-cli -- projects
 ```
 
 所有子命令均可通过 `--json` 输出结构化结果。完整帮助可通过 `pm-cli --help` 或 `pm-cli <子命令> --help` 查看。
+
+`GET /api/agent/help` **无需 token**，返回接口自述与 `bootstrap` 接入步骤（要让用户做什么、拿到 token 后执行什么命令、没有 pm-cli 时怎么办），供尚未安装 pm-cli 与 skill 的 Agent 自助定位；其余 `/api/agent/*` 接口仍需 Bearer token。
 
 ### 权限边界
 

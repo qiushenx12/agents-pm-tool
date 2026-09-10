@@ -30,7 +30,8 @@ const EXIT_VALIDATION: u8 = 2;
         pm-cli download <附件ID> --output 需求说明.pdf\n  \
         pm-cli status 202609021050340001 --to 待验证\n  \
         pm-cli config set server-url http://192.168.1.10:17890\n  \
-        pm-cli config set token <网页签发的 token>"
+        pm-cli config set token <网页签发的 token>\n  \
+        pm-cli doctor"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -108,6 +109,11 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// 诊断连接配置与连通性（供人和 Agent 排查「连不上 / 没权限」）
+    Doctor {
+        #[arg(long)]
+        json: bool,
+    },
     /// 配置远程服务（写入用户级配置文件）
     Config {
         #[command(subcommand)]
@@ -176,22 +182,60 @@ fn validate_server_url(value: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
+/// 连接信息的来源。doctor 用它说明「当前到底用的是哪一份配置」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ConnectionSource {
+    Environment,
+    Config,
+    Runtime,
+}
+
+impl ConnectionSource {
+    fn label(self) -> &'static str {
+        match self {
+            ConnectionSource::Environment => "环境变量 PM_SERVER_URL / PM_AGENT_TOKEN",
+            ConnectionSource::Config => "用户配置文件 cli.json",
+            ConnectionSource::Runtime => "本机应用 data/runtime.json",
+        }
+    }
+}
+
 fn resolve_connection(
     runtime_path: &std::path::Path,
     config_path: &std::path::Path,
     env_server_url: Option<String>,
     env_token: Option<String>,
 ) -> Result<(String, String), String> {
+    resolve_connection_detailed(runtime_path, config_path, env_server_url, env_token)
+        .map(|(server_url, token, _)| (server_url, token))
+}
+
+fn resolve_connection_detailed(
+    runtime_path: &std::path::Path,
+    config_path: &std::path::Path,
+    env_server_url: Option<String>,
+    env_token: Option<String>,
+) -> Result<(String, String, ConnectionSource), String> {
     match (env_server_url, env_token) {
         (Some(server_url), Some(token))
             if !server_url.trim().is_empty() && !token.trim().is_empty() =>
         {
-            return Ok((validate_server_url(&server_url)?, token.trim().to_string()));
+            return Ok((
+                validate_server_url(&server_url)?,
+                token.trim().to_string(),
+                ConnectionSource::Environment,
+            ));
         }
-        (Some(_), None) | (None, Some(_)) => {
-            return Err("PM_SERVER_URL 与 PM_AGENT_TOKEN 必须同时设置".into());
+        (Some(server_url), None) => {
+            return Err(env_pair_message("PM_SERVER_URL", &server_url, "PM_AGENT_TOKEN"))
         }
-        (Some(_), Some(_)) => return Err("远程服务地址与 token 不能为空".into()),
+        (None, Some(token)) => {
+            return Err(env_pair_message("PM_AGENT_TOKEN", &token, "PM_SERVER_URL"))
+        }
+        (Some(server_url), Some(token)) => {
+            return Err(blank_environment_message(&server_url, &token))
+        }
         (None, None) => {}
     }
 
@@ -206,19 +250,91 @@ fn resolve_connection(
         return Ok((
             validate_server_url(&config.server_url)?,
             config.token.trim().to_string(),
+            ConnectionSource::Config,
         ));
     }
 
-    let content = std::fs::read_to_string(runtime_path)
-        .map_err(|_| "未找到 data/runtime.json".to_string())?;
-    let info: RuntimeInfo =
-        serde_json::from_str(&content).map_err(|_| "data/runtime.json 内容损坏".to_string())?;
-    Ok((format!("http://127.0.0.1:{}", info.port), info.token))
+    // 走到这里说明环境变量与用户配置都没有设置。远程用户没有本机应用，
+    // runtime_path 不存在是预期情况，应引导其配置连接，而不是让他去排查应用。
+    let content = std::fs::read_to_string(runtime_path).map_err(|_| not_configured_message())?;
+    let info: RuntimeInfo = serde_json::from_str(&content).map_err(|_| {
+        "data/runtime.json 内容损坏，请重启 Agents PM Tool 后重试。".to_string()
+    })?;
+    Ok((
+        format!("http://127.0.0.1:{}", info.port),
+        info.token,
+        ConnectionSource::Runtime,
+    ))
+}
+
+/// token 脱敏：保留首尾各 4 位，便于人工核对是否用错 token，又不泄露完整值。
+fn mask_token(token: &str) -> String {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= 8 {
+        return "*".repeat(chars.len());
+    }
+    let head: String = chars[..4].iter().collect();
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{head}****{tail}")
 }
 
 fn service_down(msg: &str) -> ExitCode {
-    eprintln!("错误：{msg}。请检查 Agents PM Tool 是否运行，以及服务地址和 token 配置");
+    eprintln!("错误：{msg}");
     ExitCode::from(EXIT_SERVICE_DOWN)
+}
+
+/// 连接失败时的排查提示，点明实际目标地址。
+fn unreachable_message(base_url: &str) -> String {
+    format!(
+        "无法连接 {base_url}。请检查服务是否运行、监听范围是否为局域网、\
+         端口是否正确，以及防火墙是否放行"
+    )
+}
+
+/// 未配置连接时的指引。远程用户（下载 skill ZIP、未安装应用）主要走这条路。
+fn not_configured_message() -> String {
+    "尚未配置连接。请执行 pm-cli config set server-url <服务地址> 与 \
+     pm-cli config set token <token>（token 在网页「我的 Agent 访问」面板签发）；\
+     也可改用环境变量 PM_SERVER_URL 与 PM_AGENT_TOKEN（两者必须同时设置）"
+        .to_string()
+}
+
+/// 两个变量都设了、但至少一个为空。要点名哪个为空，并同样给出 unset 出路。
+fn blank_environment_message(server_url: &str, token: &str) -> String {
+    let url_blank = server_url.trim().is_empty();
+    let token_blank = token.trim().is_empty();
+    if url_blank && token_blank {
+        return "环境变量 PM_SERVER_URL 与 PM_AGENT_TOKEN 均已设置但为空。请填入有效值；\
+                若想改用已保存的配置或本机应用自动发现，请先 unset 两者。"
+            .to_string();
+    }
+    if url_blank {
+        return "环境变量 PM_SERVER_URL 已设置但为空。请填入有效的服务地址；\
+                若想改用已保存的配置或本机应用自动发现，请先 unset PM_SERVER_URL。"
+            .to_string();
+    }
+    "环境变量 PM_AGENT_TOKEN 已设置但为空。请填入有效 token；\
+     若想改用已保存的配置或本机应用自动发现，请先 unset PM_AGENT_TOKEN。"
+        .to_string()
+}
+
+/// 环境变量只设了其中一个时的指引。要点明缺哪个，并同时给出两条出路：补齐另一个，
+/// 或清掉已设的那个、改走用户配置 / 本机自动发现——否则用户会以为只能去配环境变量。
+fn env_pair_message(set_name: &str, set_value: &str, missing_name: &str) -> String {
+    if set_value.trim().is_empty() {
+        return format!(
+            "环境变量 {set_name} 已设置但为空，且 {missing_name} 未设置。\
+             请为两者都填入有效值；若想改用已保存的配置或本机应用自动发现，请先 unset {set_name}。"
+        );
+    }
+    format!(
+        "环境变量必须成对设置：{set_name} 已设置，但 {missing_name} 未设置。\
+         请补齐 {missing_name}；若想改用已保存的配置或本机应用自动发现，请先 unset {set_name}。"
+    )
 }
 
 struct Client {
@@ -235,7 +351,12 @@ impl Client {
             std::env::var("PM_SERVER_URL").ok(),
             std::env::var("PM_AGENT_TOKEN").ok(),
         )
-        .map_err(|message| service_down(&message))?;
+        .map_err(|message| {
+            // 这里是「连接信息没解析出来」，还没发起请求，用户最需要的是诊断入口。
+            service_down(&format!(
+                "{message}\n运行 pm-cli doctor 可查看当前生效的连接来源与修复步骤"
+            ))
+        })?;
         Ok(Self {
             http: reqwest::Client::new(),
             base: format!("{server_url}/api/agent"),
@@ -243,12 +364,13 @@ impl Client {
         })
     }
 
-    async fn call(
+    /// 发起请求并返回状态码与响应体。不打印任何内容，便于 doctor 自行组织输出。
+    async fn send(
         &self,
         method: reqwest::Method,
         path: &str,
         body: Option<serde_json::Value>,
-    ) -> Result<(reqwest::StatusCode, serde_json::Value), ExitCode> {
+    ) -> Result<(reqwest::StatusCode, serde_json::Value), String> {
         let mut req = self
             .http
             .request(method, format!("{}{}", self.base, path))
@@ -259,11 +381,22 @@ impl Client {
         let res = req
             .send()
             .await
-            .map_err(|_| service_down("无法连接 Agents PM Tool 服务"))?;
+            .map_err(|_| unreachable_message(&self.base))?;
         let status = res.status();
         let text = res.text().await.unwrap_or_default();
         let value = serde_json::from_str(&text).unwrap_or(json!({ "raw": text }));
         Ok((status, value))
+    }
+
+    async fn call(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<(reqwest::StatusCode, serde_json::Value), ExitCode> {
+        self.send(method, path, body)
+            .await
+            .map_err(|message| service_down(&message))
     }
 
     async fn download(&self, path: &str) -> Result<reqwest::Response, ExitCode> {
@@ -273,7 +406,7 @@ impl Client {
             .bearer_auth(&self.token)
             .send()
             .await
-            .map_err(|_| service_down("无法连接 Agents PM Tool 服务"))?;
+            .map_err(|_| service_down(&unreachable_message(&self.base)))?;
         if response.status().is_success() {
             return Ok(response);
         }
@@ -292,6 +425,13 @@ fn fail_from_server(status: reqwest::StatusCode, v: &serde_json::Value) -> ExitC
             let names: Vec<&str> = projects.iter().filter_map(|p| p.as_str()).collect();
             eprintln!("当前项目选项：{}", names.join("、"));
         }
+    }
+    if status.as_u16() == 401 {
+        eprintln!(
+            "请在网页「我的 Agent 访问」面板重新生成 token，然后执行 pm-cli config set token <新 token>"
+        );
+    } else if status.as_u16() == 403 {
+        eprintln!("请检查该账号在网页端的项目与字段授权；若账号被停用，需联系管理员恢复。");
     }
     if status.as_u16() == 401 || status.as_u16() == 403 {
         ExitCode::from(EXIT_VALIDATION)
@@ -425,6 +565,8 @@ async fn main() -> ExitCode {
 async fn run(cli: Cli) -> Result<(), ExitCode> {
     let command = match cli.command {
         Commands::Config { command } => return handle_config(command),
+        // doctor 必须在建连前执行：连不上时它要给出诊断，而不是直接失败。
+        Commands::Doctor { json } => return run_doctor(json).await,
         command => command,
     };
     let client = Client::new()?;
@@ -668,6 +810,7 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             Ok(())
         }
         Commands::Config { .. } => unreachable!(),
+        Commands::Doctor { .. } => unreachable!(),
     }
 }
 
@@ -726,6 +869,234 @@ fn handle_config(command: ConfigCommand) -> Result<(), ExitCode> {
     Ok(())
 }
 
+/// doctor 的结构化结果：既可人读，也可被 Agent 用 --json 解析。
+#[derive(Debug, Serialize)]
+struct DoctorReport {
+    cli_version: String,
+    exe_path: String,
+    source: Option<ConnectionSource>,
+    server_url: Option<String>,
+    token_masked: Option<String>,
+    config_path: String,
+    runtime_path: String,
+    reachable: bool,
+    status: Option<u16>,
+    visible_projects: Option<usize>,
+    skill_version: Option<String>,
+    problem: Option<String>,
+    hints: Vec<String>,
+}
+
+const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// skill 目录布局为 <skill>/bin/pm-cli.exe + <skill>/VERSION，据此读取已安装版本。
+fn read_skill_version() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let bin_dir = exe.parent()?;
+    if bin_dir.file_name()?.to_str()? != "bin" {
+        return None;
+    }
+    std::fs::read_to_string(bin_dir.parent()?.join("VERSION"))
+        .ok()
+        .map(|value| value.trim().to_string())
+}
+
+fn doctor_base() -> DoctorReport {
+    DoctorReport {
+        cli_version: CLI_VERSION.to_string(),
+        exe_path: std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "（未知）".to_string()),
+        source: None,
+        server_url: None,
+        token_masked: None,
+        config_path: cli_config_path().display().to_string(),
+        runtime_path: runtime_path().display().to_string(),
+        reachable: false,
+        status: None,
+        visible_projects: None,
+        skill_version: read_skill_version(),
+        problem: None,
+        hints: Vec::new(),
+    }
+}
+
+fn status_hint(status: reqwest::StatusCode) -> &'static str {
+    match status.as_u16() {
+        401 => "token 无效或已吊销",
+        403 => "账号被停用或无权访问",
+        _ => "服务返回错误",
+    }
+}
+
+fn failure_hints(status: reqwest::StatusCode) -> Vec<String> {
+    match status.as_u16() {
+        401 => vec![
+            "在网页「我的 Agent 访问」重新生成 token".to_string(),
+            "然后执行 pm-cli config set token <新 token>".to_string(),
+        ],
+        403 => vec![
+            "确认 token 所属账号未被停用".to_string(),
+            "确认当前项目已授权给该账号".to_string(),
+        ],
+        _ => vec!["查看应用日志了解服务端错误详情".to_string()],
+    }
+}
+
+/// 收集诊断信息。无论结论如何都返回完整报告，由调用方决定打印与退出码。
+async fn collect_doctor() -> (DoctorReport, Result<(), ExitCode>) {
+    let mut report = doctor_base();
+    let config_path = cli_config_path();
+    let runtime = runtime_path();
+
+    let resolved = resolve_connection_detailed(
+        &runtime,
+        &config_path,
+        std::env::var("PM_SERVER_URL").ok(),
+        std::env::var("PM_AGENT_TOKEN").ok(),
+    );
+
+    let (server_url, token, source) = match resolved {
+        Ok(values) => values,
+        Err(message) => {
+            report.problem = Some(message);
+            let mut hints = Vec::new();
+            // runtime.json 存在却读不出有效内容，说明本机装过应用，最直接的修复是重启应用。
+            if runtime.exists() {
+                hints.push("重启 Agents PM Tool 桌面应用，应用启动时会重新生成 data/runtime.json".to_string());
+            }
+            hints.push(format!(
+                "pm-cli config set server-url <服务地址>（写入 {}）",
+                report.config_path
+            ));
+            hints.push(
+                "pm-cli config set token <token>，token 在网页「我的 Agent 访问」面板签发".to_string(),
+            );
+            hints.push("或改用环境变量 PM_SERVER_URL 与 PM_AGENT_TOKEN（必须成对设置）".to_string());
+            report.hints = hints;
+            return (report, Err(ExitCode::from(EXIT_SERVICE_DOWN)));
+        }
+    };
+
+    report.source = Some(source);
+    report.server_url = Some(server_url.clone());
+    report.token_masked = Some(mask_token(&token));
+
+    let client = Client {
+        http: reqwest::Client::new(),
+        base: format!("{server_url}/api/agent"),
+        token,
+    };
+
+    // 用需要鉴权的 /projects 探测：既验证服务可达，也验证 token 是否有效。
+    // （不能用 /api/agent/help —— 它免 token，token 错误时同样返回 200，会把无效 token 误判为正常。）
+    let (status, value) = match client.send(reqwest::Method::GET, "/projects", None).await {
+        Ok(values) => values,
+        Err(message) => {
+            report.problem = Some(message);
+            report.hints = vec![
+                "确认 Agents PM Tool 桌面应用正在运行".to_string(),
+                "确认服务的监听范围包含当前访问来源".to_string(),
+                "确认端口未被占用且防火墙已放行".to_string(),
+            ];
+            return (report, Err(ExitCode::from(EXIT_SERVICE_DOWN)));
+        }
+    };
+    report.status = Some(status.as_u16());
+
+    if !status.is_success() {
+        report.problem = Some(match value["error"]["message"].as_str() {
+            Some(message) => format!("服务返回 HTTP {}：{}", status.as_u16(), message),
+            None => format!("服务返回 HTTP {}（{}）", status.as_u16(), status_hint(status)),
+        });
+        report.hints = failure_hints(status);
+        let code = if status.as_u16() == 401 || status.as_u16() == 403 {
+            EXIT_VALIDATION
+        } else {
+            EXIT_SERVICE_DOWN
+        };
+        return (report, Err(ExitCode::from(code)));
+    }
+    report.reachable = true;
+    report.visible_projects = value.as_array().map(|items| items.len());
+
+    // token 有效但看不到任何项目时，Agent 实际无事可做，这点值得单独提示。
+    if report.visible_projects == Some(0) {
+        report
+            .hints
+            .push("当前 token 看不到任何项目，请检查网页端的 Agent 项目授权".to_string());
+    }
+    if let Some(version) = &report.skill_version {
+        if version != CLI_VERSION {
+            report.hints.push(format!(
+                "skill 版本 {version} 与 pm-cli {CLI_VERSION} 不一致，请在网页「我的 Agent 访问」重新安装 skill"
+            ));
+        }
+    }
+    (report, Ok(()))
+}
+
+fn print_doctor(report: &DoctorReport) {
+    println!("pm-cli 诊断");
+    println!("  版本：{}", report.cli_version);
+    println!("  可执行文件：{}", report.exe_path);
+    println!(
+        "  连接来源：{}",
+        report
+            .source
+            .map(ConnectionSource::label)
+            .unwrap_or("（尚未配置）")
+    );
+    println!(
+        "  服务地址：{}",
+        report.server_url.as_deref().unwrap_or("（尚未配置）")
+    );
+    println!(
+        "  Token：{}",
+        report
+            .token_masked
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("（尚未配置）")
+    );
+    println!("  连通性：{}", match (report.reachable, report.status) {
+        (true, Some(status)) => match report.visible_projects {
+            Some(count) => format!("正常（HTTP {status}，可见 {count} 个项目）"),
+            None => format!("正常（HTTP {status}）"),
+        },
+        (false, Some(status)) => format!("HTTP {status}"),
+        _ => "未连接".to_string(),
+    });
+    if let Some(version) = &report.skill_version {
+        println!(
+            "  skill 版本：{}{}",
+            version,
+            if version == &report.cli_version {
+                "（与 pm-cli 一致）"
+            } else {
+                "（与 pm-cli 不一致）"
+            }
+        );
+    }
+    match &report.problem {
+        Some(problem) => println!("  结论：{problem}"),
+        None => println!("  结论：连接正常。"),
+    }
+    for hint in &report.hints {
+        println!("  - {hint}");
+    }
+}
+
+async fn run_doctor(json_output: bool) -> Result<(), ExitCode> {
+    let (report, outcome) = collect_doctor().await;
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    } else {
+        print_doctor(&report);
+    }
+    outcome
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -741,6 +1112,62 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result, ("http://192.168.1.2:17890".into(), "secret".into()));
+    }
+
+    #[test]
+    fn partial_environment_names_missing_counterpart_and_unset_escape() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = |name: &str| temp.path().join(name);
+        let error = resolve_connection(
+            &missing("missing-runtime.json"),
+            &missing("missing-cli.json"),
+            Some("http://192.168.1.2:17890".into()),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("PM_AGENT_TOKEN"), "应点名缺失的变量：{error}");
+        assert!(
+            error.contains("unset PM_SERVER_URL"),
+            "应给出 unset 后改走其它来源的出路：{error}"
+        );
+
+        let error = resolve_connection(
+            &missing("missing-runtime.json"),
+            &missing("missing-cli.json"),
+            None,
+            Some("token-only".into()),
+        )
+        .unwrap_err();
+        assert!(error.contains("PM_SERVER_URL"), "应点名缺失的变量：{error}");
+        assert!(error.contains("unset PM_AGENT_TOKEN"), "应给出出路：{error}");
+    }
+
+    #[test]
+    fn blank_environment_value_is_reported_as_blank_not_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = |name: &str| temp.path().join(name);
+
+        let error = resolve_connection(
+            &missing("missing-runtime.json"),
+            &missing("missing-cli.json"),
+            Some("   ".into()),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("已设置但为空"), "空值不应报成未设置：{error}");
+
+        let error = resolve_connection(
+            &missing("missing-runtime.json"),
+            &missing("missing-cli.json"),
+            Some("   ".into()),
+            Some("token".into()),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("PM_SERVER_URL 已设置但为空"),
+            "应点名为空的那个：{error}"
+        );
+        assert!(error.contains("unset PM_SERVER_URL"), "应给出出路：{error}");
     }
 
     #[test]
@@ -781,6 +1208,42 @@ mod tests {
     }
 
     #[test]
+    fn missing_runtime_reports_configuration_guidance() {
+        // 远程用户未配置连接时，runtime.json 不存在是预期情况，
+        // 报错必须给出可执行命令，而不是让他去排查一个没装过的应用。
+        let temp = tempfile::tempdir().unwrap();
+        let error = resolve_connection(
+            &temp.path().join("missing-runtime.json"),
+            &temp.path().join("missing-cli.json"),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("config set server-url") && error.contains("config set token"),
+            "未配置时应给出可执行的配置命令，实际：{error}"
+        );
+        assert!(
+            !error.contains("data/runtime.json"),
+            "未配置时不应把内部文件名抛给用户，实际：{error}"
+        );
+    }
+
+    #[test]
+    fn corrupt_runtime_is_reported_distinctly() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = temp.path().join("runtime.json");
+        std::fs::write(&runtime, "{ not json").unwrap();
+        let error =
+            resolve_connection(&runtime, &temp.path().join("missing-cli.json"), None, None)
+                .unwrap_err();
+        assert!(
+            error.contains("内容损坏"),
+            "runtime.json 损坏应单独提示重启应用，实际：{error}"
+        );
+    }
+
+    #[test]
     fn attachment_filename_is_decoded_and_sanitized() {
         let filename = filename_from_content_disposition(
             "attachment; filename*=UTF-8''%E9%9C%80%E6%B1%82%2B%E8%AF%B4%E6%98%8E.pdf",
@@ -792,6 +1255,78 @@ mod tests {
             "危险_.txt"
         );
         assert_eq!(safe_download_filename("..", "fallback"), "fallback");
+    }
+
+    #[test]
+    fn doctor_masks_token_without_exposing_middle() {
+        assert_eq!(mask_token(""), "");
+        assert_eq!(mask_token("abcd"), "****");
+        assert_eq!(mask_token("12345678"), "********");
+        assert_eq!(mask_token("1234567890"), "1234****7890");
+        let masked = mask_token("0123456789abcdef");
+        assert!(!masked.contains("5678"));
+        assert!(!masked.contains("0123456789abcdef"));
+    }
+
+    #[test]
+    fn doctor_reports_which_source_won() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("cli.json");
+        save_cli_config(
+            &config_path,
+            &CliConfig {
+                server_url: "https://pm.example.test".into(),
+                token: "config-token".into(),
+            },
+        )
+        .unwrap();
+
+        // 环境变量优先，doctor 必须如实报告来源，而不是笼统说「已配置」。
+        let (_, _, source) = resolve_connection_detailed(
+            &temp.path().join("missing-runtime.json"),
+            &config_path,
+            Some("http://192.168.1.2:17890".into()),
+            Some("env-token".into()),
+        )
+        .unwrap();
+        assert_eq!(source, ConnectionSource::Environment);
+
+        // 无环境变量时落到用户配置。
+        let (_, _, source) = resolve_connection_detailed(
+            &temp.path().join("missing-runtime.json"),
+            &config_path,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(source, ConnectionSource::Config);
+
+        // 两者都没有时才用本机 runtime.json。
+        let runtime_path = temp.path().join("runtime.json");
+        std::fs::write(
+            &runtime_path,
+            r#"{"port":17890,"token":"runtime-token"}"#,
+        )
+        .unwrap();
+        let (server_url, token, source) = resolve_connection_detailed(
+            &runtime_path,
+            &temp.path().join("missing-cli.json"),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(source, ConnectionSource::Runtime);
+        assert_eq!(server_url, "http://127.0.0.1:17890");
+        assert_eq!(token, "runtime-token");
+    }
+
+    #[test]
+    fn doctor_source_labels_are_human_readable() {
+        assert!(ConnectionSource::Environment
+            .label()
+            .contains("PM_SERVER_URL"));
+        assert!(ConnectionSource::Config.label().contains("cli.json"));
+        assert!(ConnectionSource::Runtime.label().contains("runtime.json"));
     }
 
     #[test]

@@ -18,7 +18,6 @@ pub struct AgentAccess {
     pub server_url: String,
     pub token: Option<String>,
     pub access_instructions: String,
-    pub skill_ready: bool,
 }
 
 fn lan_ipv4() -> Option<std::net::Ipv4Addr> {
@@ -31,9 +30,20 @@ fn lan_ipv4() -> Option<std::net::Ipv4Addr> {
 }
 
 fn server_url(core: &CoreState, user: &User) -> String {
+    // 主机账号的 Agent 一定运行在本机，loopback 永远可达。
+    if user.id == HOST_USER_ID {
+        let port = *core.actual_port.read().unwrap();
+        return format!("http://127.0.0.1:{port}");
+    }
+    reachable_server_url(core)
+}
+
+/// 从非本机可达的服务地址。供免 token 的 `/api/agent/help` 使用——匿名请求没有用户身份，
+/// 只能按监听范围推断。
+pub(crate) fn reachable_server_url(core: &CoreState) -> String {
     let port = *core.actual_port.read().unwrap();
     let settings = core.settings.read().unwrap().clone();
-    if user.id == HOST_USER_ID || settings.listen_scope != "lan" {
+    if settings.listen_scope != "lan" {
         return format!("http://127.0.0.1:{port}");
     }
     let configured = settings.agent_server_url;
@@ -58,14 +68,19 @@ pub async fn get_access(
         "Agents PM Tool 是本地任务管理工具，Agent 通过受限客户端 pm-cli 读取和推进任务。请先确保桌面应用正在运行；安装版会注册 pm-cli 到用户 PATH，并自动读取实际端口和临时 token，无需手动配置。安装或升级后需重新打开终端/Agent 前端。".to_string()
     } else {
         format!(
-            "Agents PM Tool 位于远程主机。请设置 PM_SERVER_URL={server_url} 与网页中签发的 PM_AGENT_TOKEN，或运行 pm-cli config set server-url {server_url} 和 pm-cli config set token <token>。"
+            "Agents PM Tool 位于远程主机，Agent 通过受限客户端 pm-cli 读取和推进任务。\
+             pm-cli 由 pm-cli-skill 提供：可在网页端「我的 Agent 访问」下载 ZIP，解压到 Codex、\
+             Claude Code 或 WorkBuddy 的 skills 目录后即可使用；解压出的 exe 未注册到 PATH，\
+             需用完整路径调用，并先阅读同目录的 SKILL.md 了解完整用法。\
+             远程环境不会自动读取端口与 token，需要手动配置：设置 PM_SERVER_URL={server_url} \
+             与网页中签发的 PM_AGENT_TOKEN，或运行 pm-cli config set server-url {server_url} \
+             和 pm-cli config set token <token>，再用 pm-cli doctor 确认连通。"
         )
     };
     Ok(Json(AgentAccess {
         server_url,
         token,
         access_instructions,
-        skill_ready: user.id == HOST_USER_ID && super::api_skill::local_skill_ready(),
     }))
 }
 
@@ -91,7 +106,6 @@ pub async fn regenerate_token(
         },
         server_url,
         token: Some(token),
-        skill_ready: user.id == HOST_USER_ID && super::api_skill::local_skill_ready(),
     }))
 }
 

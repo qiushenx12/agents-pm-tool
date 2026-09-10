@@ -265,10 +265,32 @@ pub async fn list_projects(
     Ok(Json(result))
 }
 
-pub async fn help(Extension(_user): Extension<User>) -> Json<serde_json::Value> {
+/// 接口自述。**无需 token**：没有 pm-cli、没有 skill 的 Agent 也能访问它，
+/// 从中得知「要让用户做什么」。真正读写任务仍需 token。
+pub async fn help(State(core): State<CoreState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "name": "Agents PM Tool Agent API",
+        "introduction": "Agents PM Tool 是本地任务管理工具，Agent 通过受限客户端 pm-cli 或本接口（HTTP + Bearer token）读取和推进任务。pm-cli 由 pm-cli-skill 提供：可在网页端「我的 Agent 访问」下载 ZIP，解压到 Codex、Claude Code 或 WorkBuddy 的 skills 目录后即可使用，完整用法见同目录的 SKILL.md。",
+        "server_url": super::api_agent_access::reachable_server_url(&core),
         "authentication": "Authorization: Bearer <PM_AGENT_TOKEN>",
+        "requires_token": true,
+        "bootstrap": {
+            "summary": "本接口无需 token 即可访问；但读取或推进任务必须带 token。token 由已登录用户在网页端签发，Agent 无法自行获取，请把下列步骤转告用户。",
+            "ask_the_user": [
+                "打开 Agents PM Tool 网页端，进入「我的 Agent 访问」。",
+                "复制面板上的「服务地址」，并生成（或复制）Agent token。",
+                "把服务地址与 token 提供给 Agent；或由用户在本机执行下面的配置命令。"
+            ],
+            "configure": [
+                "pm-cli config set server-url <服务地址>",
+                "pm-cli config set token <token>",
+                "pm-cli doctor"
+            ],
+            "if_pm_cli_missing": [
+                "由用户在网页端「我的 Agent 访问」下载 pm-cli-skill，解压到 Codex、Claude Code 或 WorkBuddy 的 skills 目录。",
+                "或直接用 curl：<curl> -H \"Authorization: Bearer <token>\" <服务地址>/api/agent/tasks"
+            ]
+        },
         "commands": [
             {"method":"GET", "path":"/api/agent/tasks", "description":"查看与筛选任务"},
             {"method":"GET", "path":"/api/agent/tasks/{id}", "description":"查看任务详情"},
@@ -284,6 +306,13 @@ pub async fn help(Extension(_user): Extension<User>) -> Json<serde_json::Value> 
             "environment": ["PM_SERVER_URL", "PM_AGENT_TOKEN"],
             "example": "PM_SERVER_URL=http://192.168.1.10:17890; PM_AGENT_TOKEN=<token>"
         },
-        "skill_download": "/api/agent/skill/download"
+        "unauthenticated_access": ["/api/agent/help"],
+        "skill_download": "/api/agent/skill/download",
+        "permissions": [
+            "可以查看/筛选任务、只读查看项目、创建任务，并查看和下载已授权项目中的任务附件。",
+            "只能把任务状态改为进行中、待验证或已完成。",
+            "只能修改由 Agent 创建的任务描述，且描述不能为空。",
+            "不能设置验收状态，不能修改项目、类型或用户创建的任务描述，也不能删除任务、上传或删除附件、直接读写 SQLite。"
+        ]
     }))
 }

@@ -172,12 +172,14 @@ fn build_router(core: CoreState) -> Router {
             axum::routing::patch(api_agent::patch_description),
         )
         .route("/projects", get(api_agent::list_projects))
-        .route("/help", get(api_agent::help))
         .route("/skill/download", get(api_skill::agent_download))
         .route_layer(middleware::from_fn_with_state(
             core.clone(),
             auth::require_agent_token,
-        ));
+        ))
+        // route_layer 之后 merge 的路由不受鉴权中间件约束（axum 0.8 语义）：
+        // /help 必须免 token，否则没有 pm-cli、没有 skill 的 Agent 无从得知接入方式。
+        .merge(Router::new().route("/help", get(api_agent::help)));
 
     Router::new()
         .nest("/api/web", web)

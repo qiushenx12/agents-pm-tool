@@ -13,16 +13,14 @@ function promptValue(value: string) {
   return JSON.stringify(value);
 }
 
+/** 「复制 Prompt」所需的接入信息。只有服务地址会进入 Prompt。 */
 export interface AgentPromptAccess {
-  access_instructions: string;
-  skill_ready: boolean;
+  /** 服务端动态计算：主机账号为 loopback，局域网账号为可达地址（见 api_agent_access.rs）。 */
+  server_url?: string;
 }
 
-const DEFAULT_ACCESS: AgentPromptAccess = {
-  access_instructions:
-    "Agents PM Tool 是本地任务管理工具，Agent 通过受限客户端 pm-cli 读取和推进任务。请先确保桌面应用正在运行；安装版会注册 pm-cli 到用户 PATH，并自动读取实际端口和临时 token，无需手动配置。安装或升级后需重新打开终端/Agent 前端。",
-  skill_ready: false,
-};
+/** 尚未取到接入信息时的兜底：Prompt 里不出现服务地址，Agent 会向用户索取。 */
+const DEFAULT_ACCESS: AgentPromptAccess = {};
 
 let activeAccess = DEFAULT_ACCESS;
 
@@ -30,48 +28,27 @@ export function setAgentPromptAccess(access?: AgentPromptAccess) {
   activeAccess = access ?? DEFAULT_ACCESS;
 }
 
-/** 生成可直接交给任意具备本机终端能力的 Agent 的完整任务说明。 */
+/**
+ * 生成可直接交给任意 Agent 的任务说明。
+ *
+ * 模板对所有场景一致：工具介绍、命令清单与权限边界不在这里展开——装了 pm-cli-skill 的
+ * Agent 会读 SKILL.md，没装的则按给出的地址请求免 token 的 /api/agent/help。
+ * 模板全集见 docs/agent-prompt-templates.md。
+ */
 export function buildAgentTaskPrompt(
   task: Task,
   access: AgentPromptAccess = DEFAULT_ACCESS,
 ) {
-  if (access.skill_ready) {
-    return [
-      "请使用 pm-cli-skill 了解 Agents PM Tool 与 pm-cli 的完整用法。",
-      "",
-      `任务 ID：${promptValue(task.id)}`,
-      `项目：${promptValue(task.project)}`,
-      `请先运行 pm-cli get ${task.id} --json 读取任务，然后完成并推进状态。`,
-    ].join("\n");
-  }
+  const serverUrl = access.server_url;
   return [
-    "请使用 Agents PM Tool 完成以下任务：",
+    "请使用 Agents PM Tool（pm-cli-skill）完成以下任务：",
     `- 任务 ID：${promptValue(task.id)}`,
     `- 项目：${promptValue(task.project)}`,
-    "",
-    "1. 工具介绍与访问方式",
-    access.access_instructions,
-    `使用 pm-cli get ${task.id} --json 读取本任务。`,
-    "",
-    "2. 可用命令",
-    "```text",
-    "pm-cli list [筛选参数] [--json]                 查看/筛选任务",
-    "pm-cli get <任务ID> [--json]                   查看任务详情",
-    "pm-cli attachments <任务ID> [--json]           查看任务附件",
-    "pm-cli download <附件ID> [--output <文件路径>] 下载附件",
-    "pm-cli projects [--json]                       查看项目及 local_path/git_url",
-    "pm-cli create --project <项目> --type <类型> --description <描述> [--json]",
-    "pm-cli status <任务ID> --to <进行中|待验证|已完成> [--json]",
-    "pm-cli describe <任务ID> --description <描述> [--json]",
-    "pm-cli --help                                   查看完整帮助",
-    "```",
-    "完整用法见 pm-cli --help 或 GET /api/agent/help（需带 token）。",
-    "",
-    "3. Agent 权限",
-    "- 可以查看/筛选任务、只读查看项目、创建任务，并查看和下载已授权项目中的任务附件。",
-    "- 只能把任务状态改为进行中、待验证或已完成。",
-    "- 只能修改由 Agent 创建的任务描述，且描述不能为空。",
-    "- 不能设置验收状态，不能修改项目、类型或用户创建的任务描述，也不能删除任务、上传或删除附件、直接读写 SQLite。",
+    `命令：pm-cli get ${task.id} --json`,
+    ...(serverUrl ? [`服务地址：${serverUrl}`] : []),
+    serverUrl
+      ? `完整用法见 pm-cli --help 或 ${serverUrl}/api/agent/help`
+      : "完整用法见 pm-cli --help 或 GET /api/agent/help",
   ].join("\n");
 }
 

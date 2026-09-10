@@ -199,7 +199,7 @@ async fn register_user(app: &TestApp, username: &str) -> (Value, reqwest::Client
 }
 
 #[tokio::test]
-async fn agent_help_and_skill_download_are_authenticated_and_versioned() {
+async fn agent_help_and_skill_download_are_versioned() {
     let app = spawn_app().await;
     let help = app
         .agent(reqwest::Method::GET, "/help")
@@ -240,6 +240,54 @@ async fn agent_help_and_skill_download_are_authenticated_and_versioned() {
     assert!(archive.by_name("pm-cli-skill/SKILL.md").is_ok());
     assert!(archive.by_name("pm-cli-skill/bin/pm-cli.exe").is_ok());
     assert!(archive.by_name("pm-cli-skill/VERSION").is_ok());
+}
+
+#[tokio::test]
+async fn agent_help_is_public_but_other_agent_routes_are_not() {
+    let app = spawn_app().await;
+    let anonymous = reqwest::Client::new();
+
+    // 没有 pm-cli、没有 skill 的 Agent 必须能免 token 读到接入指引。
+    let help = anonymous
+        .get(format!("{}/api/agent/help", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(help.status(), 200);
+    let help = help.json::<Value>().await.unwrap();
+    assert_eq!(help["requires_token"], true);
+    assert_eq!(help["unauthenticated_access"][0], "/api/agent/help");
+    let bootstrap = &help["bootstrap"];
+    assert!(bootstrap["summary"].as_str().unwrap().contains("转告用户"));
+    assert!(!bootstrap["ask_the_user"].as_array().unwrap().is_empty());
+    assert!(!bootstrap["configure"].as_array().unwrap().is_empty());
+    // 工具介绍、权限边界与可直接 config set 的地址都必须免 token 可读——
+    // Prompt 已不在本地展开这些内容，全部依赖这里。
+    assert!(help["introduction"].as_str().unwrap().contains("pm-cli"));
+    assert!(!help["permissions"].as_array().unwrap().is_empty());
+    assert!(help["server_url"].as_str().unwrap().starts_with("http://"));
+
+    // 除 /help 外的 Agent 路由仍必须鉴权，避免公开 /help 时顺手放宽了边界。
+    for path in ["/tasks", "/projects", "/skill/download"] {
+        let response = anonymous
+            .get(format!("{}/api/agent{path}", app.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 401, "{path} 应仍需 token");
+    }
+
+    // 带 token 时 /help 内容一致，不影响既有调用方。
+    let authenticated = app
+        .agent(reqwest::Method::GET, "/help")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(authenticated.status(), 200);
+    assert_eq!(
+        authenticated.json::<Value>().await.unwrap()["skill_download"],
+        "/api/agent/skill/download"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

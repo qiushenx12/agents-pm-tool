@@ -49,11 +49,10 @@ export interface AgentAccess {
   server_url: string;
   token: string | null;
   access_instructions: string;
-  skill_ready: boolean;
 }
 
 export interface LocalSkillTarget {
-  frontend_id: "codex" | "claude_code";
+  frontend_id: "codex" | "claude_code" | "workbuddy";
   frontend: string;
   path: string;
   installed: boolean;

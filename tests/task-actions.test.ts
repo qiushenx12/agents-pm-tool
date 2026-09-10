@@ -29,44 +29,51 @@ describe("task row actions", () => {
     ]);
   });
 
-  it("restores the complete prompt used by the actions column", () => {
+  it("builds one concise prompt that does not enumerate commands or permissions", () => {
     const prompt = buildAgentTaskPrompt(task);
 
+    expect(prompt).toContain("请使用 Agents PM Tool（pm-cli-skill）完成以下任务：");
     expect(prompt).toContain('任务 ID："202609091234560001"');
     expect(prompt).toContain('项目："agents-pm-tool"');
-    expect(prompt).toContain("pm-cli get 202609091234560001 --json");
-    expect(prompt).toContain("pm-cli attachments <任务ID> [--json]");
-    expect(prompt).toContain("pm-cli download <附件ID>");
-    expect(prompt).toContain("查看和下载已授权项目中的任务附件");
-    expect(prompt).toContain("不能删除任务、上传或删除附件");
-    expect(prompt).toContain("1. 工具介绍与访问方式");
-    expect(prompt).toContain("2. 可用命令");
-    expect(prompt).toContain("3. Agent 权限");
+    expect(prompt).toContain("命令：pm-cli get 202609091234560001 --json");
+    expect(prompt).toContain("GET /api/agent/help");
+    // 工具介绍、命令清单与权限边界已移到 /api/agent/help，Prompt 里不再展开
+    expect(prompt).not.toContain("2. 可用命令");
+    expect(prompt).not.toContain("pm-cli attachments");
+    expect(prompt).not.toContain("3. Agent 权限");
+  });
+
+  it("includes the service address when the backend provides one", () => {
+    const prompt = buildAgentTaskPrompt(task, {
+      server_url: "http://192.168.1.9:17890",
+    });
+    expect(prompt).toContain("服务地址：http://192.168.1.9:17890");
+    expect(prompt).toContain(
+      "完整用法见 pm-cli --help 或 http://192.168.1.9:17890/api/agent/help",
+    );
+  });
+
+  it("omits the address when the access info is unavailable", () => {
+    const prompt = buildAgentTaskPrompt(task, {});
+    expect(prompt).not.toContain("服务地址：");
+    expect(prompt).not.toContain("192.168.1.9");
+    expect(prompt).toContain("GET /api/agent/help");
+  });
+
+  it("produces the same shape for host and remote — only the address differs", () => {
+    const host = buildAgentTaskPrompt(task, { server_url: "http://127.0.0.1:3010" });
+    const remote = buildAgentTaskPrompt(task, {
+      server_url: "http://192.168.1.9:17890",
+    });
+    expect(host.replaceAll("http://127.0.0.1:3010", "<addr>")).toBe(
+      remote.replaceAll("http://192.168.1.9:17890", "<addr>"),
+    );
   });
 
   it("builds the concise prompt used by the ID cell", () => {
     expect(buildAgentIdPrompt(task)).toBe(
       "请使用 pm-cli 获取任务id=202609091234560001的内容并完成任务",
     );
-  });
-
-  it("uses server-provided remote access instructions", () => {
-    const prompt = buildAgentTaskPrompt(task, {
-      access_instructions: "请设置 PM_SERVER_URL=http://192.168.1.9:17890 与 PM_AGENT_TOKEN。",
-      skill_ready: false,
-    });
-    expect(prompt).toContain("PM_SERVER_URL=http://192.168.1.9:17890");
-    expect(prompt).toContain("GET /api/agent/help");
-  });
-
-  it("uses the short prompt when the matching skill is ready", () => {
-    const prompt = buildAgentTaskPrompt(task, {
-      access_instructions: "不会出现在短模式",
-      skill_ready: true,
-    });
-    expect(prompt).toContain("请使用 pm-cli-skill");
-    expect(prompt).toContain("pm-cli get 202609091234560001 --json");
-    expect(prompt).not.toContain("2. 可用命令");
   });
 
   it("copies the generated prompt through the registered action", async () => {
