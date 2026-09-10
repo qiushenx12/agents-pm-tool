@@ -18,6 +18,8 @@ pub struct TaskFilter {
 }
 
 pub(super) fn row_to_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
+    let submitter: String = r.get("submitter")?;
+    let owner_username: Option<String> = r.get("owner_username")?;
     Ok(Task {
         id: r.get("id")?,
         seq: r.get("seq")?,
@@ -26,7 +28,8 @@ pub(super) fn row_to_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
         description: r.get("description")?,
         note: r.get("note")?,
         status: r.get("status")?,
-        submitter: r.get("submitter")?,
+        submitter_name: task::submitter_name(&submitter, owner_username.as_deref()),
+        submitter,
         created_at: r.get("created_at")?,
         finished_at: r.get("finished_at")?,
         updated_at: r.get("updated_at")?,
@@ -37,8 +40,10 @@ pub(super) fn row_to_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
 }
 
 pub(super) const SELECT_TASKS: &str = r#"
-SELECT t.*, (SELECT COUNT(*) FROM attachments a WHERE a.task_id = t.id) AS attachment_count
+SELECT t.*, u.username AS owner_username,
+       (SELECT COUNT(*) FROM attachments a WHERE a.task_id = t.id) AS attachment_count
 FROM tasks t
+LEFT JOIN users u ON u.id = t.owner_user_id
 "#;
 
 pub(super) fn filter_sql(f: &TaskFilter) -> (String, Vec<String>) {

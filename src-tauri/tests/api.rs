@@ -245,6 +245,8 @@ async fn agent_help_and_skill_download_are_authenticated_and_versioned() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_cli_uses_environment_connection() {
     let app = spawn_app().await;
+    let task = create_task(&app, true, "CLI 提交人展示").await;
+    let task_id = task["id"].as_str().unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_pm-cli"))
         .args(["projects", "--json"])
         .env("PM_SERVER_URL", &app.base)
@@ -258,6 +260,15 @@ async fn remote_cli_uses_environment_connection() {
     );
     let projects: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(projects[0]["name"], "default-project");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pm-cli"))
+        .args(["get", task_id])
+        .env("PM_SERVER_URL", &app.base)
+        .env("PM_AGENT_TOKEN", &app.token)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("提交人：   Agent（主机）"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -662,6 +673,23 @@ async fn user_agent_token_ownership_permissions_and_revocation() {
         .unwrap();
     assert_eq!(grant.status(), 200);
 
+    let alice_web_task = alice_http
+        .post(format!("{}/api/web/tasks", app.base))
+        .json(&json!({
+            "project":"default-project",
+            "type":"BUG",
+            "description":"Alice 用户任务"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(alice_web_task.status(), 201);
+    let alice_web_task = alice_web_task.json::<Value>().await.unwrap();
+    let alice_web_task_id = alice_web_task["id"].as_str().unwrap();
+    assert_eq!(alice_web_task["submitter"], "用户");
+    assert_eq!(alice_web_task["submitter_name"], "alice-agent");
+    assert_eq!(alice_web_task["owner_user_id"], alice_id);
+
     let access = alice_http
         .post(format!("{}/api/web/me/agent-token", app.base))
         .send()
@@ -684,6 +712,7 @@ async fn user_agent_token_ownership_permissions_and_revocation() {
     let created = created.json::<Value>().await.unwrap();
     let id = created["id"].as_str().unwrap();
     assert_eq!(created["owner_user_id"], alice_id);
+    assert_eq!(created["submitter_name"], "Agent（alice-agent）");
 
     let own_edit = agent
         .patch(format!("{}/api/agent/tasks/{id}/description", app.base))
@@ -704,6 +733,17 @@ async fn user_agent_token_ownership_permissions_and_revocation() {
         .await
         .unwrap();
     assert_eq!(user_edit.status(), 403);
+    let own_user_edit = agent
+        .patch(format!(
+            "{}/api/agent/tasks/{alice_web_task_id}/description",
+            app.base
+        ))
+        .bearer_auth(&token)
+        .json(&json!({"description":"Agent 不得修改同用户的网页任务"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(own_user_edit.status(), 403);
     let acceptance = agent
         .patch(format!("{}/api/agent/tasks/{id}/status", app.base))
         .bearer_auth(&token)
@@ -751,6 +791,8 @@ async fn web_crud_and_filter() {
     let app = spawn_app().await;
     let t = create_task(&app, false, "网页创建的任务").await;
     assert_eq!(t["submitter"], "用户");
+    assert_eq!(t["submitter_name"], "主机");
+    assert_eq!(t["owner_user_id"], "host");
     assert_eq!(t["status"], "未开始");
     assert_eq!(t["note"], "");
     assert_eq!(t["id"].as_str().unwrap().len(), 18);
@@ -1016,6 +1058,7 @@ async fn agent_permission_matrix() {
     let agent_task = create_task(&app, true, "Agent 的任务").await;
     let agent_id = agent_task["id"].as_str().unwrap().to_string();
     assert_eq!(agent_task["submitter"], "Agent");
+    assert_eq!(agent_task["submitter_name"], "Agent（主机）");
     assert_eq!(agent_task["note"], "");
 
     let user_task = create_task(&app, false, "用户的任务").await;

@@ -27,7 +27,8 @@ it("requests only the desired server page and reaches records after 2000", async
     status: "未开始",
     description: "性能验收记录 " + index,
     note: "",
-    submitter: "用户",
+    submitter: index === 2000 ? "Agent" : "用户",
+    submitter_name: index === 2000 ? "Agent（主机）" : "主机",
     created_at: "",
     finished_at: null,
     updated_at: "",
@@ -65,6 +66,9 @@ it("requests only the desired server page and reaches records after 2000", async
   expect(host.querySelectorAll(".task-row")).toHaveLength(1);
   expect(host.querySelector(".description-text")?.textContent).toBe(
     "性能验收记录 2000",
+  );
+  expect(host.querySelector(".submitter-label")?.textContent).toBe(
+    "Agent（主机）",
   );
   expect(
     host.querySelector<HTMLButtonElement>('[aria-label="下一页"]')?.disabled,

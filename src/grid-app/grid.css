@@ -669,7 +669,13 @@ th:focus-within .column-menu {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   font-size: 12px;
+}
+.submitter-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .submitter-avatar {
   display: grid;

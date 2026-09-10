@@ -26,6 +26,7 @@ pub struct Task {
     pub note: String,
     pub status: String,
     pub submitter: String,
+    pub submitter_name: String,
     pub created_at: String,
     pub finished_at: Option<String>,
     pub updated_at: String,
@@ -54,6 +55,18 @@ pub fn is_agent_status(s: &str) -> bool {
     AGENT_STATUSES.contains(&s)
 }
 
+pub fn submitter_name(submitter: &str, owner_username: Option<&str>) -> String {
+    let username = owner_username
+        .map(str::trim)
+        .filter(|username| !username.is_empty())
+        .unwrap_or("未知用户");
+    if submitter == "Agent" {
+        format!("Agent（{username}）")
+    } else {
+        username.to_string()
+    }
+}
+
 /// 状态迁移统一入口（规划 §7）：返回新的 finished_at。
 /// 规则：每次进入「待验证」「已完成」或「验收通过」刷新为当前时间（latest-wins）；
 /// 离开这几个状态不清空。「验收通过」是终态，必须记完成时间。
@@ -77,6 +90,14 @@ mod tests {
         let f2 = transition("已完成", f.clone());
         assert!(f2.is_some());
         assert!(f2 >= f); // latest-wins（同秒则相等）
+    }
+
+    #[test]
+    fn submitter_display_includes_the_owning_username() {
+        assert_eq!(submitter_name("用户", Some("主机")), "主机");
+        assert_eq!(submitter_name("Agent", Some("alice")), "Agent（alice）");
+        assert_eq!(submitter_name("用户", None), "未知用户");
+        assert_eq!(submitter_name("Agent", None), "Agent（未知用户）");
     }
 
     #[test]

@@ -232,7 +232,8 @@ pub async fn patch_description(
     let mut conn = core.db.lock().unwrap();
     let current = tasks::get(&conn, &id)?;
     permissions::require_field(&conn, &user, &current.project, "description", None)?;
-    let owns_task = current.owner_user_id.as_deref() == Some(user.id.as_str());
+    let owns_task =
+        current.submitter == "Agent" && current.owner_user_id.as_deref() == Some(user.id.as_str());
     if !owns_task {
         return Err(ApiError::forbidden(
             "该任务不是当前用户的 Agent 创建，不能修改其描述",

@@ -69,6 +69,8 @@ export interface Task {
   note: string;
   status: TaskStatus;
   submitter: Submitter;
+  /** 用于界面展示：用户名，或 Agent（用户名）。旧服务响应缺失时回退 submitter。 */
+  submitter_name?: string;
   created_at: string; // 'YYYY-MM-DD HH:MM:SS' 本地时间
   finished_at: string | null;
   updated_at: string;

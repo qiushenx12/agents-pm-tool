@@ -935,7 +935,9 @@ defineExpose({ reveal });
                     ><UiIcon
                       :name="task.submitter === 'Agent' ? 'bot' : 'user'"
                       :size="12" /></span
-                  >{{ task.submitter }}</span
+                  ><span class="submitter-label" :title="task.submitter_name || task.submitter">{{
+                    task.submitter_name || task.submitter
+                  }}</span></span
                 >
                 <span
                   v-else-if="column.key === 'attachments'"

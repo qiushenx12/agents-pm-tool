@@ -265,7 +265,7 @@ async function removeTask() {
             ><UiIcon
               :name="current.submitter === 'Agent' ? 'bot' : 'user'"
               :size="12" /></span
-          >{{ current.submitter }}
+          >{{ current.submitter_name || current.submitter }}
         </div>
       </div>
       <div class="property-row">

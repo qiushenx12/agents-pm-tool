@@ -93,7 +93,7 @@ pub async fn create_task(
             description: body.description.as_deref().unwrap_or(""),
             note: body.note.as_deref().unwrap_or(""),
             submitter: "用户", // 网页端固定（规划 §4.3）
-            owner_user_id: None,
+            owner_user_id: Some(&user.id),
         },
     )?;
     drop(conn);

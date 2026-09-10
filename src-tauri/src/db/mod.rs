@@ -12,7 +12,7 @@ use rusqlite::Connection;
 
 use crate::error::ApiResult;
 
-const USER_VERSION: i32 = 8;
+const USER_VERSION: i32 = 9;
 
 fn configure(conn: &Connection) -> ApiResult<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -29,6 +29,7 @@ fn configure(conn: &Connection) -> ApiResult<()> {
 /// v6：tasks 状态 CHECK 增加「取消」（SQLite 不能 ALTER CHECK，需重建表）
 /// v7：meta 增加 id_ts / id_suffix（任务 ID 后缀改为同一秒内递增，0000 起）
 /// v8：用户、Web 会话、按用户 Agent token 与细粒度权限
+/// v9：历史任务回填主机归属；新任务由创建入口写入实际 owner_user_id
 fn migrate(conn: &Connection) -> ApiResult<()> {
     let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version < 1 {
@@ -146,6 +147,15 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
             [crate::domain::user::HOST_USER_ID],
         )?;
     }
+    if version < 9 {
+        // 旧版本没有记录网页任务创建账号；当时的存量记录按单主机模型归属主机。
+        conn.execute_batch(
+            "BEGIN;
+             UPDATE tasks SET owner_user_id='host' WHERE owner_user_id IS NULL;
+             PRAGMA user_version = 9;
+             COMMIT;",
+        )?;
+    }
     debug_assert!(version <= USER_VERSION);
     Ok(())
 }
@@ -253,6 +263,48 @@ mod tests {
             .unwrap();
         assert_eq!(owner.as_deref(), Some("host"));
         assert_eq!(users::get(&conn, "host").unwrap().role, "super_admin");
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, USER_VERSION);
+    }
+
+    #[test]
+    fn version_eight_database_backfills_only_unowned_tasks_to_host() {
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO users(id, username, role, created_at) VALUES ('alice', 'alice', 'user', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO tasks
+               (id, seq, project, type, description, status, submitter, created_at, updated_at, position, note, owner_user_id)
+             VALUES
+               ('legacy-user', 1, 'default-project', '优化', '旧网页任务', '未开始', '用户', '2026-01-01', '2026-01-01', 1, '', NULL),
+               ('owned-user', 2, 'default-project', '优化', '已有归属', '未开始', '用户', '2026-01-02', '2026-01-02', 2, '', 'alice');",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 8).unwrap();
+
+        migrate(&conn).unwrap();
+
+        let legacy_owner: String = conn
+            .query_row(
+                "SELECT owner_user_id FROM tasks WHERE id='legacy-user'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let existing_owner: String = conn
+            .query_row(
+                "SELECT owner_user_id FROM tasks WHERE id='owned-user'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy_owner, "host");
+        assert_eq!(existing_owner, "alice");
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();

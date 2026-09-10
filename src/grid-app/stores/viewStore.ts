@@ -21,7 +21,7 @@ export const DEFAULT_COLUMNS = [
     key: "submitter",
     label: "提交人",
     icon: "user",
-    width: 105,
+    width: 150,
     visible: true,
   },
   {
