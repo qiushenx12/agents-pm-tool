@@ -1873,24 +1873,288 @@ button.attachment-preview:focus-visible {
 .permission-save {
   margin-top: 16px;
 }
-.user-section {
-  padding: 4px 0 20px;
-  margin-bottom: 18px;
-  border-bottom: 1px solid var(--separator);
+.agent-access-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
-.user-section label {
-  display: block;
-  margin: 12px 0 5px;
+.agent-account-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 15px 16px;
+  border: 1px solid var(--separator);
+  border-radius: 11px;
+  background: linear-gradient(135deg, var(--active-bg), var(--card) 58%);
+}
+.agent-account-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: #fff;
+  background: var(--primary);
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--primary) 28%, transparent);
+  font-size: 17px;
+  font-weight: 700;
+}
+.agent-account-copy {
+  display: flex;
+  min-width: 130px;
+  flex-direction: column;
+}
+.agent-account-copy strong {
+  font-size: 14px;
+}
+.agent-account-copy span {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.agent-account-edit {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+}
+.agent-account-edit .input {
+  width: 190px;
+  min-height: 31px;
+}
+.agent-access-card {
+  padding: 18px;
+  border: 1px solid var(--separator);
+  border-radius: 11px;
+  background: var(--card);
+}
+.agent-card-header,
+.skill-install-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+.agent-card-header h3,
+.skill-install-header h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.agent-card-header p,
+.skill-install-header p {
+  margin-top: 2px;
   color: var(--text-secondary);
   font-size: 12px;
 }
-.inline-edit {
-  display: flex;
-  gap: 8px;
-  max-width: 520px;
+.agent-card-icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 9px;
+  color: var(--primary);
+  background: var(--active-bg);
 }
-.code-input {
-  font-family: var(--font-mono);
+.agent-access-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 14px 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  background: var(--sidebar-bg);
+  font-size: 11px;
+}
+.agent-access-note .ui-icon {
+  margin-top: 1px;
+  flex-shrink: 0;
+  color: var(--primary);
+}
+.agent-credentials {
+  overflow: hidden;
+  border: 1px solid var(--separator);
+  border-radius: 8px;
+  background: var(--input-bg);
+}
+.agent-credential-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) 30px;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 8px 0 13px;
+}
+.agent-credential-row + .agent-credential-row {
+  border-top: 1px solid var(--separator);
+}
+.agent-credential-row > span {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.agent-credential-row code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font: 11px var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-credential-row code.empty {
+  color: var(--text-tertiary);
+  font-family: var(--font-base);
+}
+.agent-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.skill-install-header {
+  justify-content: space-between;
+  margin-bottom: 15px;
+}
+.skill-frontend-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.skill-frontend-card {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 262px;
+  flex-direction: column;
+  padding: 15px;
+  overflow: hidden;
+  border: 1px solid var(--separator);
+  border-radius: 10px;
+  background: var(--sidebar-bg);
+}
+.skill-frontend-card::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
+  background: var(--primary);
+  content: "";
+}
+.skill-frontend-card.frontend-claude_code::before {
+  background: var(--tag-orange-fg);
+}
+.skill-frontend-card > header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.skill-frontend-card > header > div {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.skill-frontend-mark {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 10px;
+  color: var(--tag-blue-fg);
+  background: var(--tag-blue-bg);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: -0.3px;
+}
+.frontend-claude_code .skill-frontend-mark {
+  color: var(--tag-orange-fg);
+  background: var(--tag-orange-bg);
+}
+.skill-state {
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--tag-gray-fg);
+  background: var(--tag-gray-bg);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.skill-state.ready {
+  color: var(--tag-green-fg);
+  background: var(--tag-green-bg);
+}
+.skill-state.partial {
+  color: var(--tag-orange-fg);
+  background: var(--tag-orange-bg);
+}
+.skill-frontend-card > p {
+  min-height: 36px;
+  margin: 11px 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.skill-path-list {
+  display: flex;
+  min-height: 74px;
+  flex: 1;
+  flex-direction: column;
+  gap: 7px;
+}
+.skill-path-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  padding: 8px 9px;
+  border-radius: 7px;
+  background: var(--card);
+}
+.skill-path-item span,
+.skill-path-item small {
+  font-size: 10px;
+}
+.skill-path-item small {
+  color: var(--text-tertiary);
+}
+.skill-path-item code {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font: 9px var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skill-not-detected {
+  display: grid;
+  min-height: 66px;
+  place-items: center;
+  padding: 10px;
+  border: 1px dashed var(--input-border);
+  border-radius: 7px;
+  color: var(--text-tertiary);
+  text-align: center;
+  font-size: 11px;
+}
+.skill-install-button {
+  width: 100%;
+  margin-top: 12px;
+}
+.remote-skill-hint {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 15px;
+  border-radius: 9px;
+  color: var(--primary);
+  background: var(--active-bg);
+}
+.remote-skill-hint > div {
+  display: flex;
+  flex-direction: column;
+}
+.remote-skill-hint span {
+  color: var(--text-secondary);
+  font-size: 11px;
 }
 @media (max-width: 760px) {
   .user-management {
@@ -1904,5 +2168,23 @@ button.attachment-preview:focus-visible {
   }
   .field-permissions {
     grid-template-columns: 1fr;
+  }
+  .agent-account-summary,
+  .skill-install-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .agent-account-edit {
+    margin-left: 0;
+  }
+  .agent-account-edit .input {
+    width: auto;
+    flex: 1;
+  }
+  .skill-frontend-grid {
+    grid-template-columns: 1fr;
+  }
+  .agent-credential-row {
+    grid-template-columns: 78px minmax(0, 1fr) 30px;
   }
 }

@@ -53,6 +53,7 @@ export interface AgentAccess {
 }
 
 export interface LocalSkillTarget {
+  frontend_id: "codex" | "claude_code";
   frontend: string;
   path: string;
   installed: boolean;

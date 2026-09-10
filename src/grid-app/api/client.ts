@@ -234,9 +234,10 @@ export const api = {
     request<void>("/api/web/me/agent-token", { method: "DELETE" }),
   listLocalSkills: () =>
     request<LocalSkillTarget[]>("/api/web/local-skills"),
-  installLocalSkills: () =>
+  installLocalSkills: (frontend: LocalSkillTarget["frontend_id"]) =>
     request<LocalSkillTarget[]>("/api/web/local-skills/install", {
       method: "POST",
+      body: JSON.stringify({ frontend }),
     }),
 };
 

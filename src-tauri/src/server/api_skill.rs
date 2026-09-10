@@ -11,7 +11,7 @@ use axum::{
     response::Response,
     Json,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     domain::user::User,
@@ -103,35 +103,47 @@ pub async fn agent_download(Extension(_user): Extension<User>) -> ApiResult<Resp
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillTarget {
+    pub frontend_id: &'static str,
     pub frontend: &'static str,
     pub path: String,
     pub installed: bool,
     pub version: Option<String>,
 }
 
-fn skill_roots() -> Vec<(&'static str, PathBuf)> {
+type SkillRoot = (&'static str, &'static str, PathBuf);
+
+fn skill_roots() -> Vec<SkillRoot> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
     [
-        ("Codex", home.join(".agents").join("skills")),
-        ("Codex（旧版目录）", home.join(".codex").join("skills")),
-        ("Claude Code", home.join(".claude").join("skills")),
+        ("codex", "Codex", home.join(".agents").join("skills")),
+        (
+            "codex",
+            "Codex（旧版目录）",
+            home.join(".codex").join("skills"),
+        ),
+        (
+            "claude_code",
+            "Claude Code",
+            home.join(".claude").join("skills"),
+        ),
     ]
     .into_iter()
-    .filter(|(_, root)| root.is_dir())
+    .filter(|(_, _, root)| root.is_dir())
     .collect()
 }
 
 pub fn local_skill_targets() -> Vec<SkillTarget> {
     skill_roots()
         .into_iter()
-        .map(|(frontend, root)| {
+        .map(|(frontend_id, frontend, root)| {
             let directory = root.join(SKILL_NAME);
             let version = std::fs::read_to_string(directory.join("VERSION"))
                 .ok()
                 .map(|value| value.trim().to_string());
             SkillTarget {
+                frontend_id,
                 frontend,
                 path: directory.display().to_string(),
                 installed: directory.join("SKILL.md").is_file()
@@ -192,8 +204,8 @@ fn ensure_local_host(user: &User, peer: SocketAddr) -> ApiResult<()> {
     Ok(())
 }
 
-fn install_into_roots(roots: &[(&'static str, PathBuf)], executable_bytes: &[u8]) -> ApiResult<()> {
-    for (_, root) in roots {
+fn install_into_roots(roots: &[SkillRoot], executable_bytes: &[u8]) -> ApiResult<()> {
+    for (_, _, root) in roots {
         let destination = root.join(SKILL_NAME);
         std::fs::create_dir_all(destination.join("bin"))?;
         std::fs::write(destination.join("SKILL.md"), SKILL_MARKDOWN)?;
@@ -201,6 +213,31 @@ fn install_into_roots(roots: &[(&'static str, PathBuf)], executable_bytes: &[u8]
         std::fs::write(destination.join("VERSION"), format!("{VERSION}\n"))?;
     }
     Ok(())
+}
+
+fn select_frontend_roots(roots: Vec<SkillRoot>, frontend_id: &str) -> ApiResult<Vec<SkillRoot>> {
+    if !matches!(frontend_id, "codex" | "claude_code") {
+        return Err(ApiError::unprocessable(
+            "frontend 仅支持 codex 或 claude_code",
+        ));
+    }
+    let selected = roots
+        .into_iter()
+        .filter(|(id, _, _)| *id == frontend_id)
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Err(ApiError::not_found(match frontend_id {
+            "codex" => "未检测到 Codex skill 目录",
+            _ => "未检测到 Claude Code skill 目录",
+        }));
+    }
+    Ok(selected)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallSkillBody {
+    pub frontend: String,
 }
 
 pub async fn local_targets(
@@ -214,17 +251,13 @@ pub async fn local_targets(
 pub async fn install_local(
     Extension(user): Extension<User>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(body): Json<InstallSkillBody>,
 ) -> ApiResult<Json<Vec<SkillTarget>>> {
     ensure_local_host(&user, peer)?;
     let executable = find_sidecar()
         .ok_or_else(|| ApiError::not_found("未找到 pm-cli.exe，请先运行 npm run build:cli"))?;
     let executable_bytes = std::fs::read(executable)?;
-    let roots = skill_roots();
-    if roots.is_empty() {
-        return Err(ApiError::not_found(
-            "未检测到 Codex 或 Claude Code 的 skill 目录",
-        ));
-    }
+    let roots = select_frontend_roots(skill_roots(), &body.frontend)?;
     install_into_roots(&roots, &executable_bytes)?;
     Ok(Json(local_skill_targets()))
 }
@@ -250,9 +283,9 @@ mod tests {
     #[test]
     fn installer_writes_complete_skill_to_detected_root() {
         let temporary = tempfile::tempdir().unwrap();
-        let roots = vec![("Codex", temporary.path().join("skills"))];
+        let roots = vec![("codex", "Codex", temporary.path().join("skills"))];
         install_into_roots(&roots, b"fake executable").unwrap();
-        let installed = roots[0].1.join(SKILL_NAME);
+        let installed = roots[0].2.join(SKILL_NAME);
         assert!(installed.join("SKILL.md").is_file());
         assert_eq!(
             std::fs::read(installed.join("bin").join("pm-cli.exe")).unwrap(),
@@ -264,5 +297,27 @@ mod tests {
                 .trim(),
             VERSION
         );
+    }
+
+    #[test]
+    fn frontend_install_selection_is_independent() {
+        let temporary = tempfile::tempdir().unwrap();
+        let roots = vec![
+            ("codex", "Codex", temporary.path().join("codex")),
+            (
+                "codex",
+                "Codex（旧版目录）",
+                temporary.path().join("codex-legacy"),
+            ),
+            (
+                "claude_code",
+                "Claude Code",
+                temporary.path().join("claude"),
+            ),
+        ];
+        let selected = select_frontend_roots(roots, "codex").unwrap();
+        assert_eq!(selected.len(), 2);
+        assert!(selected.iter().all(|(id, _, _)| *id == "codex"));
+        assert!(select_frontend_roots(Vec::new(), "unknown").is_err());
     }
 }

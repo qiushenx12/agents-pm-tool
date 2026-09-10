@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { api } from "../../api/client";
 import { copyText, errorText } from "@/shared/feedback";
 import UiDialog from "@/shared/UiDialog.vue";
@@ -17,6 +17,41 @@ const targets = ref<LocalSkillTarget[]>([]);
 const username = ref(props.user.username);
 const error = ref("");
 const busy = ref(false);
+const installing = ref<LocalSkillTarget["frontend_id"] | null>(null);
+
+const roleNames = {
+  super_admin: "超级管理员",
+  admin: "管理员",
+  user: "普通用户",
+} as const;
+
+const frontendCards = computed(() =>
+  [
+    {
+      id: "codex" as const,
+      title: "Codex",
+      mark: "CX",
+      description: "安装到当前 Codex 用户级 skill 目录，并兼容已存在的旧版目录。",
+    },
+    {
+      id: "claude_code" as const,
+      title: "Claude Code",
+      mark: "CL",
+      description: "安装到当前 Windows 用户的 Claude Code skill 目录。",
+    },
+  ].map((frontend) => {
+    const detected = targets.value.filter(
+      (target) => target.frontend_id === frontend.id,
+    );
+    return {
+      ...frontend,
+      targets: detected,
+      allInstalled:
+        detected.length > 0 && detected.every((target) => target.installed),
+      someInstalled: detected.some((target) => target.installed),
+    };
+  }),
+);
 
 async function load() {
   busy.value = true;
@@ -58,12 +93,27 @@ async function revoke() {
   }
 }
 
-async function install() {
+async function install(frontend: LocalSkillTarget["frontend_id"]) {
   busy.value = true;
+  installing.value = frontend;
+  error.value = "";
   try {
-    targets.value = await api.installLocalSkills();
+    targets.value = await api.installLocalSkills(frontend);
     access.value = await api.getAgentAccess();
     emit("accessChanged", access.value);
+  } catch (reason) {
+    error.value = errorText(reason);
+  } finally {
+    installing.value = null;
+    busy.value = false;
+  }
+}
+
+async function refreshTargets() {
+  busy.value = true;
+  error.value = "";
+  try {
+    targets.value = await api.listLocalSkills();
   } catch (reason) {
     error.value = errorText(reason);
   } finally {
@@ -84,63 +134,141 @@ async function rename() {
   }
 }
 
-function download() {
-  window.location.href = "/api/web/skill/download";
-}
-
 onMounted(load);
 </script>
 
 <template>
-  <UiDialog title="我的账号与 Agent 访问" :width="700" :busy="busy" @close="emit('close')">
-    <section class="user-section">
-      <h3>账号</h3>
-      <form class="inline-edit" @submit.prevent="rename">
-        <input v-model="username" class="input" aria-label="我的用户名" />
-        <button class="btn" :disabled="busy || !username.trim()">保存名字</button>
-      </form>
-      <p class="muted">角色：{{ user.role }}<span v-if="user.is_host"> · 内置主机账号</span></p>
-    </section>
+  <UiDialog title="我的账号与 Agent 访问" :width="780" :busy="busy" @close="emit('close')">
+    <div class="agent-access-layout">
+      <section class="agent-account-summary">
+        <div class="agent-account-avatar">{{ user.username.slice(0, 1) }}</div>
+        <div class="agent-account-copy">
+          <strong>{{ user.username }}</strong>
+          <span>{{ roleNames[user.role] }}<template v-if="user.is_host"> · 内置主机账号</template></span>
+        </div>
+        <form class="agent-account-edit" @submit.prevent="rename">
+          <input v-model="username" class="input" aria-label="我的用户名" maxlength="64" />
+          <button class="btn btn-sm" :disabled="busy || !username.trim() || username.trim() === user.username">
+            保存名字
+          </button>
+        </form>
+      </section>
 
-    <section class="user-section">
-      <h3>远程连接</h3>
-      <p>{{ access?.access_instructions || "正在加载…" }}</p>
-      <label>服务地址<input class="input code-input" readonly :value="access?.server_url" /></label>
-      <label
-        >Agent token<input
-          class="input code-input"
-          readonly
-          :value="access?.token || '尚未签发或已吊销'"
-      /></label>
-      <div class="inline-actions">
-        <button v-if="access?.token" class="btn" @click="copyText(access.token)">
-          <UiIcon name="copy" />复制 token
-        </button>
-        <button class="btn" :disabled="busy" @click="regenerate">
-          <UiIcon name="refresh" />{{ access?.token ? "重新生成" : "生成 token" }}
-        </button>
-        <button v-if="access?.token" class="btn btn-danger" :disabled="busy" @click="revoke">
-          吊销
-        </button>
-      </div>
-    </section>
+      <section class="agent-access-card connection-card">
+        <header class="agent-card-header">
+          <div class="agent-card-icon"><UiIcon name="bot" :size="19" /></div>
+          <div>
+            <h3>Agent 连接凭据</h3>
+            <p>pm-cli 使用以下地址和当前账号的独立 token 访问任务。</p>
+          </div>
+        </header>
+        <div class="agent-access-note">
+          <UiIcon name="info" :size="15" />
+          <span>{{ access?.access_instructions || "正在读取接入信息…" }}</span>
+        </div>
+        <div class="agent-credentials">
+          <div class="agent-credential-row">
+            <span>服务地址</span>
+            <code>{{ access?.server_url || "—" }}</code>
+            <button v-if="access?.server_url" class="icon-btn" title="复制服务地址" aria-label="复制服务地址" @click="copyText(access.server_url)">
+              <UiIcon name="copy" :size="14" />
+            </button>
+          </div>
+          <div class="agent-credential-row token-row">
+            <span>Agent token</span>
+            <code :class="{ empty: !access?.token }">{{ access?.token || "尚未签发或已吊销" }}</code>
+            <button v-if="access?.token" class="icon-btn" title="复制 token" aria-label="复制 Agent token" @click="copyText(access.token)">
+              <UiIcon name="copy" :size="14" />
+            </button>
+          </div>
+        </div>
+        <div class="agent-card-actions">
+          <button class="btn" :disabled="busy" @click="regenerate">
+            <UiIcon name="refresh" />{{ access?.token ? "重新生成 token" : "生成 token" }}
+          </button>
+          <button v-if="access?.token" class="btn btn-danger" :disabled="busy" @click="revoke">
+            吊销 token
+          </button>
+        </div>
+      </section>
 
-    <section class="user-section">
-      <h3>pm-cli-skill</h3>
-      <p class="muted">下载包包含 SKILL.md 与匹配当前服务版本的 pm-cli.exe。</p>
-      <div class="inline-actions">
-        <button class="btn" @click="download"><UiIcon name="download" />下载 skill</button>
-        <button v-if="user.is_host && targets.length" class="btn btn-primary" :disabled="busy" @click="install">
-          一键安装/更新 {{ targets.length }} 个本机前端
-        </button>
-      </div>
-      <ul v-if="user.is_host" class="skill-targets">
-        <li v-for="target in targets" :key="target.path">
-          <strong>{{ target.frontend }}</strong><span>{{ target.installed ? `已安装 ${target.version || ''}` : "未安装" }}</span>
-          <code>{{ target.path }}</code>
-        </li>
-      </ul>
-    </section>
+      <section class="agent-access-card skill-install-card">
+        <header class="skill-install-header">
+          <div>
+            <h3>pm-cli-skill</h3>
+            <p>为每个本机 Agent 前端分别安装，也可以下载完整包手动部署。</p>
+          </div>
+          <div class="inline-actions">
+            <button v-if="user.is_host" class="btn btn-sm" :disabled="busy" @click="refreshTargets">
+              <UiIcon name="refresh" :size="13" />重新检测
+            </button>
+            <a class="btn btn-sm" href="/api/web/skill/download" download>
+              <UiIcon name="download" :size="13" />下载 ZIP
+            </a>
+          </div>
+        </header>
+
+        <div v-if="user.is_host" class="skill-frontend-grid">
+          <article
+            v-for="frontend in frontendCards"
+            :key="frontend.id"
+            class="skill-frontend-card"
+            :class="`frontend-${frontend.id}`"
+            :data-frontend="frontend.id"
+          >
+            <header>
+              <span class="skill-frontend-mark">{{ frontend.mark }}</span>
+              <div>
+                <strong>{{ frontend.title }}</strong>
+                <span
+                  class="skill-state"
+                  :class="{ ready: frontend.allInstalled, partial: frontend.someInstalled && !frontend.allInstalled }"
+                >
+                  {{
+                    !frontend.targets.length
+                      ? "未检测到"
+                      : frontend.allInstalled
+                        ? "已就绪"
+                        : frontend.someInstalled
+                          ? "部分已安装"
+                          : "可安装"
+                  }}
+                </span>
+              </div>
+            </header>
+            <p>{{ frontend.description }}</p>
+            <div class="skill-path-list">
+              <div v-for="target in frontend.targets" :key="target.path" class="skill-path-item">
+                <span>{{ target.frontend }}</span>
+                <small>{{ target.installed ? `已安装 ${target.version || ''}` : "等待安装" }}</small>
+                <code>{{ target.path }}</code>
+              </div>
+              <div v-if="!frontend.targets.length" class="skill-not-detected">
+                启动或安装 {{ frontend.title }} 后重新检测。
+              </div>
+            </div>
+            <button
+              class="btn btn-primary skill-install-button"
+              :disabled="busy || !frontend.targets.length"
+              @click="install(frontend.id)"
+            >
+              <UiIcon :name="frontend.allInstalled ? 'refresh' : 'download'" />
+              {{
+                installing === frontend.id
+                  ? "正在安装…"
+                  : frontend.allInstalled
+                    ? `更新 ${frontend.title} skill`
+                    : `安装到 ${frontend.title}`
+              }}
+            </button>
+          </article>
+        </div>
+        <div v-else class="remote-skill-hint">
+          <UiIcon name="download" :size="19" />
+          <div><strong>在 Agent 所在电脑安装</strong><span>下载 ZIP 后解压到对应前端的 skill 目录。</span></div>
+        </div>
+      </section>
+    </div>
     <div v-if="error" class="form-error" role="alert">{{ error }}</div>
   </UiDialog>
 </template>
