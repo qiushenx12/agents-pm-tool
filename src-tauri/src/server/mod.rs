@@ -116,6 +116,10 @@ fn build_router(core: CoreState) -> Router {
             "/local-skills/install",
             axum::routing::post(api_skill::install_local),
         )
+        .route(
+            "/local-skills/open",
+            axum::routing::post(api_skill::open_local_directory),
+        )
         .route("/users", get(api_users::list_users))
         .route(
             "/users/{id}",

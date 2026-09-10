@@ -10,6 +10,7 @@ vi.mock("@/grid-app/api/client", () => ({
     getAgentAccess: vi.fn(),
     listLocalSkills: vi.fn(),
     installLocalSkills: vi.fn(),
+    openLocalSkillDirectory: vi.fn(),
     regenerateAgentToken: vi.fn(),
     revokeAgentToken: vi.fn(),
     patchUser: vi.fn(),
@@ -28,7 +29,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it("installs Codex and Claude Code skills independently", async () => {
+it("opens targets and installs Codex and Claude Code skills independently", async () => {
   const user: User = {
     id: "host",
     username: "主机",
@@ -60,6 +61,7 @@ it("installs Codex and Claude Code skills independently", async () => {
     skill_ready: false,
   });
   vi.mocked(api.listLocalSkills).mockResolvedValue(targets);
+  vi.mocked(api.openLocalSkillDirectory).mockResolvedValue(undefined);
   vi.mocked(api.installLocalSkills).mockImplementation(async (frontend) =>
     targets.map((target) => ({
       ...target,
@@ -73,6 +75,21 @@ it("installs Codex and Claude Code skills independently", async () => {
   app = createApp(AgentAccessDialog, { user });
   app.mount(root);
 
+  await vi.waitFor(() =>
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        '[data-frontend="codex"] .skill-install-button',
+      )?.disabled,
+    ).toBe(false),
+  );
+  document
+    .querySelector<HTMLButtonElement>(
+      '[data-frontend="codex"] .skill-open-button',
+    )!
+    .click();
+  await vi.waitFor(() =>
+    expect(api.openLocalSkillDirectory).toHaveBeenCalledWith("codex"),
+  );
   await vi.waitFor(() =>
     expect(
       document.querySelector<HTMLButtonElement>(

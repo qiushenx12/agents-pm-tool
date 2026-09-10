@@ -18,6 +18,7 @@ const username = ref(props.user.username);
 const error = ref("");
 const busy = ref(false);
 const installing = ref<LocalSkillTarget["frontend_id"] | null>(null);
+const opening = ref<LocalSkillTarget["frontend_id"] | null>(null);
 
 const roleNames = {
   super_admin: "超级管理员",
@@ -117,6 +118,20 @@ async function refreshTargets() {
   } catch (reason) {
     error.value = errorText(reason);
   } finally {
+    busy.value = false;
+  }
+}
+
+async function openDirectory(frontend: LocalSkillTarget["frontend_id"]) {
+  busy.value = true;
+  opening.value = frontend;
+  error.value = "";
+  try {
+    await api.openLocalSkillDirectory(frontend);
+  } catch (reason) {
+    error.value = errorText(reason);
+  } finally {
+    opening.value = null;
     busy.value = false;
   }
 }
@@ -247,20 +262,30 @@ onMounted(load);
                 启动或安装 {{ frontend.title }} 后重新检测。
               </div>
             </div>
-            <button
-              class="btn btn-primary skill-install-button"
-              :disabled="busy || !frontend.targets.length"
-              @click="install(frontend.id)"
-            >
-              <UiIcon :name="frontend.allInstalled ? 'refresh' : 'download'" />
-              {{
-                installing === frontend.id
-                  ? "正在安装…"
-                  : frontend.allInstalled
-                    ? `更新 ${frontend.title} skill`
-                    : `安装到 ${frontend.title}`
-              }}
-            </button>
+            <div class="skill-card-actions">
+              <button
+                class="btn skill-open-button"
+                :disabled="busy || !frontend.targets.length"
+                @click="openDirectory(frontend.id)"
+              >
+                <UiIcon name="folder" />
+                {{ opening === frontend.id ? "正在打开…" : "打开目标目录" }}
+              </button>
+              <button
+                class="btn btn-primary skill-install-button"
+                :disabled="busy || !frontend.targets.length"
+                @click="install(frontend.id)"
+              >
+                <UiIcon :name="frontend.allInstalled ? 'refresh' : 'download'" />
+                {{
+                  installing === frontend.id
+                    ? "正在安装…"
+                    : frontend.allInstalled
+                      ? `更新 ${frontend.title} skill`
+                      : `安装到 ${frontend.title}`
+                }}
+              </button>
+            </div>
           </article>
         </div>
         <div v-else class="remote-skill-hint">

@@ -2135,9 +2135,18 @@ button.attachment-preview:focus-visible {
   text-align: center;
   font-size: 11px;
 }
-.skill-install-button {
-  width: 100%;
+.skill-card-actions {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.85fr) minmax(0, 1.15fr);
+  gap: 8px;
   margin-top: 12px;
+}
+.skill-card-actions .btn {
+  min-width: 0;
+  padding-right: 9px;
+  padding-left: 9px;
+  font-size: 11px;
+  white-space: nowrap;
 }
 .remote-skill-hint {
   display: flex;

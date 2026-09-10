@@ -239,6 +239,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ frontend }),
     }),
+  openLocalSkillDirectory: (frontend: LocalSkillTarget["frontend_id"]) =>
+    request<void>("/api/web/local-skills/open", {
+      method: "POST",
+      body: JSON.stringify({ frontend }),
+    }),
 };
 
 /** SSE 订阅：任务变更时触发 onChange；断线自动降级为 10s 轮询 */

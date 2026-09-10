@@ -236,7 +236,7 @@ fn select_frontend_roots(roots: Vec<SkillRoot>, frontend_id: &str) -> ApiResult<
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct InstallSkillBody {
+pub struct FrontendBody {
     pub frontend: String,
 }
 
@@ -251,7 +251,7 @@ pub async fn local_targets(
 pub async fn install_local(
     Extension(user): Extension<User>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    Json(body): Json<InstallSkillBody>,
+    Json(body): Json<FrontendBody>,
 ) -> ApiResult<Json<Vec<SkillTarget>>> {
     ensure_local_host(&user, peer)?;
     let executable = find_sidecar()
@@ -260,6 +260,37 @@ pub async fn install_local(
     let roots = select_frontend_roots(skill_roots(), &body.frontend)?;
     install_into_roots(&roots, &executable_bytes)?;
     Ok(Json(local_skill_targets()))
+}
+
+#[cfg(target_os = "windows")]
+fn open_directory(path: &std::path::Path) -> ApiResult<()> {
+    std::process::Command::new("explorer.exe")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(ApiError::internal)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn open_directory(_path: &std::path::Path) -> ApiResult<()> {
+    Err(ApiError::unprocessable("一键打开目录目前仅支持 Windows"))
+}
+
+pub async fn open_local_directory(
+    Extension(user): Extension<User>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(body): Json<FrontendBody>,
+) -> ApiResult<StatusCode> {
+    ensure_local_host(&user, peer)?;
+    let root = select_frontend_roots(skill_roots(), &body.frontend)?
+        .into_iter()
+        .next()
+        .expect("已校验至少有一个目标目录")
+        .2;
+    let destination = root.join(SKILL_NAME);
+    std::fs::create_dir_all(&destination)?;
+    open_directory(&destination)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
