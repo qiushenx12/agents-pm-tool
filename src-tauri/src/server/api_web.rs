@@ -8,7 +8,7 @@ use axum::{
 use serde::Deserialize;
 
 pub use super::api_batch::batch_tasks;
-use crate::db::{permissions, projects, tasks};
+use crate::db::{attachments, permissions, projects, tasks};
 use crate::domain::attachment as attach;
 use crate::domain::task::now_str;
 use crate::domain::user::User;
@@ -354,7 +354,7 @@ pub async fn delete_project(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── 附件（仅网页端，规划 §5.4） ───────────────────────────
+// ── 附件（网页端可管理；Agent 仅开放只读接口） ──────────────
 
 pub async fn list_attachments(
     State(core): State<CoreState>,
@@ -364,24 +364,7 @@ pub async fn list_attachments(
     let conn = core.db.lock().unwrap();
     let task = tasks::get(&conn, &task_id)?; // 任务不存在 → 404
     permissions::require_project(&conn, &user, &task.project)?;
-    let mut stmt =
-        conn.prepare("SELECT * FROM attachments WHERE task_id = ?1 ORDER BY created_at ASC")?;
-    let rows = stmt.query_map([task_id], |r| {
-        Ok(attach::Attachment {
-            id: r.get("id")?,
-            task_id: r.get("task_id")?,
-            filename: r.get("filename")?,
-            stored_path: r.get("stored_path")?,
-            mime: r.get("mime")?,
-            size: r.get("size")?,
-            created_at: r.get("created_at")?,
-        })
-    })?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(Json(out))
+    Ok(Json(attachments::list(&conn, &task_id)?))
 }
 
 pub async fn upload_attachment(
@@ -472,31 +455,15 @@ pub async fn upload_attachment(
     }
 }
 
-fn load_attachment(core: &CoreState, id: &str) -> ApiResult<attach::Attachment> {
-    let conn = core.db.lock().unwrap();
-    conn.query_row("SELECT * FROM attachments WHERE id = ?1", [id], |r| {
-        Ok(attach::Attachment {
-            id: r.get("id")?,
-            task_id: r.get("task_id")?,
-            filename: r.get("filename")?,
-            stored_path: r.get("stored_path")?,
-            mime: r.get("mime")?,
-            size: r.get("size")?,
-            created_at: r.get("created_at")?,
-        })
-    })
-    .map_err(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => ApiError::not_found("附件不存在"),
-        other => ApiError::from(other),
-    })
-}
-
 pub async fn download_attachment(
     State(core): State<CoreState>,
     Extension(user): Extension<User>,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
-    let a = load_attachment(&core, &id)?;
+    let a = {
+        let conn = core.db.lock().unwrap();
+        attachments::get(&conn, &id)?
+    };
     {
         let conn = core.db.lock().unwrap();
         let task = tasks::get(&conn, &a.task_id)?;
@@ -527,7 +494,10 @@ pub async fn delete_attachment(
     Extension(user): Extension<User>,
     Path(id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
-    let a = load_attachment(&core, &id)?;
+    let a = {
+        let conn = core.db.lock().unwrap();
+        attachments::get(&conn, &id)?
+    };
     let conn = core.db.lock().unwrap();
     let task = tasks::get(&conn, &a.task_id)?;
     permissions::require_field(&conn, &user, &task.project, "attachment_delete", None)?;

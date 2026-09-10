@@ -207,10 +207,18 @@ async fn agent_help_and_skill_download_are_authenticated_and_versioned() {
         .await
         .unwrap();
     assert_eq!(help.status(), 200);
-    assert_eq!(
-        help.json::<Value>().await.unwrap()["skill_download"],
-        "/api/agent/skill/download"
-    );
+    let help = help.json::<Value>().await.unwrap();
+    assert_eq!(help["skill_download"], "/api/agent/skill/download");
+    assert!(help["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|command| command["path"] == "/api/agent/tasks/{id}/attachments"));
+    assert!(help["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|command| command["path"] == "/api/agent/attachments/{id}"));
 
     let response = app
         .agent(reqwest::Method::GET, "/skill/download")
@@ -250,6 +258,210 @@ async fn remote_cli_uses_environment_connection() {
     );
     let projects: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(projects[0]["name"], "default-project");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_can_list_and_download_authorized_attachments_read_only() {
+    let app = spawn_app().await;
+    let task = create_task(&app, false, "Agent 读取附件").await;
+    let task_id = task["id"].as_str().unwrap();
+    let fixture = b"agent attachment fixture";
+    let form = reqwest::multipart::Form::new().part(
+        "file",
+        reqwest::multipart::Part::bytes(fixture.to_vec())
+            .file_name("需求说明.txt")
+            .mime_str("text/plain")
+            .unwrap(),
+    );
+    let uploaded = app
+        .web(
+            reqwest::Method::POST,
+            &format!("/tasks/{task_id}/attachments"),
+        )
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(uploaded.status(), 201);
+    let attachment = uploaded.json::<Value>().await.unwrap();
+    let attachment_id = attachment["id"].as_str().unwrap();
+
+    let listed = app
+        .agent(
+            reqwest::Method::GET,
+            &format!("/tasks/{task_id}/attachments"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), 200);
+    let listed = listed.json::<Value>().await.unwrap();
+    assert_eq!(listed[0]["filename"], "需求说明.txt");
+    assert_eq!(listed[0]["size"], fixture.len());
+    assert!(listed[0].get("stored_path").is_none());
+
+    let downloaded = app
+        .agent(
+            reqwest::Method::GET,
+            &format!("/attachments/{attachment_id}"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(downloaded.status(), 200);
+    assert_eq!(
+        downloaded
+            .headers()
+            .get(reqwest::header::CONTENT_DISPOSITION)
+            .unwrap(),
+        "attachment; filename*=UTF-8''%E9%9C%80%E6%B1%82%E8%AF%B4%E6%98%8E.txt"
+    );
+    assert_eq!(downloaded.bytes().await.unwrap().as_ref(), fixture);
+
+    for request in [
+        app.agent(
+            reqwest::Method::POST,
+            &format!("/tasks/{task_id}/attachments"),
+        ),
+        app.agent(
+            reqwest::Method::DELETE,
+            &format!("/attachments/{attachment_id}"),
+        ),
+    ] {
+        assert!(request.send().await.unwrap().status().is_client_error());
+    }
+
+    let output_dir = tempfile::tempdir().unwrap();
+    let target = output_dir.path().join("cli-downloaded.txt");
+    let list_output = std::process::Command::new(env!("CARGO_BIN_EXE_pm-cli"))
+        .args(["attachments", task_id, "--json"])
+        .env("PM_SERVER_URL", &app.base)
+        .env("PM_AGENT_TOKEN", &app.token)
+        .output()
+        .unwrap();
+    assert!(
+        list_output.status.success(),
+        "pm-cli attachments failed: {}",
+        String::from_utf8_lossy(&list_output.stderr)
+    );
+    let cli_attachments: Value = serde_json::from_slice(&list_output.stdout).unwrap();
+    assert_eq!(cli_attachments[0]["id"], attachment_id);
+
+    let download_output = std::process::Command::new(env!("CARGO_BIN_EXE_pm-cli"))
+        .args([
+            "download",
+            attachment_id,
+            "--output",
+            target.to_str().unwrap(),
+            "--json",
+        ])
+        .env("PM_SERVER_URL", &app.base)
+        .env("PM_AGENT_TOKEN", &app.token)
+        .output()
+        .unwrap();
+    assert!(
+        download_output.status.success(),
+        "pm-cli download failed: {}",
+        String::from_utf8_lossy(&download_output.stderr)
+    );
+    assert_eq!(std::fs::read(target).unwrap(), fixture);
+}
+
+#[tokio::test]
+async fn agent_attachment_reads_follow_user_project_visibility() {
+    let app = spawn_app().await;
+    let task = create_task(&app, false, "附件项目权限").await;
+    let task_id = task["id"].as_str().unwrap();
+    let form = reqwest::multipart::Form::new().part(
+        "file",
+        reqwest::multipart::Part::text("private attachment").file_name("private.txt"),
+    );
+    let attachment = app
+        .web(
+            reqwest::Method::POST,
+            &format!("/tasks/{task_id}/attachments"),
+        )
+        .multipart(form)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let attachment_id = attachment["id"].as_str().unwrap();
+
+    let (alice, alice_http) = register_user(&app, "alice-attachments").await;
+    let alice_id = alice["id"].as_str().unwrap();
+    let token_response = alice_http
+        .post(format!("{}/api/web/me/agent-token", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(token_response.status(), 200);
+    let token = token_response.json::<Value>().await.unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let agent = reqwest::Client::new();
+
+    let denied_list = agent
+        .get(format!(
+            "{}/api/agent/tasks/{task_id}/attachments",
+            app.base
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied_list.status(), 403);
+    let denied_download = agent
+        .get(format!(
+            "{}/api/agent/attachments/{attachment_id}",
+            app.base
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied_download.status(), 403);
+
+    let grant = app
+        .web(
+            reqwest::Method::PUT,
+            &format!("/users/{alice_id}/permissions"),
+        )
+        .json(&json!({"permissions":[
+            {"project":"default-project","field":"project_access","allowed_values":null}
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(grant.status(), 200);
+
+    let allowed_list = agent
+        .get(format!(
+            "{}/api/agent/tasks/{task_id}/attachments",
+            app.base
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(allowed_list.status(), 200);
+    let allowed_download = agent
+        .get(format!(
+            "{}/api/agent/attachments/{attachment_id}",
+            app.base
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(allowed_download.status(), 200);
+    assert_eq!(
+        allowed_download.bytes().await.unwrap().as_ref(),
+        b"private attachment"
+    );
 }
 
 #[tokio::test]

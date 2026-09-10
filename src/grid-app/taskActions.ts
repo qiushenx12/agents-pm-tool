@@ -57,6 +57,8 @@ export function buildAgentTaskPrompt(
     "```text",
     "pm-cli list [筛选参数] [--json]                 查看/筛选任务",
     "pm-cli get <任务ID> [--json]                   查看任务详情",
+    "pm-cli attachments <任务ID> [--json]           查看任务附件",
+    "pm-cli download <附件ID> [--output <文件路径>] 下载附件",
     "pm-cli projects [--json]                       查看项目及 local_path/git_url",
     "pm-cli create --project <项目> --type <类型> --description <描述> [--json]",
     "pm-cli status <任务ID> --to <进行中|待验证|已完成> [--json]",
@@ -66,10 +68,10 @@ export function buildAgentTaskPrompt(
     "完整用法见 pm-cli --help 或 GET /api/agent/help（需带 token）。",
     "",
     "3. Agent 权限",
-    "- 可以查看/筛选任务、只读查看项目、创建任务。",
+    "- 可以查看/筛选任务、只读查看项目、创建任务，并查看和下载已授权项目中的任务附件。",
     "- 只能把任务状态改为进行中、待验证或已完成。",
     "- 只能修改由 Agent 创建的任务描述，且描述不能为空。",
-    "- 不能设置验收状态，不能修改项目、类型或用户创建的任务描述，也不能删除任务、管理附件或直接读写 SQLite。",
+    "- 不能设置验收状态，不能修改项目、类型或用户创建的任务描述，也不能删除任务、上传或删除附件、直接读写 SQLite。",
   ].join("\n");
 }
 

@@ -2,7 +2,8 @@
 //! 只是 HTTP 薄客户端：本机读 runtime.json，远程读环境变量或用户配置，再调用 /api/agent/*。
 //! 无任何本地 DB 访问能力。
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -19,11 +20,14 @@ const EXIT_VALIDATION: u8 = 2;
     about = "Agents PM Tool 命令行（供 Agent 使用）",
     after_help = "服务发现：远程环境变量 > 用户配置 > <exe 同目录>/data/runtime.json。\n\
         退出码：0 成功；2 参数/校验失败（stderr 给出中文原因与合法取值）；3 服务配置或连接失败。\n\
-        权限边界：Agent 不可修改项目/类型、不可删任务、不可操作附件、不可切验收类状态（验收通过/未通过），\n\
+        权限边界：Agent 可只读列出和下载可见任务附件；不可修改项目/类型、不可删任务、不可上传或删除附件、\n\
+        不可切验收类状态（验收通过/未通过），\n\
         只能修改自己（submitter=Agent）创建的任务描述；项目选项仅可只读（projects 子命令）。\n\n\
         示例：\n  \
         pm-cli create --project default-project --type BUG --description \"登录页白屏\"\n  \
         pm-cli list --status 进行中 --json\n  \
+        pm-cli attachments 202609021050340001\n  \
+        pm-cli download <附件ID> --output 需求说明.pdf\n  \
         pm-cli status 202609021050340001 --to 待验证\n  \
         pm-cli config set server-url http://192.168.1.10:17890\n  \
         pm-cli config set token <网页签发的 token>"
@@ -53,6 +57,22 @@ enum Commands {
     /// 查看单个任务详情
     Get {
         id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 列出任务附件（只读）
+    Attachments {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 下载单个附件（只读；默认使用原文件名且不覆盖已有文件）
+    Download {
+        id: String,
+        #[arg(short, long, value_name = "文件路径")]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        force: bool,
         #[arg(long)]
         json: bool,
     },
@@ -245,6 +265,23 @@ impl Client {
         let value = serde_json::from_str(&text).unwrap_or(json!({ "raw": text }));
         Ok((status, value))
     }
+
+    async fn download(&self, path: &str) -> Result<reqwest::Response, ExitCode> {
+        let response = self
+            .http
+            .get(format!("{}{}", self.base, path))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|_| service_down("无法连接 Agents PM Tool 服务"))?;
+        if response.status().is_success() {
+            return Ok(response);
+        }
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        let value = serde_json::from_str(&text).unwrap_or(json!({ "raw": text }));
+        Err(fail_from_server(status, &value))
+    }
 }
 
 fn fail_from_server(status: reqwest::StatusCode, v: &serde_json::Value) -> ExitCode {
@@ -287,6 +324,85 @@ fn print_task_detail(t: &serde_json::Value) {
     println!("完成时间： {}", t["finished_at"].as_str().unwrap_or("—"));
     println!("描述：     {}", t["description"].as_str().unwrap_or(""));
     println!("备注：     {}", t["note"].as_str().unwrap_or(""));
+    println!(
+        "附件：     {} 个",
+        t["attachment_count"].as_i64().unwrap_or(0)
+    );
+}
+
+fn print_attachment(attachment: &serde_json::Value) {
+    println!(
+        "{}\t{}\t{} bytes\t{}",
+        attachment["id"].as_str().unwrap_or(""),
+        attachment["filename"].as_str().unwrap_or(""),
+        attachment["size"].as_i64().unwrap_or(0),
+        attachment["created_at"].as_str().unwrap_or(""),
+    );
+}
+
+fn filename_from_content_disposition(value: &str) -> Option<String> {
+    let encoded = value
+        .split(';')
+        .map(str::trim)
+        .find_map(|part| part.strip_prefix("filename*=UTF-8''"))?;
+    let query = format!("filename={encoded}");
+    url::form_urlencoded::parse(query.as_bytes())
+        .find_map(|(key, value)| (key == "filename").then(|| value.into_owned()))
+}
+
+fn safe_download_filename(filename: &str, fallback: &str) -> String {
+    let leaf = filename.rsplit(['/', '\\']).next().unwrap_or("");
+    let sanitized = leaf
+        .chars()
+        .map(|character| {
+            if character.is_control() || "<>:\"/\\|?*".contains(character) {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let sanitized = sanitized.trim_matches([' ', '.']);
+    if sanitized.is_empty() || matches!(sanitized, "." | "..") {
+        fallback.to_string()
+    } else {
+        sanitized.to_string()
+    }
+}
+
+fn download_target(output: Option<PathBuf>, filename: &str) -> PathBuf {
+    match output {
+        Some(path) if path.is_dir() => path.join(filename),
+        Some(path) => path,
+        None => PathBuf::from(filename),
+    }
+}
+
+fn write_download(path: &Path, bytes: &[u8], force: bool) -> Result<(), String> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        if !parent.is_dir() {
+            return Err(format!("输出目录不存在：{}", parent.display()));
+        }
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    if force {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    let mut file = options.open(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            format!("文件已存在：{}（如需覆盖请添加 --force）", path.display())
+        } else {
+            format!("无法写入 {}：{error}", path.display())
+        }
+    })?;
+    file.write_all(bytes)
+        .map_err(|error| format!("写入 {} 失败：{error}", path.display()))
 }
 
 #[tokio::main]
@@ -361,6 +477,71 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
                 println!("{}", serde_json::to_string_pretty(&v).unwrap());
             } else {
                 print_task_detail(&v);
+            }
+            Ok(())
+        }
+
+        Commands::Attachments { id, json } => {
+            let (status, value) = client
+                .call(
+                    reqwest::Method::GET,
+                    &format!("/tasks/{id}/attachments"),
+                    None,
+                )
+                .await?;
+            if !status.is_success() {
+                return Err(fail_from_server(status, &value));
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&value).unwrap());
+            } else if let Some(attachments) = value.as_array() {
+                if attachments.is_empty() {
+                    println!("（该任务暂无附件）");
+                }
+                for attachment in attachments {
+                    print_attachment(attachment);
+                }
+            }
+            Ok(())
+        }
+
+        Commands::Download {
+            id,
+            output,
+            force,
+            json,
+        } => {
+            let response = client.download(&format!("/attachments/{id}")).await?;
+            let server_filename = response
+                .headers()
+                .get(reqwest::header::CONTENT_DISPOSITION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(filename_from_content_disposition)
+                .unwrap_or_else(|| id.clone());
+            let filename = safe_download_filename(&server_filename, &id);
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|_| service_down("附件下载中断"))?;
+            let target = download_target(output, &filename);
+            write_download(&target, &bytes, force).map_err(|message| {
+                eprintln!("错误：{message}");
+                ExitCode::from(EXIT_VALIDATION)
+            })?;
+            let displayed_path = target.canonicalize().unwrap_or(target);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "id": id,
+                        "filename": filename,
+                        "path": displayed_path.to_string_lossy(),
+                        "size": bytes.len(),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                println!("附件已下载：{}", displayed_path.display());
             }
             Ok(())
         }
@@ -588,5 +769,32 @@ mod tests {
             result,
             ("http://127.0.0.1:17901".into(), "local-token".into())
         );
+    }
+
+    #[test]
+    fn attachment_filename_is_decoded_and_sanitized() {
+        let filename = filename_from_content_disposition(
+            "attachment; filename*=UTF-8''%E9%9C%80%E6%B1%82%2B%E8%AF%B4%E6%98%8E.pdf",
+        )
+        .unwrap();
+        assert_eq!(filename, "需求+说明.pdf");
+        assert_eq!(
+            safe_download_filename("../危险?.txt", "fallback"),
+            "危险_.txt"
+        );
+        assert_eq!(safe_download_filename("..", "fallback"), "fallback");
+    }
+
+    #[test]
+    fn attachment_download_does_not_overwrite_by_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("附件.txt");
+        write_download(&target, b"first", false).unwrap();
+        assert!(write_download(&target, b"second", false)
+            .unwrap_err()
+            .contains("--force"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"first");
+        write_download(&target, b"second", true).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"second");
     }
 }

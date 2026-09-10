@@ -35,6 +35,10 @@ describe("task row actions", () => {
     expect(prompt).toContain('任务 ID："202609091234560001"');
     expect(prompt).toContain('项目："agents-pm-tool"');
     expect(prompt).toContain("pm-cli get 202609091234560001 --json");
+    expect(prompt).toContain("pm-cli attachments <任务ID> [--json]");
+    expect(prompt).toContain("pm-cli download <附件ID>");
+    expect(prompt).toContain("查看和下载已授权项目中的任务附件");
+    expect(prompt).toContain("不能删除任务、上传或删除附件");
     expect(prompt).toContain("1. 工具介绍与访问方式");
     expect(prompt).toContain("2. 可用命令");
     expect(prompt).toContain("3. Agent 权限");

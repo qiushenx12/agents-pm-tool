@@ -40,16 +40,19 @@ pm-cli config show
 ## 标准流程
 
 1. 运行 `pm-cli get <任务ID> --json` 读取完整任务。
-2. 运行 `pm-cli projects --json` 获取项目、本地路径与 Git 地址。
-3. 开始实现时运行 `pm-cli status <任务ID> --to 进行中 --json`。
-4. 在任务对应仓库内实现并验证；保留用户已有改动。
-5. 完成且自测通过后运行 `pm-cli status <任务ID> --to 待验证 --json`。
+2. 若 `attachment_count` 大于 0，运行 `pm-cli attachments <任务ID> --json` 查看附件，再使用 `pm-cli download <附件ID>` 按需下载。
+3. 运行 `pm-cli projects --json` 获取项目、本地路径与 Git 地址。
+4. 开始实现时运行 `pm-cli status <任务ID> --to 进行中 --json`。
+5. 在任务对应仓库内实现并验证；保留用户已有改动。
+6. 完成且自测通过后运行 `pm-cli status <任务ID> --to 待验证 --json`。
 
 ## 命令
 
 ```text
 pm-cli list [--project <项目>] [--type <类型>] [--status <状态>] [--submitter <提交人>] [--keyword <关键词>] [--json]
 pm-cli get <任务ID> [--json]
+pm-cli attachments <任务ID> [--json]
+pm-cli download <附件ID> [--output <文件路径>] [--force] [--json]
 pm-cli projects [--json]
 pm-cli create --project <项目> --type <新增需求|优化|BUG> --description <描述> [--json]
 pm-cli status <任务ID> --to <进行中|待验证|已完成> [--json]
@@ -59,7 +62,7 @@ pm-cli config show
 pm-cli --help
 ```
 
-Agent 只能把任务切换到进行中、待验证或已完成；只能修改由 Agent 创建的任务描述；不能设置验收状态、删除任务、管理附件，或修改用户创建任务的描述。用户的项目与字段授权会进一步收窄这些能力。
+Agent 可以列出和下载已授权项目中任务的附件，但不能上传或删除附件。Agent 只能把任务切换到进行中、待验证或已完成；只能修改由 Agent 创建的任务描述；不能设置验收状态、删除任务，或修改用户创建任务的描述。用户的项目与字段授权会进一步收窄这些能力。
 
 如 `pm-cli` 不可执行，可使用 Windows 10+ 自带的 `curl.exe` 调用相同接口：
 

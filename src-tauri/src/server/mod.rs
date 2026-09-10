@@ -161,6 +161,8 @@ fn build_router(core: CoreState) -> Router {
             get(api_agent::list_tasks).post(api_agent::create_task),
         )
         .route("/tasks/{id}", get(api_agent::get_task))
+        .route("/tasks/{id}/attachments", get(api_agent::list_attachments))
+        .route("/attachments/{id}", get(api_agent::download_attachment))
         .route(
             "/tasks/{id}/status",
             axum::routing::patch(api_agent::patch_status),

@@ -1,12 +1,14 @@
 use axum::{
+    body::Body,
     extract::{Extension, Path, RawQuery, State},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::db::{permissions, projects, tasks};
+use crate::db::{attachments, permissions, projects, tasks};
+use crate::domain::attachment::Attachment;
 use crate::domain::task as domain;
 use crate::domain::user::User;
 use crate::error::{ApiError, ApiResult};
@@ -34,6 +36,80 @@ pub async fn get_task(
     let task = tasks::get(&conn, &id)?;
     permissions::require_project(&conn, &user, &task.project)?;
     Ok(Json(task))
+}
+
+#[derive(Serialize)]
+pub struct AgentAttachment {
+    pub id: String,
+    pub task_id: String,
+    pub filename: String,
+    pub mime: Option<String>,
+    pub size: i64,
+    pub created_at: String,
+}
+
+impl From<Attachment> for AgentAttachment {
+    fn from(value: Attachment) -> Self {
+        Self {
+            id: value.id,
+            task_id: value.task_id,
+            filename: value.filename,
+            mime: value.mime,
+            size: value.size,
+            created_at: value.created_at,
+        }
+    }
+}
+
+/// Agent 只读列出可见任务的附件，不暴露服务端 stored_path。
+pub async fn list_attachments(
+    State(core): State<CoreState>,
+    Extension(user): Extension<User>,
+    Path(task_id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let conn = core.db.lock().unwrap();
+    let task = tasks::get(&conn, &task_id)?;
+    permissions::require_project(&conn, &user, &task.project)?;
+    let result = attachments::list(&conn, &task_id)?
+        .into_iter()
+        .map(AgentAttachment::from)
+        .collect::<Vec<_>>();
+    Ok(Json(result))
+}
+
+/// Agent 只读下载可见任务的附件；上传和删除仍不开放路由。
+pub async fn download_attachment(
+    State(core): State<CoreState>,
+    Extension(user): Extension<User>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let attachment = {
+        let conn = core.db.lock().unwrap();
+        let attachment = attachments::get(&conn, &id)?;
+        let task = tasks::get(&conn, &attachment.task_id)?;
+        permissions::require_project(&conn, &user, &task.project)?;
+        attachment
+    };
+    let bytes = std::fs::read(core.data_dir.join(&attachment.stored_path))
+        .map_err(|_| ApiError::not_found("附件文件已丢失"))?;
+    let mime = attachment
+        .mime
+        .as_deref()
+        .unwrap_or("application/octet-stream");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CACHE_CONTROL, "private, no-store")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!(
+                "attachment; filename*=UTF-8''{}",
+                url::form_urlencoded::byte_serialize(attachment.filename.as_bytes())
+                    .collect::<String>()
+            ),
+        )
+        .body(Body::from(bytes))
+        .map_err(ApiError::internal)
 }
 
 #[derive(Deserialize)]
@@ -195,6 +271,8 @@ pub async fn help(Extension(_user): Extension<User>) -> Json<serde_json::Value> 
         "commands": [
             {"method":"GET", "path":"/api/agent/tasks", "description":"查看与筛选任务"},
             {"method":"GET", "path":"/api/agent/tasks/{id}", "description":"查看任务详情"},
+            {"method":"GET", "path":"/api/agent/tasks/{id}/attachments", "description":"列出任务附件（只读）"},
+            {"method":"GET", "path":"/api/agent/attachments/{id}", "description":"下载附件（只读）"},
             {"method":"POST", "path":"/api/agent/tasks", "description":"创建 Agent 任务"},
             {"method":"PATCH", "path":"/api/agent/tasks/{id}/status", "description":"推进状态"},
             {"method":"PATCH", "path":"/api/agent/tasks/{id}/description", "description":"修改 Agent 创建任务的描述"},

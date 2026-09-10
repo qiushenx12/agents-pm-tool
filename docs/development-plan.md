@@ -183,7 +183,7 @@ PRAGMA user_version = 1;
 | 4 | 任务描述 | 字符串 | 网页端可留空；**Agent 必须写入，否则创建失败** | 网页端任意改；CLI 只能改 `submitter=Agent` 的任务 |
 | 5 | 当前状态 | 单选 6 态 | 默认 `未开始` | 见 §5.4 权限矩阵 |
 | 6 | 提交人 | 单选：用户/Agent | 按来源自动写入 | 不可改 |
-| 7 | 附件 | 文件列表 | 创建后可随时上传 | 仅网页端 |
+| 7 | 附件 | 文件列表 | 创建后可随时上传 | 网页端管理；Agent 只读列出和下载 |
 | 8 | 创建时间 | 系统时间 | 自动 | 不可改 |
 | 9 | 完成时间 | 系统时间 | — | 不可改（§4.3 自动记录） |
 | 10 | 备注 | 字符串 | 网页端可留空；Agent 创建时为空 | 仅网页端可改；CLI 只读 |
@@ -254,7 +254,7 @@ pm-cli describe <id> --description <文本> [--json]     # 仅 Agent 创建的�
 | `GET/POST/PATCH/DELETE /api/web/projects`（含重命名级联） | 同上 | 全量 |
 | `POST /api/web/tasks/:id/attachments`（multipart）、`GET /api/web/attachments/:id`、`DELETE` | 同上 | 全量 |
 | `GET /api/web/events` | 同上 | SSE |
-| `GET /api/agent/tasks`、`GET /:id`、`POST`、<br>`PATCH /:id/status`、`PATCH /:id/description`、`GET /api/agent/projects` | 127.0.0.1 **+ Bearer token** | §5.4 收窄集 |
+| `GET /api/agent/tasks`、`GET /:id`、`POST`、<br>`GET /:id/attachments`、`GET /api/agent/attachments/:id`、<br>`PATCH /:id/status`、`PATCH /:id/description`、`GET /api/agent/projects` | 127.0.0.1 **+ Bearer token** | §5.4 收窄集；附件仅可读 |
 
 统一错误格式：`{"error": {"code": "...", "message": "中文描述", "details": {...}}}`。
 

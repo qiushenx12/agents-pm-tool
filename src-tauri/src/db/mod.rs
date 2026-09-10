@@ -1,3 +1,4 @@
+pub mod attachments;
 pub mod permissions;
 pub mod projects;
 pub mod schema;
