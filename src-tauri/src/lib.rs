@@ -4,17 +4,20 @@ pub mod error;
 pub mod paths; // pm-cli 复用服务发现路径
 pub mod server;
 pub mod settings;
+pub mod window_state;
 
 use std::sync::Mutex;
 
 use serde::Serialize;
 use settings::Settings;
-use tauri::{Manager, State, WindowEvent};
+use tauri::{Emitter, Manager, State, WindowEvent};
 
 /// Tauri 托管状态
 pub struct AppState {
     pub core: server::CoreState,
     pub server: Mutex<Option<server::ServerHandle>>,
+    /// 应用内网页窗口的几何记忆（关闭时落盘，见 window_state）
+    pub app_window: Mutex<window_state::GeometryTracker>,
 }
 
 #[derive(Serialize)]
@@ -41,12 +44,153 @@ struct SaveSettingsResult {
     port: u16,
 }
 
+/// 应用内网页窗口的 label 与标题（「进入应用」打开的窗口）
+const APP_WINDOW_LABEL: &str = "web";
+const APP_WINDOW_TITLE: &str = "Agents PM Tool";
+
+/// 正在监听的本机服务端口；服务未运行时为 None
+fn server_port(app: &tauri::AppHandle) -> Option<u16> {
+    let state = app.state::<AppState>();
+    let port = state.server.lock().unwrap().as_ref().map(|h| h.port);
+    port
+}
+
+/// 本机服务的访问地址；服务未运行时为 None
+fn server_url(app: &tauri::AppHandle) -> Option<String> {
+    server_port(app).map(|port| format!("http://127.0.0.1:{port}"))
+}
+
+fn app_window_url(port: u16) -> Result<tauri::Url, String> {
+    format!("http://127.0.0.1:{port}")
+        .parse()
+        .map_err(|e| format!("地址无效：{e}"))
+}
+
+/// 全局主题（settings.theme）→ 应用窗口原生顶栏的明暗。
+/// Windows 上经 DWM 沉浸式深色模式生效；None = 跟随系统。
+fn native_title_bar_theme(theme: Option<&str>) -> Option<tauri::Theme> {
+    match theme {
+        Some("light") => Some(tauri::Theme::Light),
+        Some("dark") => Some(tauri::Theme::Dark),
+        _ => None,
+    }
+}
+
+/// 让已打开的应用窗口跟上服务端口——端口变更会重启服务，旧地址随即失效。
+/// 只比较 origin：网页端自身可能改过路径，不该被强行拉回首页。
+fn sync_app_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>, port: u16) {
+    let Some(window) = app.get_webview_window(APP_WINDOW_LABEL) else {
+        return;
+    };
+    let Ok(target) = app_window_url(port) else {
+        return;
+    };
+    let same_origin = window
+        .url()
+        .map(|current| {
+            current.scheme() == target.scheme()
+                && current.host_str() == target.host_str()
+                && current.port() == target.port()
+        })
+        .unwrap_or(false);
+    if !same_origin {
+        let _ = window.navigate(target);
+    }
+}
+
+/// 应用窗口已存在则聚焦（并纠正地址），否则按本机服务地址新建一个。
+/// 公开是为了让 `tests/app_window.rs` 能用 mock runtime 直接驱动窗口创建。
+pub fn focus_or_create_app_window<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    port: u16,
+) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(APP_WINDOW_LABEL) {
+        sync_app_window(app, port);
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    // 上次关闭时的位置与大小（含"当时是最大化"的标记）
+    let geometry = app
+        .try_state::<AppState>()
+        .and_then(|state| window_state::load(&state.core.data_dir));
+    // 原生顶栏跟随全局主题（settings.theme），None = 跟随系统
+    let theme = app
+        .try_state::<AppState>()
+        .and_then(|state| state.core.settings.read().unwrap().theme.clone());
+    let builder = tauri::WebviewWindowBuilder::new(
+        app,
+        APP_WINDOW_LABEL,
+        tauri::WebviewUrl::External(app_window_url(port)?),
+    )
+    .title(APP_WINDOW_TITLE)
+    // Windows 上 Tauri 的原生文件拖放会截获 WebView 的 HTML5 DragEvent；
+    // 附件上传依赖 dataTransfer.files，因此应用工作台必须让事件交给前端。
+    .disable_drag_drop_handler()
+    .theme(native_title_bar_theme(theme.as_deref()))
+    .min_inner_size(window_state::MIN_WIDTH, window_state::MIN_HEIGHT)
+    .inner_size(window_state::DEFAULT_WIDTH, window_state::DEFAULT_HEIGHT)
+    // 先摆好再显示：越界的位置会被夹回工作区，省得窗口先闪一下再跳
+    .visible(false);
+    let builder = match geometry {
+        Some(geometry) => builder
+            .position(geometry.x, geometry.y)
+            .maximized(geometry.maximized),
+        None => builder.center(),
+    };
+    let window = builder
+        .build()
+        .map_err(|e| format!("打开应用窗口失败：{e}"))?;
+    if let (Some(state), Some(geometry)) = (app.try_state::<AppState>(), geometry) {
+        let fitted = window_state::apply_geometry(&window, geometry);
+        // 先按这份几何预热：用户什么都没动就关窗时，也能原样存回去
+        state.app_window.lock().unwrap().prime(fitted);
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+    Ok(())
+}
+
+/// 记录应用窗口当前几何：正常态更新位置大小，最大化只更新标记（见 window_state）
+fn track_app_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(window) = app.get_webview_window(APP_WINDOW_LABEL) else {
+        return;
+    };
+    let Some((geometry, placement)) = window_state::capture(&window) else {
+        return;
+    };
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    state.app_window.lock().unwrap().observe(geometry, placement);
+}
+
+/// 落盘应用窗口几何：关窗时保存，退出应用（托盘退出 / 关闭任一桌面窗口）时也补一次。
+/// 窗口已经销毁就只用内存里最后一次观测到的值，因此不会因为读不到窗口而丢状态。
+fn persist_app_window_geometry<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    track_app_window(app);
+    let snapshot = state.app_window.lock().unwrap().snapshot();
+    if let Some(geometry) = snapshot {
+        if let Err(e) = window_state::save(&state.core.data_dir, &geometry) {
+            eprintln!("保存应用窗口位置失败：{e}");
+        }
+    }
+}
+
 #[tauri::command]
 async fn save_settings(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
-    settings: Settings,
+    mut settings: Settings,
 ) -> Result<SaveSettingsResult, String> {
     let old = state.core.settings.read().unwrap().clone();
+    // 设置表单只管端口/行为；主题由专门入口维护，保存表单时不能把它冲掉
+    settings.theme = old.theme.clone();
+    settings.validate().map_err(str::to_string)?;
     settings
         .save(&paths::settings_path(&state.core.data_dir))
         .map_err(|e| e.to_string())?;
@@ -72,6 +216,9 @@ async fn save_settings(
         .as_ref()
         .map(|h| h.port)
         .unwrap_or(0);
+    if restarted {
+        sync_app_window(&app, port);
+    }
     Ok(SaveSettingsResult {
         settings,
         restarted,
@@ -151,7 +298,7 @@ async fn shutdown_server(app: &tauri::AppHandle) {
     }
 }
 
-fn show_main_window(app: &tauri::AppHandle) {
+fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
@@ -159,15 +306,72 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-fn open_web_page(app: &tauri::AppHandle) {
-    let state = app.state::<AppState>();
-    let port = state.server.lock().unwrap().as_ref().map(|h| h.port);
-    if let Some(port) = port {
-        use tauri_plugin_opener::OpenerExt;
-        let _ = app
-            .opener()
-            .open_url(format!("http://127.0.0.1:{port}"), None::<&str>);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowCloseAction {
+    /// 设置窗口在保留服务时隐藏，以便从托盘再次打开。
+    HideWindow,
+    /// 工作台在保留服务时正常关闭；服务与托盘继续运行。
+    CloseWindow,
+    /// 当前设置要求退出应用，并在退出前停止内嵌服务。
+    StopAll,
+}
+
+/// “关闭窗口时”同时约束设置窗口和应用内工作台。
+/// 未知设置值沿用原有的安全行为：按 stop_all 处理，避免意外驻留后台。
+fn window_close_action(window_label: &str, close_behavior: &str) -> WindowCloseAction {
+    if !matches!(window_label, "main" | APP_WINDOW_LABEL) {
+        return WindowCloseAction::CloseWindow;
     }
+    if close_behavior != "keep_service" {
+        return WindowCloseAction::StopAll;
+    }
+    if window_label == "main" {
+        WindowCloseAction::HideWindow
+    } else {
+        WindowCloseAction::CloseWindow
+    }
+}
+
+/// 从应用内工作台返回设置窗口：先记录并关闭 web 窗口，再显示设置窗口。
+/// 公开是为了让窗口级测试使用 Tauri mock runtime 验证切换行为。
+pub fn show_settings_and_close_app_window<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(), String> {
+    persist_app_window_geometry(app);
+    if let Some(window) = app.get_webview_window(APP_WINDOW_LABEL) {
+        window
+            .destroy()
+            .map_err(|error| format!("关闭应用窗口失败：{error}"))?;
+    }
+    show_main_window(app);
+    Ok(())
+}
+
+fn open_web_page(app: &tauri::AppHandle) {
+    if let Some(url) = server_url(app) {
+        use tauri_plugin_opener::OpenerExt;
+        let _ = app.opener().open_url(url, None::<&str>);
+    }
+}
+
+/// 「进入应用」：在应用内打开网页同款的界面。
+/// 已打开则聚焦，不重复创建；地址随端口变化时自动纠正。
+#[tauri::command]
+async fn open_app_window(app: tauri::AppHandle) -> Result<(), String> {
+    let port = server_port(&app).ok_or("服务未运行，无法进入应用")?;
+    focus_or_create_app_window(&app, port)
+}
+
+/// 应用内工作台的“设置”：关闭工作台窗口并回到桌面设置窗口。
+#[tauri::command]
+async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    show_settings_and_close_app_window(&app)
+}
+
+/// 设置全局明暗主题：设置窗口切换时调用，网页端 PUT appearance 走同一份状态。
+#[tauri::command]
+async fn set_theme(state: State<'_, AppState>, theme: String) -> Result<(), String> {
+    server::set_theme(&state.core, &theme).map_err(|e| e.message)
 }
 
 /// 系统托盘：打开设置 / 打开网页 / 退出（停止服务）
@@ -191,6 +395,8 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             "tray_quit" => {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
+                    // 先记录应用窗口几何，再停服务退出
+                    persist_app_window_geometry(&app);
                     shutdown_server(&app).await;
                     app.exit(0);
                 });
@@ -234,7 +440,62 @@ pub fn run() {
             app.manage(AppState {
                 core: core.clone(),
                 server: Mutex::new(None),
+                app_window: Mutex::new(window_state::GeometryTracker::default()),
             });
+
+            // 网页端改主题（PUT appearance）→ 转发给设置窗口实时换肤
+            {
+                let app = app.handle().clone();
+                let core = core.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut rx = core.theme_events.subscribe();
+                    loop {
+                        if rx.changed().await.is_err() {
+                            break;
+                        }
+                        let theme = rx.borrow_and_update().clone();
+                        let _ = app.emit("theme-changed", theme.clone());
+                        // 应用窗口的原生顶栏也跟着换（DWM 沉浸式深色模式）
+                        if let Some(window) = app.get_webview_window(APP_WINDOW_LABEL) {
+                            let _ =
+                                window.set_theme(native_title_bar_theme(theme.as_deref()));
+                        }
+                    }
+                });
+            }
+
+            // 主机网页设置修改端口或监听范围后，在当前请求完成响应之后重启服务。
+            // graceful shutdown 会等待触发这次重启的 handler 返回，避免保存响应被截断。
+            {
+                let app = app.handle().clone();
+                let core = core.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut rx = core.settings_restart_events.subscribe();
+                    loop {
+                        if rx.changed().await.is_err() {
+                            break;
+                        }
+                        let old = app.state::<AppState>().server.lock().unwrap().take();
+                        if let Some(handle) = old {
+                            handle.stop().await;
+                        }
+                        *core.actual_port.write().unwrap() = 0;
+                        let (port, bind_host) = {
+                            let settings = core.settings.read().unwrap();
+                            (settings.port, settings.bind_host())
+                        };
+                        match server::start_server(core.clone(), port, bind_host).await {
+                            Ok(handle) => {
+                                let actual = handle.port;
+                                *app.state::<AppState>().server.lock().unwrap() = Some(handle);
+                                sync_app_window(&app, actual);
+                                eprintln!("服务已按网页设置重启 http://127.0.0.1:{actual}");
+                            }
+                            Err(error) => eprintln!("按网页设置重启服务失败：{}", error.message),
+                        }
+                    }
+                });
+            }
 
             // 启动内嵌 HTTP 服务（规划 §5.6：autostart 默认开）
             if app_settings.autostart {
@@ -261,7 +522,22 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // 应用内网页窗口：位置/大小/最大化状态随时记，关窗时落盘
+            if window.label() == APP_WINDOW_LABEL {
+                match event {
+                    WindowEvent::Resized(_) | WindowEvent::Moved(_) => {
+                        track_app_window(window.app_handle())
+                    }
+                    WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
+                        persist_app_window_geometry(window.app_handle())
+                    }
+                    _ => {}
+                }
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
+                if !matches!(window.label(), "main" | APP_WINDOW_LABEL) {
+                    return;
+                }
                 let close_behavior = window
                     .app_handle()
                     .state::<AppState>()
@@ -271,26 +547,83 @@ pub fn run() {
                     .unwrap()
                     .close_behavior
                     .clone();
-                if close_behavior == "keep_service" {
-                    // 关窗保服务：隐藏窗口而不是退出（规划 §5.6/Phase 3）
-                    api.prevent_close();
-                    let _ = window.hide();
-                } else {
-                    let app = window.app_handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        shutdown_server(&app).await;
-                        app.exit(0);
-                    });
-                    api.prevent_close();
+                match window_close_action(window.label(), &close_behavior) {
+                    WindowCloseAction::HideWindow => {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    WindowCloseAction::CloseWindow => {
+                        // 工作台正常关闭；进程和服务继续由托盘承载。
+                    }
+                    WindowCloseAction::StopAll => {
+                        api.prevent_close();
+                        let app = window.app_handle().clone();
+                        tauri::async_runtime::spawn(async move {
+                            persist_app_window_geometry(&app);
+                            shutdown_server(&app).await;
+                            app.exit(0);
+                        });
+                    }
                 }
             }
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
+            set_theme,
             get_server_status,
             regenerate_token,
+            open_app_window,
+            open_settings_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agents PM Tool");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{native_title_bar_theme, window_close_action, WindowCloseAction};
+
+    #[test]
+    fn maps_global_theme_to_native_title_bar() {
+        assert_eq!(
+            native_title_bar_theme(Some("light")),
+            Some(tauri::Theme::Light)
+        );
+        assert_eq!(
+            native_title_bar_theme(Some("dark")),
+            Some(tauri::Theme::Dark)
+        );
+        // 未设主题 / 异常值都退回跟随系统
+        assert_eq!(native_title_bar_theme(None), None);
+        assert_eq!(native_title_bar_theme(Some("system")), None);
+    }
+
+    #[test]
+    fn close_behavior_applies_to_both_desktop_windows() {
+        assert_eq!(
+            window_close_action("main", "keep_service"),
+            WindowCloseAction::HideWindow
+        );
+        assert_eq!(
+            window_close_action("web", "keep_service"),
+            WindowCloseAction::CloseWindow
+        );
+        assert_eq!(
+            window_close_action("main", "stop_all"),
+            WindowCloseAction::StopAll
+        );
+        assert_eq!(
+            window_close_action("web", "stop_all"),
+            WindowCloseAction::StopAll
+        );
+    }
+
+    #[test]
+    fn unknown_close_behavior_does_not_leave_the_app_running() {
+        assert_eq!(
+            window_close_action("web", "unexpected"),
+            WindowCloseAction::StopAll
+        );
+    }
 }

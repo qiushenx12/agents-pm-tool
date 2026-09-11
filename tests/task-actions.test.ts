@@ -13,6 +13,7 @@ const task: Task = {
   project: "agents-pm-tool",
   type: "新增需求",
   status: "未开始",
+  priority: "中",
   description: "新增复制 Agent Prompt 的操作按钮",
   note: "",
   submitter: "用户",

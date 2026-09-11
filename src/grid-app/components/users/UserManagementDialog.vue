@@ -6,6 +6,7 @@ import { askConfirm, errorText } from "@/shared/feedback";
 import UiDialog from "@/shared/UiDialog.vue";
 import UiIcon from "@/shared/UiIcon.vue";
 import {
+  PRIORITIES,
   TASK_STATUSES,
   TASK_TYPES,
   type User,
@@ -28,6 +29,7 @@ const fields = [
   ["note", "备注"],
   ["status", "状态"],
   ["type", "类型"],
+  ["priority", "优先级"],
   ["project", "移动项目"],
   ["reorder", "手动排序"],
   ["task_delete", "删除任务"],
@@ -103,7 +105,9 @@ function toggleField(project: string, field: string, enabled: boolean) {
           ? [...TASK_STATUSES]
           : field === "type"
             ? [...TASK_TYPES]
-            : null,
+            : field === "priority"
+              ? [...PRIORITIES]
+              : null,
     });
   }
 }
@@ -248,6 +252,9 @@ onMounted(() => run(async () => { await Promise.all([loadUsers(), meta.refresh()
                 </div>
                 <div v-if="field[0] === 'type' && hasField(project.name, field[0])" class="value-permissions">
                   <label v-for="type in TASK_TYPES" :key="type"><input type="checkbox" :checked="valueAllowed(project.name, 'type', type)" @change="toggleValue(project.name, 'type', type, ($event.target as HTMLInputElement).checked)" />{{ type }}</label>
+                </div>
+                <div v-if="field[0] === 'priority' && hasField(project.name, field[0])" class="value-permissions">
+                  <label v-for="p in PRIORITIES" :key="p"><input type="checkbox" :checked="valueAllowed(project.name, 'priority', p)" @change="toggleValue(project.name, 'priority', p, ($event.target as HTMLInputElement).checked)" />{{ p }}</label>
                 </div>
               </div>
             </div>

@@ -36,6 +36,7 @@ it("creates the task only once when retrying an attachment failure in the new-ta
     description: "创建流程测试",
     note: "创建备注",
     status: "未开始",
+    priority: "中",
     submitter: "用户",
     created_at: "",
     updated_at: "",
@@ -83,6 +84,7 @@ it("creates the task only once when retrying an attachment failure in the new-ta
     type: "新增需求",
     description: "",
     note: "创建备注",
+    priority: "中",
   });
   expect(onCreated).not.toHaveBeenCalled();
   expect(document.body.textContent).toContain("任务已创建，部分附件上传失败");

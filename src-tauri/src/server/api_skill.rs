@@ -112,11 +112,30 @@ pub struct SkillTarget {
 
 type SkillRoot = (&'static str, &'static str, PathBuf);
 
-fn skill_roots() -> Vec<SkillRoot> {
+/// 支持一键安装 skill 的 Agent 前端：前端 id 与展示名。
+const FRONTENDS: [(&str, &str); 6] = [
+    ("codex", "Codex"),
+    ("claude_code", "Claude Code"),
+    ("workbuddy", "WorkBuddy"),
+    ("opencode", "OpenCode"),
+    ("cursor", "Cursor"),
+    ("pi", "Pi"),
+];
+
+fn frontend_label(frontend_id: &str) -> Option<&'static str> {
+    FRONTENDS
+        .iter()
+        .find(|(id, _)| *id == frontend_id)
+        .map(|(_, label)| *label)
+}
+
+/// 每个前端的 skill 根目录定义，不做存在性过滤。
+/// 目录取自各前端官方文档的全局（用户级）skill 位置。
+fn all_skill_roots() -> Vec<SkillRoot> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
-    [
+    vec![
         ("codex", "Codex", home.join(".agents").join("skills")),
         (
             "codex",
@@ -133,10 +152,31 @@ fn skill_roots() -> Vec<SkillRoot> {
             "WorkBuddy",
             home.join(".workbuddy").join("skills"),
         ),
+        (
+            "opencode",
+            "OpenCode",
+            home.join(".config").join("opencode").join("skills"),
+        ),
+        ("cursor", "Cursor", home.join(".cursor").join("skills")),
+        (
+            "pi",
+            "Pi",
+            home.join(".pi").join("agent").join("skills"),
+        ),
     ]
-    .into_iter()
-    .filter(|(_, _, root)| root.is_dir())
-    .collect()
+}
+
+/// 判断某前端是否安装在本机：只要求它的配置目录存在，skill 目录在安装时按需创建，
+/// 否则刚装好、还没放过任何 skill 的前端会被误判为「未检测到」。
+fn root_is_available(root: &std::path::Path) -> bool {
+    root.parent().is_some_and(std::path::Path::is_dir)
+}
+
+fn skill_roots() -> Vec<SkillRoot> {
+    all_skill_roots()
+        .into_iter()
+        .filter(|(_, _, root)| root_is_available(root))
+        .collect()
 }
 
 pub fn local_skill_targets() -> Vec<SkillTarget> {
@@ -215,21 +255,22 @@ fn install_into_roots(roots: &[SkillRoot], executable_bytes: &[u8]) -> ApiResult
 }
 
 fn select_frontend_roots(roots: Vec<SkillRoot>, frontend_id: &str) -> ApiResult<Vec<SkillRoot>> {
-    if !matches!(frontend_id, "codex" | "claude_code" | "workbuddy") {
-        return Err(ApiError::unprocessable(
-            "frontend 仅支持 codex、claude_code 或 workbuddy",
-        ));
-    }
+    let Some(label) = frontend_label(frontend_id) else {
+        let supported = FRONTENDS
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>()
+            .join("、");
+        return Err(ApiError::unprocessable(format!(
+            "frontend 仅支持 {supported}"
+        )));
+    };
     let selected = roots
         .into_iter()
         .filter(|(id, _, _)| *id == frontend_id)
         .collect::<Vec<_>>();
     if selected.is_empty() {
-        return Err(ApiError::not_found(match frontend_id {
-            "codex" => "未检测到 Codex skill 目录",
-            "claude_code" => "未检测到 Claude Code skill 目录",
-            _ => "未检测到 WorkBuddy skill 目录",
-        }));
+        return Err(ApiError::not_found(format!("未检测到 {label} skill 目录")));
     }
     Ok(selected)
 }
@@ -372,5 +413,72 @@ mod tests {
         assert_eq!(selected.len(), 2);
         assert!(selected.iter().all(|(id, _, _)| *id == "codex"));
         assert!(select_frontend_roots(Vec::new(), "unknown").is_err());
+    }
+
+    #[test]
+    fn supported_frontends_all_have_skill_roots() {
+        let roots = all_skill_roots();
+        for (frontend_id, label) in FRONTENDS {
+            let matched = roots
+                .iter()
+                .filter(|(id, _, _)| *id == frontend_id)
+                .collect::<Vec<_>>();
+            assert!(
+                !matched.is_empty(),
+                "{frontend_id} 缺少 skill 根目录定义"
+            );
+            assert!(matched.iter().any(|(_, name, _)| *name == label));
+        }
+        assert_eq!(roots.len(), 7, "Codex 有两个 skill 目录，其余前端各一个");
+    }
+
+    #[test]
+    fn opencode_cursor_and_pi_install_into_their_native_roots() {
+        for frontend_id in ["opencode", "cursor", "pi"] {
+            let temporary = tempfile::tempdir().unwrap();
+            let roots = vec![(
+                frontend_id,
+                frontend_label(frontend_id).unwrap(),
+                temporary.path().join("skills"),
+            )];
+            let selected = select_frontend_roots(roots, frontend_id).unwrap();
+            assert_eq!(selected.len(), 1);
+            install_into_roots(&selected, b"fake executable").unwrap();
+            assert!(selected[0]
+                .2
+                .join(SKILL_NAME)
+                .join("SKILL.md")
+                .is_file());
+            assert!(selected[0]
+                .2
+                .join(SKILL_NAME)
+                .join("bin")
+                .join("pm-cli.exe")
+                .is_file());
+        }
+    }
+
+    #[test]
+    fn frontend_without_skill_directory_is_still_installable() {
+        let temporary = tempfile::tempdir().unwrap();
+        let config_root = temporary.path().join("frontend");
+        std::fs::create_dir_all(&config_root).unwrap();
+        let skills = config_root.join("skills");
+        assert!(!skills.is_dir());
+        // 前端已安装但还没放过任何 skill：配置目录存在即视为可安装。
+        assert!(root_is_available(&skills));
+        assert!(!root_is_available(&temporary.path().join("missing").join("skills")));
+    }
+
+    #[test]
+    fn unknown_frontend_reports_supported_list() {
+        let error = select_frontend_roots(Vec::new(), "amp").unwrap_err();
+        assert_eq!(error.code, "validation_failed");
+        for frontend_id in FRONTENDS.map(|(id, _)| id) {
+            assert!(
+                error.message.contains(frontend_id),
+                "错误信息缺少 {frontend_id}"
+            );
+        }
     }
 }

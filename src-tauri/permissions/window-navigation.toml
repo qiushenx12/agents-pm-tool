@@ -1,0 +1,16 @@
+[[permission]]
+identifier = "allow-config-window-commands"
+description = "允许本地桌面设置窗口读取、保存设置并进入应用工作台"
+commands.allow = [
+  "get_settings",
+  "save_settings",
+  "set_theme",
+  "get_server_status",
+  "regenerate_token",
+  "open_app_window",
+]
+
+[[permission]]
+identifier = "allow-open-settings-window"
+description = "允许应用内工作台关闭自身并切换回桌面设置窗口"
+commands.allow = ["open_settings_window"]

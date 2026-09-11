@@ -5,6 +5,7 @@ pub mod schema;
 pub mod task_page;
 pub mod tasks;
 pub mod users;
+pub mod view_state;
 
 use std::path::Path;
 
@@ -12,7 +13,7 @@ use rusqlite::Connection;
 
 use crate::error::ApiResult;
 
-const USER_VERSION: i32 = 9;
+const USER_VERSION: i32 = 11;
 
 fn configure(conn: &Connection) -> ApiResult<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -30,6 +31,8 @@ fn configure(conn: &Connection) -> ApiResult<()> {
 /// v7：meta 增加 id_ts / id_suffix（任务 ID 后缀改为同一秒内递增，0000 起）
 /// v8：用户、Web 会话、按用户 Agent token 与细粒度权限
 /// v9：历史任务回填主机归属；新任务由创建入口写入实际 owner_user_id
+/// v10：user_view_state（按用户保存的分组/排序/筛选，供网页端与应用内窗口共用）
+/// v11：tasks 增加 priority（高/中/低，默认中；含 CHECK，新列按 NOT NULL DEFAULT 追加）
 fn migrate(conn: &Connection) -> ApiResult<()> {
     let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version < 1 {
@@ -154,6 +157,26 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
              UPDATE tasks SET owner_user_id='host' WHERE owner_user_id IS NULL;
              PRAGMA user_version = 9;
              COMMIT;",
+        )?;
+    }
+    if version < 10 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE IF NOT EXISTS user_view_state (
+               user_id    TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+               filters    TEXT NOT NULL DEFAULT '',
+               updated_at TEXT NOT NULL
+             );
+             PRAGMA user_version = 10;
+             COMMIT;",
+        )?;
+    }
+    if version < 11 {
+        // 加列不需要重建表：新列是常量默认值，SQLite 直接回填存量行。
+        conn.execute_batch(
+            "ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT '中'
+              CHECK (priority IN ('高','中','低'));
+             PRAGMA user_version = 11;",
         )?;
     }
     debug_assert!(version <= USER_VERSION);
@@ -285,7 +308,9 @@ mod tests {
                ('owned-user', 2, 'default-project', '优化', '已有归属', '未开始', '用户', '2026-01-02', '2026-01-02', 2, '', 'alice');",
         )
         .unwrap();
-        conn.pragma_update(None, "user_version", 8).unwrap();
+        // 回退到 v8 之前；v11 列已存在，需一并去掉以模拟旧库
+        conn.execute_batch("PRAGMA user_version = 8; ALTER TABLE tasks DROP COLUMN priority;")
+            .unwrap();
 
         migrate(&conn).unwrap();
 
@@ -305,6 +330,84 @@ mod tests {
             .unwrap();
         assert_eq!(legacy_owner, "host");
         assert_eq!(existing_owner, "alice");
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, USER_VERSION);
+    }
+
+    #[test]
+    fn version_nine_database_gains_user_view_state_table() {
+        let conn = open_memory().unwrap();
+        // 模拟 v9 旧库：没有按用户保存的视图设置，也没有 v11 的 priority 列
+        conn.execute_batch("DROP TABLE user_view_state; PRAGMA user_version = 9; ALTER TABLE tasks DROP COLUMN priority;")
+            .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_view_state')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(exists);
+        view_state::put(&conn, "host", r#"{"group_by":"status"}"#).unwrap();
+        assert!(view_state::get(&conn, "host").unwrap().is_some());
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, USER_VERSION);
+    }
+
+    #[test]
+    fn version_ten_database_gains_priority_with_default_medium() {
+        let conn = open_memory().unwrap();
+        // 模拟 v10 旧库：tasks 表回退到没有 priority 的结构
+        conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN;
+             CREATE TABLE tasks_v10 (
+               id TEXT PRIMARY KEY, seq INTEGER NOT NULL UNIQUE, project TEXT NOT NULL,
+               type TEXT NOT NULL CHECK (type IN ('新增需求','优化','BUG')),
+               description TEXT NOT NULL DEFAULT '',
+               status TEXT NOT NULL DEFAULT '未开始'
+                      CHECK (status IN ('未开始','进行中','待验证','已完成','验收未通过','验收通过','取消')),
+               submitter TEXT NOT NULL CHECK (submitter IN ('用户','Agent')),
+               created_at TEXT NOT NULL, finished_at TEXT, updated_at TEXT NOT NULL,
+               position REAL NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '',
+               owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL
+             );
+             INSERT INTO tasks_v10
+               SELECT id, seq, project, type, description, status, submitter,
+                      created_at, finished_at, updated_at, position, note, owner_user_id FROM tasks;
+             DROP TABLE tasks;
+             ALTER TABLE tasks_v10 RENAME TO tasks;
+             PRAGMA user_version = 10; COMMIT; PRAGMA foreign_keys=ON;")
+            .unwrap();
+        // 旧库里先放一条没有 priority 的存量任务
+        conn.execute(
+            "INSERT INTO tasks (id, seq, project, type, description, status, submitter, created_at, updated_at, position, note, owner_user_id)
+             VALUES ('legacy-p', 99, 'default-project', '优化', '存量任务', '未开始', '用户', '2026-01-01', '2026-01-01', 99, '', 'host')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        // 存量行回填默认「中」
+        let priority: String = conn
+            .query_row("SELECT priority FROM tasks WHERE id='legacy-p'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(priority, "中");
+        // CHECK 生效：非法值写不进
+        assert!(
+            conn.execute("UPDATE tasks SET priority='紧急' WHERE id='legacy-p'", [])
+                .is_err()
+        );
+        conn.execute("UPDATE tasks SET priority='高' WHERE id='legacy-p'", [])
+            .unwrap();
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();

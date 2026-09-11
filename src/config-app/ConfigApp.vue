@@ -1,54 +1,58 @@
 <script setup lang="ts">
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { computed, onMounted, ref } from "vue";
-import { currentTheme, toggleTheme } from "@/shared/theme";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import {
+  applyTheme,
+  currentTheme,
+  savedLocalTheme,
+  toggleTheme,
+} from "@/shared/theme";
 import UiIcon from "@/shared/UiIcon.vue";
-import UiSelect from "@/shared/UiSelect.vue";
+import WorkspaceSettingsForm from "@/shared/WorkspaceSettingsForm.vue";
 import AppFeedback from "@/shared/AppFeedback.vue";
-import { askConfirm, errorText, notify } from "@/shared/feedback";
-interface Settings {
-  port: number;
-  autostart: boolean;
-  close_behavior: string;
-  listen_scope: string;
-  agent_server_url: string;
-}
-interface ServerStatus {
-  running: boolean;
-  port: number;
-  url: string;
-  lan_url: string;
-  data_dir: string;
-}
+import { askConfirm, copyText, errorText, notify } from "@/shared/feedback";
+import type {
+  WorkspaceServerStatus,
+  WorkspaceSettings,
+} from "@/shared/types";
 interface SaveSettingsResult {
-  settings: Settings;
+  settings: WorkspaceSettings;
   restarted: boolean;
   port: number;
 }
 const desktop = isTauri();
 const appWindow = desktop ? getCurrentWindow() : null;
-const settings = ref<Settings>({
+const settings = ref<WorkspaceSettings>({
   port: 17890,
   autostart: true,
   close_behavior: "keep_service",
   listen_scope: "local",
   agent_server_url: "",
 });
-const status = ref<ServerStatus | null>(null);
+const status = ref<WorkspaceServerStatus | null>(null);
 const baseline = ref(""),
   loaded = ref(false),
   saving = ref(false),
   loading = ref(false),
   tokenBusy = ref(false),
+  enterBusy = ref(false),
   error = ref("");
 const dirty = computed(() => JSON.stringify(settings.value) !== baseline.value);
 const theme = ref(currentTheme());
-const closeOptions = [
-  { value: "keep_service", label: "保持服务运行（托盘常驻）" },
-  { value: "stop_all", label: "退出应用并停止服务" },
-];
+/** 本地切换：先应用，再写全局（网页界面会实时跟着变） */
+async function switchTheme() {
+  const next = toggleTheme();
+  theme.value = next;
+  if (!desktop) return; // 浏览器里打开本页：仅本地生效
+  try {
+    await invoke("set_theme", { theme: next });
+  } catch (e) {
+    error.value = errorText(e);
+  }
+}
 function isInteractiveTarget(target: unknown) {
   if (typeof target !== "object" || target === null) return false;
   const closest = Reflect.get(target, "closest");
@@ -84,13 +88,25 @@ async function load() {
   error.value = "";
   try {
     const [config, server] = await Promise.all([
-      invoke<Settings>("get_settings"),
-      invoke<ServerStatus>("get_server_status"),
+      invoke<WorkspaceSettings>("get_settings"),
+      invoke<WorkspaceServerStatus>("get_server_status"),
     ]);
     settings.value = config;
     status.value = server;
     baseline.value = JSON.stringify(config);
     loaded.value = true;
+    // 全局主题对账：服务端有值就应用（各界面统一）；
+    // 没有则把本机保存的偏好上报（老用户无感迁移）。
+    if (config.theme === "light" || config.theme === "dark") {
+      applyTheme(config.theme);
+      theme.value = config.theme;
+    } else {
+      const local = savedLocalTheme();
+      if (local) {
+        theme.value = local;
+        void invoke("set_theme", { theme: local }).catch(() => {});
+      }
+    }
   } catch (e) {
     error.value = errorText(e);
   } finally {
@@ -115,7 +131,7 @@ async function save() {
     });
     settings.value = result.settings;
     baseline.value = JSON.stringify(result.settings);
-    status.value = await invoke<ServerStatus>("get_server_status");
+    status.value = await invoke<WorkspaceServerStatus>("get_server_status");
     notify(result.restarted ? "设置已保存，服务已重启" : "设置已保存");
   } catch (e) {
     error.value = errorText(e);
@@ -148,7 +164,22 @@ async function openWeb() {
   try {
     await shellOpen(status.value.url);
   } catch (e) {
-    error.value = "打开任务表失败：" + errorText(e);
+    error.value = "打开网页失败：" + errorText(e);
+  }
+}
+/** 在应用内打开网页同款界面（独立窗口），不走系统浏览器。 */
+async function enterApp() {
+  if (!status.value?.running || enterBusy.value) return;
+  enterBusy.value = true;
+  error.value = "";
+  try {
+    await invoke("open_app_window");
+    // 这里只做界面切换，不走 close()，避免 stop_all 配置把刚打开的应用一起退出。
+    await appWindow?.hide();
+  } catch (e) {
+    error.value = errorText(e);
+  } finally {
+    enterBusy.value = false;
   }
 }
 async function closeWindow() {
@@ -161,7 +192,22 @@ async function closeWindow() {
     return;
   await appWindow?.close();
 }
-onMounted(load);
+let unlistenTheme: UnlistenFn | undefined;
+onMounted(async () => {
+  // 网页端切主题 → 服务端广播到这里，实时换肤
+  if (desktop) {
+    unlistenTheme = await listen<string | null>("theme-changed", (e) => {
+      if (e.payload === "light" || e.payload === "dark") {
+        applyTheme(e.payload);
+        theme.value = e.payload;
+      }
+    });
+  }
+  void load();
+});
+onBeforeUnmount(() => {
+  unlistenTheme?.();
+});
 </script>
 <template>
   <div class="config-app">
@@ -178,7 +224,7 @@ onMounted(load);
           class="icon-btn"
           aria-label="切换明暗主题"
           title="切换明暗主题"
-          @click="theme = toggleTheme()"
+          @click="switchTheme()"
         >
           <UiIcon
             :name="theme === 'dark' ? 'sun' : 'moon'"
@@ -221,136 +267,18 @@ onMounted(load);
         <UiIcon name="info" /><span>{{ error }}</span
         ><button v-if="!loaded" class="btn btn-sm" @click="load">重试</button>
       </div>
-      <section class="service-overview">
-        <div class="service-overview-top">
-          <span class="service-icon"><UiIcon name="grid" :size="22" /></span>
-          <div>
-            <h2>任务工作区</h2>
-            <p class="service-status">
-              <span class="status-dot" :class="{ on: status?.running }"></span
-              >{{
-                loading
-                  ? "正在连接服务…"
-                  : status?.running
-                    ? "服务运行中"
-                    : desktop
-                      ? "服务未运行"
-                      : "桌面服务设置"
-              }}
-            </p>
-          </div>
-          <button
-            class="btn btn-primary btn-sm"
-            :disabled="!status?.running"
-            @click="openWeb"
-          >
-            打开任务表<UiIcon name="expand" :size="13" />
-          </button>
-        </div>
-        <div v-if="status" class="service-address">
-          <span>本机地址</span><code>{{ status.url || "—" }}</code
-          ><template v-if="status.lan_url"
-            ><span>局域网地址</span><code>{{ status.lan_url }}</code></template
-          >
-        </div>
-      </section>
-      <section class="settings-section">
-        <h2><UiIcon name="settings" :size="15" />常用设置</h2>
-        <fieldset :disabled="!loaded || saving">
-          <div class="settings-row">
-            <div>
-              <label for="autostart">启动时自动开启服务</label>
-              <p>打开应用即可使用任务工作区</p>
-            </div>
-            <input
-              id="autostart"
-              v-model="settings.autostart"
-              type="checkbox"
-              role="switch"
-              class="switch-input"
-            />
-          </div>
-          <div class="settings-row vertical">
-            <label>关闭窗口时</label
-            ><UiSelect
-              v-model="settings.close_behavior"
-              :options="closeOptions"
-              label="关闭窗口时"
-              :disabled="!loaded || saving"
-            />
-          </div>
-        </fieldset>
-      </section>
-      <section class="settings-section">
-        <h2><UiIcon name="layers" :size="15" />连接设置</h2>
-        <fieldset :disabled="!loaded || saving">
-          <div class="settings-row">
-            <div>
-              <label for="service-port">服务端口</label>
-              <p>修改后保存会重新启动服务</p>
-            </div>
-            <input
-              id="service-port"
-              v-model.number="settings.port"
-              class="input port-input"
-              type="number"
-              min="1024"
-              max="65535"
-            />
-          </div>
-          <div class="settings-row vertical">
-            <label>访问范围</label
-            ><label class="scope-option"
-              ><input
-                v-model="settings.listen_scope"
-                type="radio"
-                value="local"
-              />
-              <div>
-                <strong>仅本机</strong><span>仅当前电脑可以访问工作区</span>
-              </div></label
-            ><label class="scope-option"
-              ><input
-                v-model="settings.listen_scope"
-                type="radio"
-                value="lan"
-              />
-              <div>
-                <strong>局域网</strong><span>允许同一网络中的设备访问</span>
-              </div></label
-            >
-            <div v-if="settings.listen_scope === 'lan'" class="scope-warning">
-              局域网用户需要注册并经管理员授权。请在可信网络中使用，且不要复用重要口令。
-            </div>
-          </div>
-          <div class="settings-row vertical">
-            <label for="agent-server-url">远程 Agent 服务地址（可选）</label>
-            <p>多网卡时可手工指定给远程用户的地址；留空会自动探测。</p>
-            <input
-              id="agent-server-url"
-              v-model="settings.agent_server_url"
-              class="input"
-              placeholder="例如 http://192.168.1.10:17890"
-            />
-          </div>
-        </fieldset>
-      </section>
-      <section class="settings-section">
-        <h2><UiIcon name="bot" :size="15" />Agent 接入</h2>
-        <p class="section-description">Agent 通过 pm-cli 读取和推进任务。</p>
-        <button
-          class="btn btn-sm"
-          :disabled="!loaded || tokenBusy || saving"
-          @click="regenerateToken"
-        >
-          <UiIcon name="refresh" :size="13" />{{
-            tokenBusy ? "正在更新…" : "重新生成 Agent token"
-          }}
-        </button>
-        <div v-if="status" class="data-directory">
-          <span>数据目录</span><code>{{ status.data_dir }}</code>
-        </div>
-      </section>
+      <WorkspaceSettingsForm
+        v-model="settings"
+        :status="status"
+        :loaded="loaded"
+        :loading="loading"
+        :busy="saving"
+        :token-busy="tokenBusy"
+        show-address-copy
+        @open="openWeb"
+        @copy-address="copyText"
+        @regenerate-token="regenerateToken"
+      />
     </main>
     <footer class="config-footer">
       <span>{{
@@ -359,14 +287,27 @@ onMounted(load);
           : loaded && dirty
             ? "有未保存的更改"
             : "设置保存在本机"
-      }}</span
-      ><button
-        class="btn btn-primary"
-        :disabled="!loaded || saving || !dirty"
-        @click="save"
-      >
-        {{ saving ? "保存中…" : "保存设置" }}
-      </button>
+      }}</span>
+      <div class="footer-actions">
+        <button
+          v-if="desktop"
+          class="btn"
+          :disabled="!status?.running || enterBusy"
+          title="在应用内打开任务工作区"
+          @click="enterApp"
+        >
+          <UiIcon name="app-window" :size="13" />{{
+            enterBusy ? "正在打开…" : "进入应用"
+          }}
+        </button>
+        <button
+          class="btn btn-primary"
+          :disabled="!loaded || saving || !dirty"
+          @click="save"
+        >
+          {{ saving ? "保存中…" : "保存设置" }}
+        </button>
+      </div>
     </footer>
     <AppFeedback />
   </div>
@@ -420,181 +361,6 @@ onMounted(load);
 .config-body > .form-error {
   margin-bottom: 16px;
 }
-.service-overview {
-  background: var(--sidebar-bg);
-  border: 1px solid var(--separator);
-  border-radius: 8px;
-  padding: 16px;
-}
-.service-overview-top {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-.service-overview-top h2 {
-  font-size: 13px;
-  font-weight: 600;
-}
-.service-overview-top > .btn {
-  margin-left: auto;
-}
-.service-icon {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 38px;
-  border-radius: 7px;
-  background: var(--tag-teal-bg);
-  color: var(--tag-teal-fg);
-}
-.service-status {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  margin-top: 4px;
-}
-.status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-tertiary);
-}
-.status-dot.on {
-  background: var(--success);
-}
-.service-address {
-  display: grid;
-  grid-template-columns: 72px 1fr;
-  gap: 5px;
-  font-size: 11px;
-  padding-top: 14px;
-  margin-top: 14px;
-  border-top: 1px solid var(--separator);
-  color: var(--text-secondary);
-}
-.service-address code {
-  overflow-wrap: anywhere;
-  font: 11px var(--font-mono);
-}
-.settings-section {
-  padding: 24px 0 20px;
-  border-bottom: 1px solid var(--separator);
-}
-.settings-section h2 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  margin-bottom: 14px;
-}
-.settings-section h2 > .ui-icon {
-  color: var(--text-tertiary);
-}
-.settings-section fieldset {
-  border: 0;
-  min-width: 0;
-}
-.settings-section fieldset:disabled {
-  opacity: 0.6;
-}
-.settings-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 16px;
-}
-.settings-row:last-child {
-  margin-bottom: 0;
-}
-.settings-row p {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  margin-top: 4px;
-}
-.settings-row.vertical {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 9px;
-}
-.port-input {
-  width: 105px;
-  flex-shrink: 0;
-}
-.switch-input {
-  appearance: none;
-  width: 30px;
-  height: 18px;
-  border-radius: 10px;
-  background: var(--input-border);
-  position: relative;
-  cursor: pointer;
-}
-.switch-input::after {
-  content: "";
-  position: absolute;
-  left: 2px;
-  top: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 3px #0002;
-  transition: transform 0.12s;
-}
-.switch-input:checked {
-  background: var(--primary);
-}
-.switch-input:checked::after {
-  transform: translateX(12px);
-}
-.scope-option {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 5px 0;
-  cursor: pointer;
-}
-.scope-option > div {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.scope-option strong {
-  font-size: 12px;
-  font-weight: 400;
-}
-.scope-option span {
-  color: var(--text-tertiary);
-  font-size: 11px;
-}
-.scope-warning {
-  font-size: 11px;
-  background: var(--tag-orange-bg);
-  color: var(--tag-orange-fg);
-  padding: 8px 10px;
-  border-radius: 5px;
-}
-.section-description {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-bottom: 12px;
-}
-.data-directory {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  margin-top: 16px;
-}
-.data-directory code {
-  font: 10px/1.6 var(--font-mono);
-  overflow-wrap: anywhere;
-}
 .config-footer {
   padding: 14px 28px;
   border-top: 1px solid var(--separator);
@@ -607,12 +373,15 @@ onMounted(load);
   font-size: 11px;
   color: var(--text-tertiary);
 }
+.footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
 @media (max-width: 450px) {
   .config-body {
     padding: 20px;
-  }
-  .service-overview {
-    padding: 12px;
   }
   .config-footer {
     padding: 12px 20px;

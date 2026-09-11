@@ -164,6 +164,15 @@ fn validate_permission(permission: &Permission) -> ApiResult<()> {
                 return Err(ApiError::unprocessable("类型权限中包含非法选项"));
             }
         }
+        "priority" => {
+            if values
+                .unwrap_or_default()
+                .iter()
+                .any(|value| !task::is_valid_priority(value))
+            {
+                return Err(ApiError::unprocessable("优先级权限中包含非法选项"));
+            }
+        }
         _ if values.is_some() => {
             return Err(ApiError::unprocessable(format!(
                 "权限字段 {} 不支持 allowed_values",

@@ -72,6 +72,7 @@ fn group_column(field: &str) -> ApiResult<&'static str> {
         "status" => Ok("t.status"),
         "type" => Ok("t.type"),
         "submitter" => Ok("t.submitter"),
+        "priority" => Ok("t.priority"),
         _ => Err(ApiError::bad_request("不支持的分组字段")),
     }
 }
@@ -79,6 +80,7 @@ fn group_order(field: &str, column: &str) -> String {
     let options: &[&str] = match field {
         "status" => &crate::domain::task::STATUSES,
         "type" => &crate::domain::task::TASK_TYPES,
+        "priority" => &crate::domain::task::PRIORITIES,
         _ => &[],
     };
     if options.is_empty() {

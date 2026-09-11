@@ -22,6 +22,7 @@ fn seed(conn: &mut rusqlite::Connection, count: usize) -> Vec<String> {
                     note: "",
                     submitter: "用户",
                     owner_user_id: None,
+                    priority: None,
                 },
             )
             .unwrap();
@@ -93,6 +94,32 @@ fn grouping_counts_all_filtered_records_and_anchor_obeys_filters() {
     assert_eq!(result.groups.len(), 1);
     assert_eq!(result.anchor_found, Some(false));
     assert!(result.items.iter().all(|t| t.task_type == "BUG"));
+}
+#[test]
+fn status_filter_supports_excluding_selected_values() {
+    let mut conn = db::open_memory().unwrap();
+    let ids = seed(&mut conn, 3);
+    tasks::patch(
+        &mut conn,
+        &ids[1],
+        &tasks::TaskPatch {
+            status: Some("进行中".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let include = server::parse_task_filter(Some("status=%E8%BF%9B%E8%A1%8C%E4%B8%AD")).unwrap();
+    assert_eq!(tasks::list(&conn, &include).unwrap().len(), 1);
+
+    let exclude = server::parse_task_filter(Some(
+        "status=%E8%BF%9B%E8%A1%8C%E4%B8%AD&status_mode=exclude",
+    ))
+    .unwrap();
+    let result = tasks::list(&conn, &exclude).unwrap();
+    assert_eq!(result.len(), 2);
+    assert!(result.iter().all(|task| task.status != "进行中"));
+    assert!(server::parse_task_filter(Some("status_mode=other")).is_err());
 }
 #[test]
 fn page_options_reject_invalid_limits_and_sql_fields() {

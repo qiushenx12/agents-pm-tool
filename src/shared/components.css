@@ -116,6 +116,19 @@ input[type="radio"] {
   border-radius: 3px;
   flex-shrink: 0;
 }
+/* 优先级小圆点：用 tag 前景色（比 bg 更实） */
+.dot-red {
+  background: var(--tag-red-fg);
+}
+.dot-orange {
+  background: var(--tag-orange-fg);
+}
+.dot-green {
+  background: var(--tag-green-fg);
+}
+.dot-gray {
+  background: var(--tag-gray-fg);
+}
 .field-value {
   display: inline-flex;
   align-items: center;

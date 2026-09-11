@@ -9,6 +9,7 @@ vi.mock("@/grid-app/api/client", () => ({
   api: {
     listUsers: vi.fn(),
     listProjects: vi.fn(),
+    listSubmitterNames: vi.fn().mockResolvedValue([]),
     getUserPermissions: vi.fn(),
     putUserPermissions: vi.fn(),
     patchUser: vi.fn(),

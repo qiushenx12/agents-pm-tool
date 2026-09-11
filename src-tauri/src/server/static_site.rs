@@ -11,6 +11,20 @@ use rust_embed::RustEmbed;
 #[folder = "../dist/"]
 struct DistAssets;
 
+/// 静态资源的缓存策略。
+///
+/// - `assets/` 下是 Vite 产物，文件名带内容哈希，改名即换内容，可以长期缓存；
+/// - 其余（`index.html` 与 SPA 回退）必须每次都重新取：它引用的是哈希文件名，
+///   一旦被缓存，重新安装后浏览器还会拿着旧壳子去要已被替换掉的老资源，
+///   表现就是「明明重新打包了，界面还是旧的」。
+fn cache_control_for(path: &str) -> &'static str {
+    if path.starts_with("assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    }
+}
+
 fn serve_asset(path: &str) -> Response {
     match DistAssets::get(path) {
         Some(content) => {
@@ -18,6 +32,7 @@ fn serve_asset(path: &str) -> Response {
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime.as_ref())
+                .header(header::CACHE_CONTROL, cache_control_for(path))
                 .body(Body::from(content.data.into_owned()))
                 .unwrap()
         }
@@ -42,4 +57,32 @@ pub async fn asset(Path(path): Path<String>) -> Response {
 /// 调试用：列出嵌入的全部文件
 pub fn debug_list_files() -> Vec<String> {
     DistAssets::iter().map(|c| c.to_string()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spa_shell_is_never_cached_but_hashed_assets_are() {
+        assert_eq!(cache_control_for("index.html"), "no-cache");
+        assert_eq!(cache_control_for("config.html"), "no-cache");
+        assert_eq!(
+            cache_control_for("assets/index-abc12345.js"),
+            "public, max-age=31536000, immutable"
+        );
+        // 兜底：整段缓存策略里必须有一条禁止缓存 HTML 壳子的分支。
+        assert!(!cache_control_for("index.html").contains("max-age"));
+    }
+
+    #[test]
+    fn embedded_shell_references_hashed_assets() {
+        let html = DistAssets::get("index.html").expect("dist/index.html 应已嵌入");
+        let text = String::from_utf8_lossy(&html.data).to_string();
+        assert!(text.contains("/assets/"), "index.html 应引用 /assets/ 下的哈希资源");
+        assert!(
+            cache_control_for("assets/anything").contains("immutable"),
+            "哈希资源应可长期缓存"
+        );
+    }
 }

@@ -20,15 +20,16 @@ const EXIT_VALIDATION: u8 = 2;
     about = "Agents PM Tool 命令行（供 Agent 使用）",
     after_help = "服务发现：远程环境变量 > 用户配置 > <exe 同目录>/data/runtime.json。\n\
         退出码：0 成功；2 参数/校验失败（stderr 给出中文原因与合法取值）；3 服务配置或连接失败。\n\
-        权限边界：Agent 可只读列出和下载可见任务附件；不可修改项目/类型、不可删任务、不可上传或删除附件、\n\
-        不可切验收类状态（验收通过/未通过），\n\
+        权限边界：Agent 可只读列出和下载可见任务附件；可调整任务优先级（高/中/低）；不可修改项目/类型、\n\
+        不可删任务、不可上传或删除附件、不可切验收类状态（验收通过/未通过），\n\
         只能修改自己（submitter=Agent）创建的任务描述；项目选项仅可只读（projects 子命令）。\n\n\
         示例：\n  \
-        pm-cli create --project default-project --type BUG --description \"登录页白屏\"\n  \
-        pm-cli list --status 进行中 --json\n  \
+        pm-cli create --project default-project --type BUG --description \"登录页白屏\" --priority 高\n  \
+        pm-cli list --status 进行中 --priority 高 --json\n  \
         pm-cli attachments 202609021050340001\n  \
         pm-cli download <附件ID> --output 需求说明.pdf\n  \
         pm-cli status 202609021050340001 --to 待验证\n  \
+        pm-cli priority 202609021050340001 --to 高\n  \
         pm-cli config set server-url http://192.168.1.10:17890\n  \
         pm-cli config set token <网页签发的 token>\n  \
         pm-cli doctor"
@@ -50,6 +51,8 @@ enum Commands {
         status: Option<String>,
         #[arg(long)]
         submitter: Option<String>,
+        #[arg(long)]
+        priority: Option<String>,
         #[arg(long)]
         keyword: Option<String>,
         #[arg(long)]
@@ -77,7 +80,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// 创建任务（项目/类型/描述三必填；状态固定「未开始」）
+    /// 创建任务（项目/类型/描述三必填；状态固定「未开始」；优先级默认「中」）
     Create {
         #[arg(long)]
         project: Option<String>,
@@ -86,10 +89,20 @@ enum Commands {
         #[arg(long)]
         description: Option<String>,
         #[arg(long)]
+        priority: Option<String>,
+        #[arg(long)]
         json: bool,
     },
     /// 修改任务状态（仅可切到：进行中/待验证/已完成）
     Status {
+        id: String,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 修改任务优先级（高/中/低）
+    Priority {
         id: String,
         #[arg(long)]
         to: Option<String>,
@@ -444,11 +457,12 @@ fn fail_from_server(status: reqwest::StatusCode, v: &serde_json::Value) -> ExitC
 
 fn print_task(t: &serde_json::Value) {
     println!(
-        "{}\t[{}]\t{}\t{}\t{}\t{}",
+        "{}\t[{}]\t{}\t{}\t{}\t{}\t{}",
         t["id"].as_str().unwrap_or(""),
         t["project"].as_str().unwrap_or(""),
         t["type"].as_str().unwrap_or(""),
         t["status"].as_str().unwrap_or(""),
+        t["priority"].as_str().unwrap_or("中"),
         t["submitter_name"]
             .as_str()
             .or_else(|| t["submitter"].as_str())
@@ -462,6 +476,7 @@ fn print_task_detail(t: &serde_json::Value) {
     println!("项目：     {}", t["project"].as_str().unwrap_or(""));
     println!("类型：     {}", t["type"].as_str().unwrap_or(""));
     println!("状态：     {}", t["status"].as_str().unwrap_or(""));
+    println!("优先级：   {}", t["priority"].as_str().unwrap_or("中"));
     println!(
         "提交人：   {}",
         t["submitter_name"]
@@ -577,6 +592,7 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             task_type,
             status,
             submitter,
+            priority,
             keyword,
             json,
         } => {
@@ -593,6 +609,7 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             push("type", &task_type);
             push("status", &status);
             push("submitter", &submitter);
+            push("priority", &priority);
             push("keyword", &keyword);
             let path = if qs.is_empty() {
                 "/tasks".into()
@@ -701,6 +718,7 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
             project,
             task_type,
             description,
+            priority,
             json,
         } => {
             for (name, val) in [
@@ -713,11 +731,14 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
                     return Err(ExitCode::from(EXIT_VALIDATION));
                 }
             }
-            let body = json!({
+            let mut body = json!({
                 "project": project.unwrap(),
                 "type": task_type.unwrap(),
                 "description": description.unwrap(),
             });
+            if let Some(priority) = priority {
+                body["priority"] = json!(priority);
+            }
             let (status, v) = client
                 .call(reqwest::Method::POST, "/tasks", Some(body))
                 .await?;
@@ -755,6 +776,33 @@ async fn run(cli: Cli) -> Result<(), ExitCode> {
                     "任务 {} 状态已更新为「{}」",
                     v["id"].as_str().unwrap_or(&id),
                     v["status"].as_str().unwrap_or("")
+                );
+            }
+            Ok(())
+        }
+
+        Commands::Priority { id, to, json } => {
+            let Some(to) = to else {
+                eprintln!("错误：--to 为必填项（可设为：高/中/低）");
+                return Err(ExitCode::from(EXIT_VALIDATION));
+            };
+            let (status, v) = client
+                .call(
+                    reqwest::Method::PATCH,
+                    &format!("/tasks/{id}/priority"),
+                    Some(json!({ "priority": to })),
+                )
+                .await?;
+            if !status.is_success() {
+                return Err(fail_from_server(status, &v));
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v).unwrap());
+            } else {
+                println!(
+                    "任务 {} 优先级已更新为「{}」",
+                    v["id"].as_str().unwrap_or(&id),
+                    v["priority"].as_str().unwrap_or("")
                 );
             }
             Ok(())

@@ -19,6 +19,7 @@ pub struct BatchPatch {
     #[serde(rename = "type")]
     pub task_type: Option<String>,
     pub status: Option<String>,
+    pub priority: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -53,7 +54,11 @@ pub async fn batch_tasks(
 ) -> ApiResult<Json<BatchResponse>> {
     let (ids, patch) = match body {
         BatchRequest::Update { ids, patch } => {
-            if patch.project.is_none() && patch.task_type.is_none() && patch.status.is_none() {
+            if patch.project.is_none()
+                && patch.task_type.is_none()
+                && patch.status.is_none()
+                && patch.priority.is_none()
+            {
                 return Err(ApiError::bad_request("请选择要批量修改的字段"));
             }
             (ids, Some(patch))
@@ -87,6 +92,9 @@ pub async fn batch_tasks(
                     if let Some(value) = patch.status.as_deref() {
                         fields.push(("status", Some(value)));
                     }
+                    if let Some(value) = patch.priority.as_deref() {
+                        fields.push(("priority", Some(value)));
+                    }
                     permissions::require_fields(&conn, &user, &current.project, &fields)?;
                     if let Some(project) = patch.project.as_deref() {
                         permissions::require_project(&conn, &user, project)?;
@@ -98,6 +106,7 @@ pub async fn batch_tasks(
                             project: patch.project.clone(),
                             task_type: patch.task_type.clone(),
                             status: patch.status.clone(),
+                            priority: patch.priority.clone(),
                             description: None,
                             note: None,
                         },

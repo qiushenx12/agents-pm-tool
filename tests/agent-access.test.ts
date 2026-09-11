@@ -171,3 +171,50 @@ it("renders and installs the WorkBuddy skill target", async () => {
     ).toContain("已就绪"),
   );
 });
+
+it("renders each Agent frontend with its official logo mark", async () => {
+  const user: User = {
+    id: "host",
+    username: "主机",
+    role: "super_admin",
+    created_at: "2026-09-10 10:00:00",
+    disabled: false,
+    is_host: true,
+  };
+  vi.mocked(api.getAgentAccess).mockResolvedValue({
+    server_url: "http://127.0.0.1:17890",
+    token: "host-token",
+    access_instructions: "本机 pm-cli 会自动读取连接信息。",
+  });
+  vi.mocked(api.listLocalSkills).mockResolvedValue([]);
+
+  root = document.createElement("div");
+  document.body.append(root);
+  app = createApp(AgentAccessDialog, { user });
+  app.mount(root);
+
+  await vi.waitFor(() =>
+    expect(document.querySelectorAll(".skill-frontend-card").length).toBe(6),
+  );
+  for (const frontend of [
+    "codex",
+    "claude_code",
+    "workbuddy",
+    "opencode",
+    "cursor",
+    "pi",
+  ]) {
+    const mark = document.querySelector(`[data-frontend="${frontend}"] .skill-frontend-mark`)!;
+    // 用真实矢量标识替换占位文字，卡片上不再出现 "CX"/"CL"/"WB" 之类的字母占位。
+    expect(mark.textContent?.trim()).toBe("");
+    const svg = mark.querySelector("svg")!;
+    expect(svg.getAttribute("viewBox")).toBeTruthy();
+    const paths = svg.querySelectorAll("path");
+    expect(paths.length).toBeGreaterThan(0);
+    // opencode 的方形标识是三者里最短的路径（31 个字符），仍远长于任何占位符。
+    expect(
+      [...paths].reduce((total, path) => total + (path.getAttribute("d")?.length ?? 0), 0),
+    ).toBeGreaterThan(20);
+    expect(svg.getAttribute("fill")).toBe("currentColor");
+  }
+});

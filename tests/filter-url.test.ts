@@ -36,6 +36,37 @@ describe("筛选条件 URL query 编解码（刷新不丢）", () => {
     store.toggleFilter("status", "已完成");
     expect(store.filters.status).toEqual([]);
   });
+
+  it("不包含模式进入查询和 URL，并可在刷新后恢复", () => {
+    const store = useTaskStore();
+    store.filters.status_mode = "exclude";
+    store.toggleFilter("status", "取消");
+
+    expect(store.query.status).toEqual(["取消"]);
+    expect(store.query.status_mode).toBe("exclude");
+    expect(new URLSearchParams(window.location.search).get("status_mode")).toBe(
+      "exclude",
+    );
+
+    setActivePinia(createPinia());
+    const restored = useTaskStore();
+    expect(restored.filters.status).toEqual(["取消"]);
+    expect(restored.filters.status_mode).toBe("exclude");
+  });
+
+  it("旧视图和非法模式回退包含，清空条件也恢复包含", () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/?status=进行中&status_mode=invalid",
+    );
+    const store = useTaskStore();
+    expect(store.filters.status_mode).toBe("include");
+    store.filters.status_mode = "exclude";
+    store.clearFilters();
+    expect(store.filters.status_mode).toBe("include");
+    expect(store.query.status_mode).toBeUndefined();
+  });
 });
 
 describe("筛选/排序/分组状态持久化（退出网页不丢）", () => {
@@ -100,5 +131,43 @@ describe("筛选/排序/分组状态持久化（退出网页不丢）", () => {
     expect(store.filters.sort_by).toBe("created_at");
     expect(store.filters.sort_order).toBe("desc");
     expect(store.filters.group_by).toBe("");
+  });
+});
+
+describe("优先级筛选/排序/分组", () => {
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    localStorage.clear();
+    setActivePinia(createPinia());
+  });
+
+  it("priority 是合法筛选键并往返 URL", () => {
+    const store = useTaskStore();
+    store.toggleFilter("priority", "高");
+    store.toggleFilter("priority", "低");
+    expect(store.filters.priority).toEqual(["高", "低"]);
+    expect(store.activeFilterCount).toBe(2);
+    store.toggleFilter("priority", "高");
+    expect(store.filters.priority).toEqual(["低"]);
+  });
+
+  it("priority 可作为排序与分组字段", () => {
+    const store = useTaskStore();
+    store.filters.sort_by = "priority";
+    store.filters.group_by = "priority";
+    expect(store.query.sort_by).toBe("priority");
+    expect(store.query.group_by).toBe("priority");
+  });
+
+  it("URL 中非法的 priority 被丢弃", () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/?priority=紧急&priority=高&sort_by=priority&group_by=priority",
+    );
+    const store = useTaskStore();
+    expect(store.filters.priority).toEqual(["高"]);
+    expect(store.filters.sort_by).toBe("priority");
+    expect(store.filters.group_by).toBe("priority");
   });
 });

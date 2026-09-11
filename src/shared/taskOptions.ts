@@ -1,4 +1,4 @@
-import { TASK_STATUSES, TASK_TYPES, SUBMITTERS } from "./types";
+import { PRIORITIES, TASK_STATUSES, TASK_TYPES, SUBMITTERS } from "./types";
 export const statusTones: Record<string, string> = {
   未开始: "red",
   进行中: "orange",
@@ -19,4 +19,14 @@ export const typeOptions = TASK_TYPES.map((value) => ({
 export const submitterOptions = SUBMITTERS.map((value) => ({
   value,
   tone: value === "Agent" ? "purple" : "gray",
+}));
+// 优先级颜色对齐状态色：高=红（未开始）、中=黄（进行中）、低=绿（已完成）
+export const priorityTones: Record<string, string> = {
+  高: "red",
+  中: "orange",
+  低: "green",
+};
+export const priorityOptions = PRIORITIES.map((value) => ({
+  value,
+  tone: priorityTones[value],
 }));

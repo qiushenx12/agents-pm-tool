@@ -5,7 +5,7 @@ import { useMetaStore } from "../stores/metaStore";
 import UiIcon from "@/shared/UiIcon.vue";
 import UiPopover from "@/shared/UiPopover.vue";
 import UiDialog from "@/shared/UiDialog.vue";
-import { statusOptions, typeOptions } from "@/shared/taskOptions";
+import { statusOptions, typeOptions, priorityOptions } from "@/shared/taskOptions";
 import { askConfirm, errorText, notify } from "@/shared/feedback";
 import type { Task, TaskBatchRequest, TaskBatchResult } from "@/shared/types";
 const tasks = useTaskStore(),
@@ -26,6 +26,7 @@ const fields = computed(() => [
     options: meta.projects.map((p) => ({ value: p.name, color: p.color })),
   },
   { key: "type", label: "修改类型", options: typeOptions },
+  { key: "priority", label: "修改优先级", options: priorityOptions },
 ]);
 async function run(request: TaskBatchRequest, label: string) {
   if (tasks.saving) return;
@@ -48,7 +49,7 @@ async function run(request: TaskBatchRequest, label: string) {
 }
 function update(field: string, value: string) {
   const patch = { [field]: value } as Partial<
-    Pick<Task, "project" | "status" | "type">
+    Pick<Task, "project" | "status" | "type" | "priority">
   >;
   void run(
     { action: "update", ids: [...tasks.selectedIds], patch },

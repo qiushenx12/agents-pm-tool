@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "app-window",
+  "description": "允许应用内工作台从本机 HTTP 页面切换回桌面设置窗口",
+  "windows": ["web"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
+  "permissions": ["allow-open-settings-window"]
+}

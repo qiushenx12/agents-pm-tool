@@ -3,11 +3,12 @@ use serde::{Deserialize, Serialize};
 pub const HOST_USER_ID: &str = "host";
 pub const DEFAULT_HOST_USERNAME: &str = "主机";
 pub const ROLES: [&str; 3] = ["super_admin", "admin", "user"];
-pub const PERMISSION_FIELDS: [&str; 10] = [
+pub const PERMISSION_FIELDS: [&str; 11] = [
     "project_access",
     "task_create",
     "project",
     "type",
+    "priority",
     "description",
     "note",
     "status",

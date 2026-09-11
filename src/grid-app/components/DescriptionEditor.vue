@@ -70,7 +70,7 @@ function cancel() {
 async function blur(e: FocusEvent) {
   if (!props.inline || root.value?.contains(e.relatedTarget as Node)) return;
   await nextTick();
-  if (!root.value?.contains(document.activeElement)) void save(false);
+  if (!root.value?.contains(document.activeElement)) void save();
 }
 onMounted(() => {
   input.value?.focus();
@@ -104,7 +104,7 @@ defineExpose({ dirty, saving, save, cancel });
     <div v-if="error" class="form-error" role="alert">
       {{ error }}，输入已保留。
     </div>
-    <div class="editor-footer">
+    <div v-if="!inline" class="editor-footer">
       <span>Ctrl + Enter 保存 · Esc 取消</span>
       <div class="inline-actions">
         <button class="btn btn-sm btn-ghost" :disabled="saving" @click="cancel">

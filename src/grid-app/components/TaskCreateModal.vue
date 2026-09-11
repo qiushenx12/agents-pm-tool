@@ -8,9 +8,14 @@ import UiSelect from "@/shared/UiSelect.vue";
 import UiIcon from "@/shared/UiIcon.vue";
 import AttachmentUploader from "./AttachmentUploader.vue";
 import { useUploadQueue } from "./useUploadQueue";
-import { typeOptions } from "@/shared/taskOptions";
+import { typeOptions, priorityOptions } from "@/shared/taskOptions";
 import { askConfirm, errorText, notify } from "@/shared/feedback";
-import type { Task, TaskType } from "@/shared/types";
+import {
+  DEFAULT_PRIORITY,
+  type Priority,
+  type Task,
+  type TaskType,
+} from "@/shared/types";
 const emit = defineEmits<{
   close: [];
   created: [task: Task];
@@ -25,6 +30,7 @@ const initialProject =
     : (meta.projects[0]?.name ?? "");
 const project = ref(initialProject),
   type = ref<TaskType>("新增需求"),
+  priority = ref<Priority>(DEFAULT_PRIORITY),
   description = ref(""),
   note = ref("");
 const createdTask = ref<Task | null>(null),
@@ -93,6 +99,7 @@ async function submit() {
         type: type.value,
         description: description.value,
         note: note.value,
+        priority: priority.value,
       });
       tasks.acceptTask(createdTask.value);
     }
@@ -135,6 +142,16 @@ async function submit() {
           label="任务类型"
           :disabled="busy || !!createdTask"
           @update:model-value="type = $event as TaskType"
+        />
+      </div>
+      <div class="form-field">
+        <label>优先级</label
+        ><UiSelect
+          :model-value="priority"
+          :options="priorityOptions"
+          label="优先级"
+          :disabled="busy || !!createdTask"
+          @update:model-value="priority = $event as Priority"
         />
       </div>
     </div>

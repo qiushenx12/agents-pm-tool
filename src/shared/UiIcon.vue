@@ -43,8 +43,12 @@ const paths: Record<string, string> = {
   down: "m6 10 6 6 6-6",
   minus: "M5 12h14",
   window: "M4 4h16v16H4z",
+  "app-window": "M3 4h18v16H3z M3 9h18 M6.5 6.5h.01 M9.5 6.5h.01",
+  globe:
+    "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0 M3 12h18 M12 3c2.5 2.7 3.9 5.7 3.9 9c0 3.3-1.4 6.3-3.9 9c-2.5-2.7-3.9-5.7-3.9-9c0-3.3 1.4-6.3 3.9-9z",
   file: "M4 2h10l6 6v14H4z M14 2v6h6",
   video: "M4 5h11v14H4z M15 10l5-3v10l-5-3z",
+  flag: "M5 21V4 M5 4c4-2 8 2 13 0v9c-5 2-9-2-13 0",
 };
 </script>
 <template>

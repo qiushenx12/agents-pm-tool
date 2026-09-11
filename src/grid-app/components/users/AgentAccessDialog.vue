@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { api } from "../../api/client";
 import { copyText, errorText } from "@/shared/feedback";
+import FrontendLogo from "@/shared/FrontendLogo.vue";
 import UiDialog from "@/shared/UiDialog.vue";
 import UiIcon from "@/shared/UiIcon.vue";
 import type { AgentAccess, LocalSkillTarget, User } from "@/shared/types";
@@ -31,17 +32,26 @@ const frontendCards = computed(() =>
     {
       id: "codex" as const,
       title: "Codex",
-      mark: "CX",
     },
     {
       id: "claude_code" as const,
       title: "Claude Code",
-      mark: "CL",
     },
     {
       id: "workbuddy" as const,
       title: "WorkBuddy",
-      mark: "WB",
+    },
+    {
+      id: "opencode" as const,
+      title: "OpenCode",
+    },
+    {
+      id: "cursor" as const,
+      title: "Cursor",
+    },
+    {
+      id: "pi" as const,
+      title: "Pi",
     },
   ].map((frontend) => {
     const detected = targets.value.filter(
@@ -237,7 +247,7 @@ onMounted(load);
             :data-frontend="frontend.id"
           >
             <header>
-              <span class="skill-frontend-mark">{{ frontend.mark }}</span>
+              <span class="skill-frontend-mark"><FrontendLogo :id="frontend.id" :size="20" /></span>
               <strong>{{ frontend.title }}</strong>
               <span
                 class="skill-state"

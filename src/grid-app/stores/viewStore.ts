@@ -11,6 +11,13 @@ export const DEFAULT_COLUMNS = [
   { key: "project", label: "项目", icon: "folder", width: 156, visible: true },
   { key: "type", label: "任务类型", icon: "tag", width: 120, visible: true },
   {
+    key: "priority",
+    label: "优先级",
+    icon: "flag",
+    width: 96,
+    visible: true,
+  },
+  {
     key: "status",
     label: "当前状态",
     icon: "circle",

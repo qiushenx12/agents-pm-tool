@@ -6,6 +6,11 @@ import GridApp from "@/grid-app/GridApp.vue";
 import { api } from "@/grid-app/api/client";
 import { useTaskStore } from "@/grid-app/stores/taskStore";
 
+vi.mock("@tauri-apps/api/core", () => ({
+  isTauri: () => false,
+  invoke: vi.fn(),
+}));
+
 const { createdTask, quickTask, reveal } = vi.hoisted(() => ({
   createdTask: {
     id: "new-task",
@@ -15,6 +20,7 @@ const { createdTask, quickTask, reveal } = vi.hoisted(() => ({
     description: "创建后保持在列表",
     note: "",
     status: "未开始" as const,
+    priority: "中" as const,
     submitter: "用户" as const,
     created_at: "",
     updated_at: "",
@@ -29,6 +35,7 @@ const { createdTask, quickTask, reveal } = vi.hoisted(() => ({
     description: "",
     note: "",
     status: "未开始" as const,
+    priority: "中" as const,
     submitter: "用户" as const,
     created_at: "",
     updated_at: "",
@@ -53,6 +60,22 @@ vi.mock("@/grid-app/api/client", () => ({
       token: "token",
       access_instructions: "本机访问",
     }),
+    getHostSettings: vi.fn().mockResolvedValue({
+      settings: {
+        port: 17890,
+        autostart: true,
+        close_behavior: "keep_service",
+        listen_scope: "local",
+        agent_server_url: "",
+      },
+      status: {
+        running: true,
+        port: 17890,
+        url: "http://127.0.0.1:17890",
+        lan_url: "",
+        data_dir: "C:/data",
+      },
+    }),
     listProjects: vi.fn().mockResolvedValue([
       {
         name: "测试项目",
@@ -63,6 +86,7 @@ vi.mock("@/grid-app/api/client", () => ({
         created_at: "",
       },
     ]),
+    listSubmitterNames: vi.fn().mockResolvedValue([]),
     createTask: vi.fn(),
     pageTasks: vi.fn().mockResolvedValue({
       items: [],
@@ -282,4 +306,68 @@ it("opens settings from a project's three-dot button without a footer management
   expect(
     host.querySelector('[data-testid="project-dialog"]')?.textContent,
   ).toBe("测试项目");
+});
+
+it("shows the host-only workspace settings entry and opens the shared settings content", async () => {
+  localStorage.setItem("pm-theme", "light");
+  window.history.replaceState(null, "", "/");
+  pinia = createPinia();
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp(GridApp);
+  app.use(pinia);
+  app.mount(host);
+
+  const entry = await vi.waitFor(() => {
+    const button = host.querySelector<HTMLButtonElement>(
+      '[title="工作区设置"]',
+    );
+    expect(button).not.toBeNull();
+    return button!;
+  });
+  entry.click();
+
+  await vi.waitFor(() => {
+    expect(api.getHostSettings).toHaveBeenCalled();
+    expect(document.body.textContent).toContain("常用设置");
+    expect(document.body.textContent).toContain("连接设置");
+    expect(document.body.textContent).toContain("Agent 接入");
+    expect(document.body.textContent).toContain("C:/data");
+    expect(
+      document.body.querySelector('[aria-label="复制本机地址"]'),
+    ).toBeNull();
+  });
+});
+
+it("keeps only the sidebar toggle beside the workspace breadcrumb", async () => {
+  localStorage.setItem("pm-theme", "light");
+  localStorage.setItem(
+    "pm-table-view-v1",
+    JSON.stringify({ collapsed: false }),
+  );
+  window.history.replaceState(null, "", "/");
+  pinia = createPinia();
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp(GridApp);
+  app.use(pinia);
+  app.mount(host);
+
+  const collapseButton = await vi.waitFor(() => {
+    const buttons = host.querySelectorAll<HTMLButtonElement>(
+      '[aria-label="收起侧栏"]',
+    );
+    expect(buttons).toHaveLength(1);
+    return buttons[0];
+  });
+  expect(collapseButton.closest(".breadcrumb")).not.toBeNull();
+  expect(host.querySelector(".brand button")).toBeNull();
+
+  collapseButton.click();
+  await nextTick();
+  const expandButtons = host.querySelectorAll<HTMLButtonElement>(
+    '[aria-label="展开侧栏"]',
+  );
+  expect(expandButtons).toHaveLength(1);
+  expect(expandButtons[0].closest(".breadcrumb")).not.toBeNull();
 });

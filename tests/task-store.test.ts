@@ -12,6 +12,8 @@ vi.mock("@/grid-app/api/client", () => ({
     batchTasks: vi.fn(),
     reorderTask: vi.fn(),
     rebaseOrder: vi.fn(),
+    getViewState: vi.fn(),
+    putViewState: vi.fn(),
   },
 }));
 const task = (id: string, description = id): Task => ({
@@ -22,6 +24,7 @@ const task = (id: string, description = id): Task => ({
   project: "项目",
   type: "优化",
   status: "未开始",
+  priority: "中",
   submitter: "用户",
   created_at: "2026-09-07 10:00:00",
   finished_at: null,
@@ -54,6 +57,7 @@ beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
   vi.mocked(api.pageTasks).mockResolvedValue(result([]));
+  vi.mocked(api.putViewState).mockResolvedValue(undefined);
 });
 afterEach(() => {
   disposePinia(pinia);
@@ -221,5 +225,78 @@ describe("task request coordination", () => {
     vi.mocked(api.rebaseOrder).mockRejectedValue(new Error("网络异常"));
     await expect(store.rebaseManualOrder()).rejects.toThrow("网络异常");
     expect(store.batchBusy).toBe(false);
+  });
+});
+
+describe("view state shared with the server", () => {
+  it("adopts the saved view when signing in", async () => {
+    vi.mocked(api.getViewState).mockResolvedValue({
+      filters: {
+        project: ["demo"],
+        status: ["进行中"],
+        sort_by: "updated_at",
+        sort_order: "asc",
+        group_by: "status",
+      },
+    });
+    const store = useTaskStore();
+    await store.syncViewState();
+
+    expect(store.filters.project).toEqual(["demo"]);
+    expect(store.filters.status).toEqual(["进行中"]);
+    expect(store.filters.sort_by).toBe("updated_at");
+    expect(store.filters.sort_order).toBe("asc");
+    expect(store.filters.group_by).toBe("status");
+    expect(api.putViewState).not.toHaveBeenCalled();
+  });
+
+  it("seeds the server with the local view when nothing is saved yet", async () => {
+    vi.mocked(api.getViewState).mockResolvedValue({ filters: null });
+    const store = useTaskStore();
+    store.filters.status = ["待验证"];
+    await store.syncViewState();
+
+    expect(api.putViewState).toHaveBeenCalledWith(
+      expect.objectContaining({ status: ["待验证"] }),
+    );
+  });
+
+  it("pushes later changes, but not before the first sync", async () => {
+    const store = useTaskStore();
+    store.filters.status = ["进行中"];
+    await vi.advanceTimersByTimeAsync(500);
+    expect(api.putViewState).not.toHaveBeenCalled();
+
+    vi.mocked(api.getViewState).mockResolvedValue({ filters: null });
+    await store.syncViewState();
+    vi.mocked(api.putViewState).mockClear();
+    store.filters.status = ["已完成"];
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(api.putViewState).toHaveBeenCalledWith(
+      expect.objectContaining({ status: ["已完成"] }),
+    );
+  });
+
+  it("leaves a shared link alone", async () => {
+    window.history.replaceState(null, "", "/?status=待验证");
+    const store = useTaskStore();
+    await store.syncViewState();
+
+    expect(api.getViewState).not.toHaveBeenCalled();
+    expect(store.filters.status).toEqual(["待验证"]);
+  });
+
+  it("stops pushing after signing out", async () => {
+    vi.mocked(api.getViewState).mockResolvedValue({ filters: null });
+    const store = useTaskStore();
+    await store.syncViewState();
+    vi.mocked(api.putViewState).mockClear();
+
+    store.resetViewStateSync();
+    store.filters.status = ["已完成"];
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(api.putViewState).not.toHaveBeenCalled();
   });
 });

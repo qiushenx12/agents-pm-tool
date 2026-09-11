@@ -38,6 +38,7 @@ const groupLabels: Record<GroupField, string> = {
   status: "当前状态",
   type: "任务类型",
   submitter: "提交人",
+  priority: "优先级",
 };
 const pageGroups = computed(() => {
   const field = tasks.filters.group_by;
@@ -288,6 +289,23 @@ function dropAttachments(event: DragEvent, task: Task) {
   const files = Array.from(event.dataTransfer?.files ?? []);
   if (files.length) void uploadAttachments(task, files);
 }
+function clipboardFiles(event: ClipboardEvent) {
+  const transfer = event.clipboardData;
+  if (!transfer) return [];
+  const files = Array.from(transfer.files);
+  if (files.length) return files;
+  return Array.from(transfer.items)
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null);
+}
+function pasteAttachments(event: ClipboardEvent, task: Task) {
+  const files = clipboardFiles(event);
+  if (!files.length) return;
+  event.preventDefault();
+  event.stopPropagation();
+  void uploadAttachments(task, files);
+}
 async function uploadAttachments(task: Task, files: File[]) {
   if (attachmentUploads.value[task.id]) {
     notify("该任务的附件正在上传，请稍后再试", "info");
@@ -406,7 +424,7 @@ function closeEditor() {
 }
 function activate(task: Task, key: string) {
   if (key === "description" || key === "note") startEdit(task, key);
-  else if (["project", "type", "status"].includes(key))
+  else if (["project", "type", "status", "priority"].includes(key))
     cell(task.id, key)
       ?.querySelector<HTMLButtonElement>(".select-trigger")
       ?.click();
@@ -544,7 +562,7 @@ async function reveal(id: string) {
   await select(task, "description");
   cell(id, "description")?.scrollIntoView({ block: "nearest" });
 }
-const sorts = ["created_at", "finished_at"] as const;
+const sorts = ["created_at", "finished_at", "priority"] as const;
 defineExpose({ reveal });
 </script>
 <template>
@@ -854,7 +872,7 @@ defineExpose({ reveal });
                 :data-column="column.key"
                 :aria-label="
                   column.key === 'attachments'
-                    ? `附件 ${task.attachment_count ?? 0} 个，可拖入文件上传`
+                    ? `附件 ${task.attachment_count ?? 0} 个，可拖入或粘贴文件上传`
                     : column.label
                 "
                 :aria-selected="selected(task, column.key)"
@@ -876,8 +894,14 @@ defineExpose({ reveal });
                     column.key === 'attachments' &&
                     !!attachmentUploads[task.id],
                 }"
-                @click="select(task, column.key)"
-                @dblclick="activate(task, column.key)"
+                @click="
+                  column.key === 'description'
+                    ? startEdit(task, 'description')
+                    : select(task, column.key)
+                "
+                @dblclick="
+                  column.key !== 'description' && activate(task, column.key)
+                "
                 @keydown="keyboard($event, rowIndex(task.id), column.key)"
                 @dragover="
                   column.key === 'attachments' &&
@@ -889,6 +913,9 @@ defineExpose({ reveal });
                 "
                 @drop="
                   column.key === 'attachments' && dropAttachments($event, task)
+                "
+                @paste="
+                  column.key === 'attachments' && pasteAttachments($event, task)
                 "
               >
                 <div
@@ -915,7 +942,8 @@ defineExpose({ reveal });
                   v-else-if="
                     column.key === 'project' ||
                     column.key === 'type' ||
-                    column.key === 'status'
+                    column.key === 'status' ||
+                    column.key === 'priority'
                   "
                   :task="task"
                   :field="column.key"

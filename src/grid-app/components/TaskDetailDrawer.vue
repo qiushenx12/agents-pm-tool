@@ -252,6 +252,10 @@ async function removeTask() {
         ><TaskField :task="current" field="type" :editable="!missing" form />
       </div>
       <div class="property-row">
+        <span><UiIcon name="flag" />优先级</span
+        ><TaskField :task="current" field="priority" :editable="!missing" form />
+      </div>
+      <div class="property-row">
         <span><UiIcon name="circle" />当前状态</span
         ><TaskField :task="current" field="status" :editable="!missing" form />
       </div>

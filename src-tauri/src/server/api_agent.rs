@@ -118,6 +118,8 @@ pub struct AgentCreateBody {
     #[serde(rename = "type")]
     pub task_type: Option<String>,
     pub description: Option<String>,
+    /// 可选；缺省为「中」
+    pub priority: Option<String>,
 }
 
 /// Agent 创建：项目/类型/描述三必填，submitter 强制 Agent，status 固定未开始
@@ -138,18 +140,29 @@ pub async fn create_task(
         .description
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| ApiError::unprocessable("Agent 创建任务必须填写描述（--description）"))?;
+    let priority = body
+        .priority
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string());
+    if let Some(priority) = &priority {
+        if !domain::is_valid_priority(priority) {
+            return Err(ApiError::unprocessable(format!(
+                "优先级不合法：{priority}，合法取值：{}",
+                domain::PRIORITIES.join(" / ")
+            )));
+        }
+    }
 
     let mut conn = core.db.lock().unwrap();
-    permissions::require_fields(
-        &conn,
-        &user,
-        project.trim(),
-        &[
-            ("task_create", None),
-            ("type", Some(task_type.trim())),
-            ("description", None),
-        ],
-    )?;
+    let mut fields = vec![
+        ("task_create", None),
+        ("type", Some(task_type.trim())),
+        ("description", None),
+    ];
+    if let Some(priority) = priority.as_deref() {
+        fields.push(("priority", Some(priority)));
+    }
+    permissions::require_fields(&conn, &user, project.trim(), &fields)?;
     let task = tasks::create(
         &mut conn,
         &tasks::NewTask {
@@ -159,6 +172,7 @@ pub async fn create_task(
             note: "",
             submitter: "Agent",
             owner_user_id: Some(&user.id),
+            priority: priority.as_deref(),
         },
     )?;
     drop(conn);
@@ -265,6 +279,45 @@ pub async fn list_projects(
     Ok(Json(result))
 }
 
+#[derive(Deserialize)]
+pub struct AgentPriorityBody {
+    pub priority: Option<String>,
+}
+
+/// Agent 可调整任务优先级（高/中/低），与状态一样受字段授权约束
+pub async fn patch_priority(
+    State(core): State<CoreState>,
+    Extension(user): Extension<User>,
+    Path(id): Path<String>,
+    Json(body): Json<AgentPriorityBody>,
+) -> ApiResult<impl IntoResponse> {
+    let priority = body
+        .priority
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| ApiError::unprocessable("缺少 priority"))?;
+    if !domain::is_valid_priority(&priority) {
+        return Err(ApiError::unprocessable(format!(
+            "优先级不合法：{priority}，合法取值：{}",
+            domain::PRIORITIES.join(" / ")
+        )));
+    }
+
+    let mut conn = core.db.lock().unwrap();
+    let current = tasks::get(&conn, &id)?;
+    permissions::require_field(&conn, &user, &current.project, "priority", Some(&priority))?;
+    let task = tasks::patch(
+        &mut conn,
+        &id,
+        &tasks::TaskPatch {
+            priority: Some(priority),
+            ..Default::default()
+        },
+    )?;
+    drop(conn);
+    core.events.notify();
+    Ok(Json(task))
+}
+
 /// 接口自述。**无需 token**：没有 pm-cli、没有 skill 的 Agent 也能访问它，
 /// 从中得知「要让用户做什么」。真正读写任务仍需 token。
 pub async fn help(State(core): State<CoreState>) -> Json<serde_json::Value> {
@@ -298,6 +351,7 @@ pub async fn help(State(core): State<CoreState>) -> Json<serde_json::Value> {
             {"method":"GET", "path":"/api/agent/attachments/{id}", "description":"下载附件（只读）"},
             {"method":"POST", "path":"/api/agent/tasks", "description":"创建 Agent 任务"},
             {"method":"PATCH", "path":"/api/agent/tasks/{id}/status", "description":"推进状态"},
+            {"method":"PATCH", "path":"/api/agent/tasks/{id}/priority", "description":"调整任务优先级（高/中/低）"},
             {"method":"PATCH", "path":"/api/agent/tasks/{id}/description", "description":"修改 Agent 创建任务的描述"},
             {"method":"GET", "path":"/api/agent/projects", "description":"只读查看项目"},
             {"method":"GET", "path":"/api/agent/skill/download", "description":"下载匹配服务端版本的 pm-cli-skill"}
@@ -310,7 +364,7 @@ pub async fn help(State(core): State<CoreState>) -> Json<serde_json::Value> {
         "skill_download": "/api/agent/skill/download",
         "permissions": [
             "可以查看/筛选任务、只读查看项目、创建任务，并查看和下载已授权项目中的任务附件。",
-            "只能把任务状态改为进行中、待验证或已完成。",
+            "只能把任务状态改为进行中、待验证或已完成；可以把任务优先级改为高、中或低。",
             "只能修改由 Agent 创建的任务描述，且描述不能为空。",
             "不能设置验收状态，不能修改项目、类型或用户创建的任务描述，也不能删除任务、上传或删除附件、直接读写 SQLite。"
         ]

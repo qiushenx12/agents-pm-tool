@@ -11,6 +11,7 @@ import type { Project } from "@/shared/types";
 vi.mock("@/grid-app/api/client", () => ({
   api: {
     listProjects: vi.fn(),
+    listSubmitterNames: vi.fn().mockResolvedValue([]),
     createProject: vi.fn(),
     patchProject: vi.fn(),
     deleteProject: vi.fn(),

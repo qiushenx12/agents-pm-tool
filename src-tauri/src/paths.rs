@@ -78,6 +78,11 @@ pub fn runtime_path(data: &std::path::Path) -> PathBuf {
     data.join("runtime.json")
 }
 
+/// 应用内网页窗口的位置与大小（见 window_state 模块）
+pub fn window_state_path(data: &std::path::Path) -> PathBuf {
+    data.join("window-state.json")
+}
+
 pub fn attachments_dir(data: &std::path::Path) -> PathBuf {
     data.join("attachments")
 }

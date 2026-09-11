@@ -34,8 +34,44 @@ export const useTaskStore = defineStore("tasks", () => {
       ? readFiltersFromUrl()
       : (readSavedFilters() ?? readFiltersFromUrl()),
   );
+  // 只在首次加载时判断：下面会把本地筛选回写进 URL，之后再问就永远是"带参数的链接"了。
+  const sharedLinkFilters = urlHasFilterParams();
   writeFiltersToUrl(filters.value);
   saveFilters(filters.value);
+  /**
+   * 视图设置的跨客户端同步：网页端与「进入应用」的内嵌窗口是两套 WebView 存储，
+   * localStorage 各存各的，只有服务端那份能两边共用。登录后先对账 —— 服务端有就以
+   * 服务端为准，没有就把本机的推上去；此后本机一改就回推。
+   */
+  const viewStateSynced = ref(false);
+  let viewTimer: ReturnType<typeof setTimeout> | undefined;
+  async function syncViewState() {
+    // 带筛选参数的链接是分享场景，以 URL 为准：既不被服务端覆盖，也不回推覆盖别人。
+    if (sharedLinkFilters) {
+      viewStateSynced.value = true;
+      return;
+    }
+    try {
+      const remote = await api.getViewState();
+      if (remote?.filters) filters.value = sanitizeFilters(remote.filters);
+      else await api.putViewState(sanitizeFilters(filters.value));
+    } catch {
+      /* 服务不可用或旧版服务端：沿用本机设置，不影响使用 */
+    }
+    viewStateSynced.value = true;
+  }
+  function resetViewStateSync() {
+    viewStateSynced.value = false;
+    clearTimeout(viewTimer);
+    viewTimer = undefined;
+  }
+  function scheduleViewStatePush() {
+    clearTimeout(viewTimer);
+    viewTimer = setTimeout(() => {
+      viewTimer = undefined;
+      void api.putViewState(sanitizeFilters(filters.value)).catch(() => {});
+    }, 400);
+  }
   const page = ref(1),
     pageSize = ref(100),
     total = ref(0),
@@ -63,8 +99,14 @@ export const useTaskStore = defineStore("tasks", () => {
       : undefined,
     type: filters.value.type.length ? [...filters.value.type] : undefined,
     status: filters.value.status.length ? [...filters.value.status] : undefined,
+    status_mode: filters.value.status.length
+      ? filters.value.status_mode
+      : undefined,
     submitter: filters.value.submitter.length
       ? [...filters.value.submitter]
+      : undefined,
+    priority: filters.value.priority.length
+      ? [...filters.value.priority]
       : undefined,
     keyword: filters.value.keyword || undefined,
     sort_by: filters.value.sort_by,
@@ -347,6 +389,7 @@ export const useTaskStore = defineStore("tasks", () => {
       filters.value[k] = [];
     });
     filters.value.keyword = "";
+    filters.value.status_mode = "include";
   }
   function setProject(project?: string) {
     filters.value.project = project ? [project] : [];
@@ -376,6 +419,7 @@ export const useTaskStore = defineStore("tasks", () => {
       controller?.abort();
       writeFiltersToUrl(f);
       saveFilters(f);
+      if (viewStateSynced.value) scheduleViewStatePush();
       page.value = 1;
       const next = filterFingerprint(f);
       if (next !== fingerprint) {
@@ -391,6 +435,7 @@ export const useTaskStore = defineStore("tasks", () => {
   onScopeDispose(() => {
     disposed = true;
     clearTimeout(timer);
+    clearTimeout(viewTimer);
     controller?.abort();
   });
   return {
@@ -401,6 +446,8 @@ export const useTaskStore = defineStore("tasks", () => {
     error,
     filters,
     query,
+    syncViewState,
+    resetViewStateSync,
     pending,
     saving,
     connection,

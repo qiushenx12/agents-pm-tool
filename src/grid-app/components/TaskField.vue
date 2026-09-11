@@ -3,13 +3,13 @@ import { computed, ref } from "vue";
 import UiSelect from "@/shared/UiSelect.vue";
 import { useMetaStore } from "../stores/metaStore";
 import { useTaskStore } from "../stores/taskStore";
-import { statusOptions, typeOptions } from "@/shared/taskOptions";
+import { statusOptions, typeOptions, priorityOptions } from "@/shared/taskOptions";
 import { errorText } from "@/shared/feedback";
-import type { Task, TaskStatus, TaskType } from "@/shared/types";
+import type { Priority, Task, TaskStatus, TaskType } from "@/shared/types";
 const props = withDefaults(
   defineProps<{
     task: Task;
-    field: "project" | "type" | "status";
+    field: "project" | "type" | "status" | "priority";
     editable?: boolean;
     form?: boolean;
   }>(),
@@ -23,14 +23,21 @@ const options = computed(() =>
     ? meta.projects.map((p) => ({ value: p.name, color: p.color, tone: "" }))
     : props.field === "type"
       ? typeOptions
-      : statusOptions,
+      : props.field === "priority"
+        ? priorityOptions
+        : statusOptions,
 );
 const option = computed(() =>
   options.value.find((o) => o.value === props.task[props.field]),
 );
 const label = computed(
   () =>
-    ({ project: "项目", type: "任务类型", status: "当前状态" })[props.field],
+    ({
+      project: "项目",
+      type: "任务类型",
+      status: "当前状态",
+      priority: "优先级",
+    })[props.field],
 );
 async function update(value: string) {
   error.value = "";
@@ -41,7 +48,9 @@ async function update(value: string) {
         ? { project: value }
         : props.field === "type"
           ? { type: value as TaskType }
-          : { status: value as TaskStatus },
+          : props.field === "priority"
+            ? { priority: value as Priority }
+            : { status: value as TaskStatus },
     );
   } catch (e) {
     error.value = errorText(e);
