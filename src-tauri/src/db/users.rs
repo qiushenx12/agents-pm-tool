@@ -3,7 +3,7 @@ use argon2::{
     Argon2,
 };
 use chrono::{Duration, Local};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
 use crate::domain::{
     task::now_str,
@@ -56,6 +56,53 @@ pub fn list(conn: &Connection) -> ApiResult<Vec<User>> {
     )?;
     let rows = statement.query_map([], row_to_user)?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// 提交人筛选的候选清单：与任务上 `submitter_name` 显示形态一一对应。
+/// 每条是「用户名」或「Agent（用户名）」，覆盖未停用账号在可见项目里出现过的所有
+/// (owner, submitter) 组合；owner 置空的历史任务归入「未知用户」。
+/// `visible_projects` 为 None（管理员）时看全量；Some 时空集即无人可选。
+pub fn list_submitter_names(
+    conn: &Connection,
+    visible_projects: Option<&[String]>,
+) -> ApiResult<Vec<String>> {
+    // 管理员不受项目范围限制；普通用户只看得见授权项目，候选同样收窄，
+    // 避免从筛选器里枚举出不可见项目里出现过任务的提交人。
+    let scope = match visible_projects {
+        None => String::new(),
+        Some([]) => return Ok(Vec::new()),
+        Some(projects) => format!(
+            "AND t.project IN ({})",
+            vec!["?"; projects.len()].join(",")
+        ),
+    };
+    let sql = format!(
+        "SELECT u.username, t.submitter FROM tasks t
+         LEFT JOIN users u ON u.id = t.owner_user_id
+         WHERE (u.disabled = 0 OR u.id IS NULL) {scope}
+         GROUP BY u.username, t.submitter"
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let params: Vec<&str> = match visible_projects {
+        Some(projects) => projects.iter().map(String::as_str).collect(),
+        None => Vec::new(),
+    };
+    let rows = statement.query_map(params_from_iter(params), |row| {
+        Ok((
+            row.get::<_, Option<String>>(0)?,
+            row.get::<_, String>(1)?,
+        ))
+    })?;
+    let mut names: Vec<String> = rows
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|(username, submitter)| {
+            crate::domain::task::submitter_name(&submitter, username.as_deref())
+        })
+        .collect();
+    names.sort_by_key(|n| n.to_lowercase());
+    names.dedup();
+    Ok(names)
 }
 
 fn validate_username(username: &str) -> ApiResult<&str> {
@@ -293,6 +340,66 @@ pub fn authenticate_agent_token(conn: &Connection, token: &str) -> ApiResult<Use
 mod tests {
     use super::*;
     use crate::db;
+
+    #[test]
+    fn submitter_names_scoped_to_visible_projects() {
+        let mut conn = db::open_memory().unwrap();
+        let alice = create(&conn, "alice", "password-123").unwrap();
+        let bob = create(&conn, "bob", "password-123").unwrap();
+        conn.execute(
+            "INSERT INTO projects (name, color, sort_order, local_path, git_url, created_at)
+             VALUES ('other-project', '#007AFF', 2, '', '', ?1)",
+            [now_str()],
+        )
+        .unwrap();
+        let mut new_task = |owner: &str, project: &str, submitter: &str| crate::db::tasks::create(
+            &mut conn,
+            &crate::db::tasks::NewTask {
+                project,
+                task_type: "优化",
+                description: "x",
+                note: "",
+                submitter,
+                owner_user_id: Some(owner),
+                priority: None,
+            },
+        )
+        .unwrap();
+        // alice 在默认项目同时有「用户」和「Agent」任务；bob 只在 other-project 有 Agent 任务
+        new_task(&alice.id, "default-project", "用户");
+        new_task(&alice.id, "default-project", "Agent");
+        new_task(&bob.id, "other-project", "Agent");
+        // owner 置空的历史任务归到「未知用户」
+        conn.execute(
+            "INSERT INTO tasks (id, seq, project, type, description, status, submitter, created_at, updated_at, position)
+             VALUES ('legacy', 999, 'default-project', '优化', 'legacy', '未开始', '用户', ?1, ?1, 999)",
+            [now_str()],
+        )
+        .unwrap();
+
+        // 管理员（None）看全量：每个 (owner, submitter) 组合一条
+        assert_eq!(
+            list_submitter_names(&conn, None).unwrap(),
+            vec![
+                "Agent（alice）".to_string(),
+                "Agent（bob）".to_string(),
+                "alice".to_string(),
+                "未知用户".to_string(),
+            ]
+        );
+        // 普通用户收窄到可见项目
+        let visible = vec!["default-project".to_string()];
+        assert_eq!(
+            list_submitter_names(&conn, Some(&visible)).unwrap(),
+            vec![
+                "Agent（alice）".to_string(),
+                "alice".to_string(),
+                "未知用户".to_string(),
+            ]
+        );
+        // 空可见项目 → 空名单
+        assert_eq!(list_submitter_names(&conn, Some(&[])).unwrap(), Vec::<String>::new());
+    }
 
     #[test]
     fn password_is_hashed_and_session_slides() {

@@ -20,6 +20,11 @@ export const AGENT_STATUSES = ["进行中", "待验证", "已完成"] as const;
 export const SUBMITTERS = ["用户", "Agent"] as const;
 export type Submitter = (typeof SUBMITTERS)[number];
 
+export const PRIORITIES = ["高", "中", "低"] as const;
+export type Priority = (typeof PRIORITIES)[number];
+/** 新建任务默认优先级 */
+export const DEFAULT_PRIORITY: Priority = "中";
+
 export const USER_ROLES = ["super_admin", "admin", "user"] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
@@ -32,6 +37,34 @@ export interface User {
   is_host: boolean;
   /** 用户管理列表中返回；普通用户是否至少拥有一个项目访问授权。 */
   has_permissions?: boolean;
+}
+
+/** 本机工作区设置；与 Rust settings::Settings 的可编辑字段对齐。 */
+export interface WorkspaceSettings {
+  port: number;
+  autostart: boolean;
+  close_behavior: "keep_service" | "stop_all";
+  listen_scope: "local" | "lan";
+  agent_server_url: string;
+  theme?: "light" | "dark" | null;
+}
+
+export interface WorkspaceServerStatus {
+  running: boolean;
+  port: number;
+  url: string;
+  lan_url: string;
+  data_dir: string;
+}
+
+export interface HostSettingsResponse {
+  settings: WorkspaceSettings;
+  status: WorkspaceServerStatus;
+}
+
+export interface SaveHostSettingsResponse extends HostSettingsResponse {
+  restarted: boolean;
+  port: number;
 }
 
 export interface UserPermission {
@@ -51,8 +84,16 @@ export interface AgentAccess {
   access_instructions: string;
 }
 
+export type LocalSkillFrontendId =
+  | "codex"
+  | "claude_code"
+  | "workbuddy"
+  | "opencode"
+  | "cursor"
+  | "pi";
+
 export interface LocalSkillTarget {
-  frontend_id: "codex" | "claude_code" | "workbuddy";
+  frontend_id: LocalSkillFrontendId;
   frontend: string;
   path: string;
   installed: boolean;
@@ -67,6 +108,7 @@ export interface Task {
   description: string;
   note: string;
   status: TaskStatus;
+  priority: Priority;
   submitter: Submitter;
   /** 用于界面展示：用户名，或 Agent（用户名）。旧服务响应缺失时回退 submitter。 */
   submitter_name?: string;
@@ -110,13 +152,22 @@ export interface TaskListQuery {
   project?: string[];
   type?: TaskType[];
   status?: TaskStatus[];
-  submitter?: Submitter[];
+  status_mode?: "include" | "exclude";
+  /** 提交人筛选：大类（用户/Agent）与具体用户名共存 */
+  submitter?: string[];
+  priority?: Priority[];
   keyword?: string;
-  sort_by?: "created_at" | "seq" | "updated_at" | "finished_at" | "manual";
+  sort_by?: "created_at" | "seq" | "updated_at" | "finished_at" | "manual" | "priority";
   sort_order?: "asc" | "desc";
 }
 
-export const GROUP_FIELDS = ["project", "status", "type", "submitter"] as const;
+export const GROUP_FIELDS = [
+  "project",
+  "status",
+  "type",
+  "submitter",
+  "priority",
+] as const;
 export type GroupField = (typeof GROUP_FIELDS)[number];
 export interface TaskPageQuery extends TaskListQuery {
   page?: number;
@@ -140,7 +191,7 @@ export type TaskBatchRequest =
   | {
       action: "update";
       ids: string[];
-      patch: Partial<Pick<Task, "project" | "type" | "status">>;
+      patch: Partial<Pick<Task, "project" | "type" | "status" | "priority">>;
     }
   | { action: "delete"; ids: string[] };
 export interface TaskBatchResult {

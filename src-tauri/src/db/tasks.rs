@@ -9,7 +9,9 @@ pub struct TaskFilter {
     pub project: Vec<String>,
     pub task_type: Vec<String>,
     pub status: Vec<String>,
+    pub exclude_status: bool,
     pub submitter: Vec<String>,
+    pub priority: Vec<String>,
     pub keyword: Option<String>,
     pub sort_by: Option<String>,
     pub sort_order: Option<String>,
@@ -28,6 +30,7 @@ pub(super) fn row_to_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
         description: r.get("description")?,
         note: r.get("note")?,
         status: r.get("status")?,
+        priority: r.get("priority")?,
         submitter_name: task::submitter_name(&submitter, owner_username.as_deref()),
         submitter,
         created_at: r.get("created_at")?,
@@ -63,14 +66,72 @@ pub(super) fn filter_sql(f: &TaskFilter) -> (String, Vec<String>) {
     for (column, items) in [
         ("project", &f.project),
         ("type", &f.task_type),
-        ("status", &f.status),
-        ("submitter", &f.submitter),
+        ("priority", &f.priority),
     ] {
         if !items.is_empty() {
             let marks = vec!["?"; items.len()].join(",");
             conds.push(format!("t.{column} IN ({marks})"));
             values.extend(items.iter().cloned());
         }
+    }
+    // 提交人筛选接受三类值（与任务上的 submitter_name 显示形态对齐）：
+    // - 大类 `用户` / `Agent`：按提交来源匹配（t.submitter），语义不变；
+    // - 裸用户名（如 `主机`）：该账号作为「用户」提交的任务；
+    // - `Agent（用户名）`：该账号作为 Agent 提交的任务；
+    // - `未知用户`：owner 账号已删除、owner_user_id 置空的历史任务。
+    // 名字匹配按 (owner, submitter) 双列定位，避免裸用户名把 Agent 提交的任务也捞进来。
+    if !f.submitter.is_empty() {
+        let mut or = Vec::new();
+        let kinds: Vec<&String> = f
+            .submitter
+            .iter()
+            .filter(|v| task::is_valid_submitter(v))
+            .collect();
+        let names: Vec<&String> = f
+            .submitter
+            .iter()
+            .filter(|v| !task::is_valid_submitter(v))
+            .collect();
+        if !kinds.is_empty() {
+            or.push(format!("t.submitter IN ({})", vec!["?"; kinds.len()].join(",")));
+            values.extend(kinds.iter().map(|v| (*v).clone()));
+        }
+        let mut user_names: Vec<&str> = Vec::new();
+        let mut agent_names: Vec<&str> = Vec::new();
+        let mut include_unknown = false;
+        for name in &names {
+            if let Some(u) = name
+                .strip_prefix("Agent（")
+                .and_then(|s| s.strip_suffix("）"))
+            {
+                agent_names.push(u);
+            } else if name.as_str() == "未知用户" {
+                include_unknown = true;
+            } else {
+                user_names.push(name.as_str());
+            }
+        }
+        for (submitter, group) in [("用户", user_names), ("Agent", agent_names)] {
+            if group.is_empty() {
+                continue;
+            }
+            let marks = vec!["?"; group.len()].join(",");
+            or.push(format!(
+                "(t.submitter = ? AND t.owner_user_id IN (SELECT id FROM users WHERE username IN ({marks})))"
+            ));
+            values.push(submitter.to_string());
+            values.extend(group.iter().map(|s| s.to_string()));
+        }
+        if include_unknown {
+            or.push("t.owner_user_id IS NULL".into());
+        }
+        conds.push(format!("({})", or.join(" OR ")));
+    }
+    if !f.status.is_empty() {
+        let marks = vec!["?"; f.status.len()].join(",");
+        let operator = if f.exclude_status { "NOT IN" } else { "IN" };
+        conds.push(format!("t.status {operator} ({marks})"));
+        values.extend(f.status.iter().cloned());
     }
     if let Some(keyword) = f
         .keyword
@@ -102,6 +163,10 @@ pub(super) fn sort_sql(f: &TaskFilter) -> String {
         Some("seq") => "t.seq",
         Some("updated_at") => "t.updated_at",
         Some("finished_at") => "t.finished_at",
+        // 优先级按业务语义排序（高→低），与方向组合：asc=高在前，desc=低在前
+        Some("priority") => {
+            "CASE t.priority WHEN '高' THEN 0 WHEN '中' THEN 1 WHEN '低' THEN 2 ELSE 3 END"
+        }
         _ => "t.created_at",
     };
     let direction = if f.sort_order.as_deref() == Some("asc") {
@@ -141,6 +206,8 @@ pub struct NewTask<'a> {
     pub note: &'a str,
     pub submitter: &'a str,
     pub owner_user_id: Option<&'a str>,
+    /// None 时用默认优先级「中」
+    pub priority: Option<&'a str>,
 }
 
 /// 校验 + 创建（ID 生成与插入在同一事务，规划 §4.2）
@@ -153,14 +220,21 @@ pub fn create(conn: &mut Connection, n: &NewTask) -> ApiResult<Task> {
             task::TASK_TYPES.join(" / ")
         )));
     }
+    let priority = n.priority.unwrap_or(task::DEFAULT_PRIORITY);
+    if !task::is_valid_priority(priority) {
+        return Err(ApiError::unprocessable(format!(
+            "优先级不合法：{priority}，合法取值：{}",
+            task::PRIORITIES.join(" / ")
+        )));
+    }
 
     let now = task::now_str();
     let tx = conn.transaction()?;
     let (id, seq) = idgen::next_task_id(&tx)?;
     // 新任务排在手动排序末尾：position 取递增的 seq 即可
     tx.execute(
-        "INSERT INTO tasks (id, seq, project, type, description, note, status, submitter, created_at, updated_at, position, owner_user_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, '未开始', ?7, ?8, ?8, ?2, ?9)",
+        "INSERT INTO tasks (id, seq, project, type, description, note, status, priority, submitter, created_at, updated_at, position, owner_user_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, '未开始', ?7, ?8, ?9, ?9, ?2, ?10)",
         params![
             id,
             seq,
@@ -168,6 +242,7 @@ pub fn create(conn: &mut Connection, n: &NewTask) -> ApiResult<Task> {
             n.task_type,
             n.description,
             n.note,
+            priority,
             n.submitter,
             now,
             n.owner_user_id,
@@ -201,6 +276,7 @@ pub struct TaskPatch {
     pub description: Option<String>,
     pub note: Option<String>,
     pub status: Option<String>,
+    pub priority: Option<String>,
 }
 
 /// 网页端全量修改。状态走 transition() 统一入口（完成时间规则 §4.3）。
@@ -226,18 +302,27 @@ pub fn patch(conn: &mut Connection, id: &str, p: &TaskPatch) -> ApiResult<Task> 
             )));
         }
     }
+    if let Some(priority) = &p.priority {
+        if !task::is_valid_priority(priority) {
+            return Err(ApiError::unprocessable(format!(
+                "优先级不合法：{priority}，合法取值：{}",
+                task::PRIORITIES.join(" / ")
+            )));
+        }
+    }
 
     let project = p.project.as_deref().unwrap_or(&current.project);
     let task_type = p.task_type.as_deref().unwrap_or(&current.task_type);
     let description = p.description.as_deref().unwrap_or(&current.description);
     let note = p.note.as_deref().unwrap_or(&current.note);
     let status = p.status.as_deref().unwrap_or(&current.status);
+    let priority = p.priority.as_deref().unwrap_or(&current.priority);
     let finished_at = task::transition(status, current.finished_at.clone());
     let now = task::now_str();
 
     conn.execute(
         "UPDATE tasks SET project = ?2, type = ?3, description = ?4, note = ?5, status = ?6,
-            finished_at = ?7, updated_at = ?8 WHERE id = ?1",
+            priority = ?7, finished_at = ?8, updated_at = ?9 WHERE id = ?1",
         params![
             id,
             project,
@@ -245,6 +330,7 @@ pub fn patch(conn: &mut Connection, id: &str, p: &TaskPatch) -> ApiResult<Task> 
             description,
             note,
             status,
+            priority,
             finished_at,
             now
         ],
@@ -459,6 +545,7 @@ mod tests {
                 note: "",
                 submitter: "用户",
                 owner_user_id: None,
+                priority: None,
             },
         )
         .unwrap()

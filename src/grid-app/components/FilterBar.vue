@@ -3,6 +3,7 @@ import { computed } from "vue";
 import UiIcon from "@/shared/UiIcon.vue";
 import ColumnSettings from "./ColumnSettings.vue";
 import type { GroupField } from "@/shared/types";
+import { priorityTones } from "@/shared/taskOptions";
 import UiPopover from "@/shared/UiPopover.vue";
 import { useMetaStore } from "../stores/metaStore";
 import { useTaskStore } from "../stores/taskStore";
@@ -11,9 +12,11 @@ const emit = defineEmits<{ create: [] }>();
 const tasks = useTaskStore(),
   meta = useMetaStore(),
   view = useViewStore();
+const priorityTone = (value: string) => priorityTones[value] ?? "gray";
 const groups = [
   { key: "project", label: "项目" },
   { key: "type", label: "任务类型" },
+  { key: "priority", label: "优先级" },
   { key: "status", label: "当前状态" },
   { key: "submitter", label: "提交人" },
 ] as const;
@@ -22,15 +25,27 @@ function options(key: string): readonly string[] {
     ? meta.projects.map((p) => p.name)
     : key === "type"
       ? meta.taskTypes
-      : key === "status"
-        ? meta.taskStatuses
-        : meta.submitters;
+      : key === "priority"
+        ? meta.priorities
+        : key === "status"
+          ? meta.taskStatuses
+          : meta.submitters;
 }
+/** 提交人组拆两层：大类（用户/Agent）与具体用户名（含已选但暂无候选的）。 */
+const submitterUserOptions = computed(() => {
+  const selected = tasks.filters.submitter.filter(
+    (v) => !meta.submitters.includes(v as never),
+  );
+  return [...new Set([...meta.submitterNames, ...selected])];
+});
 const chips = computed(() =>
   groups.flatMap((g) =>
     tasks.filters[g.key].map((value) => ({
       key: g.key,
-      label: g.label,
+      label:
+        g.key === "status" && tasks.filters.status_mode === "exclude"
+          ? `${g.label} · 不包含`
+          : g.label,
       value,
     })),
   ),
@@ -39,6 +54,7 @@ const sorts = [
   { value: "created_at", label: "创建时间", icon: "clock" },
   { value: "finished_at", label: "完成时间", icon: "clock" },
   { value: "updated_at", label: "更新时间", icon: "clock" },
+  { value: "priority", label: "优先级", icon: "flag" },
   { value: "seq", label: "创建顺序", icon: "sort" },
   { value: "manual", label: "手动排序", icon: "grip" },
 ] as const;
@@ -76,10 +92,35 @@ async function chooseSort(value: (typeof sorts)[number]["value"]) {
         </button></template
       ><template #default>
         <div class="menu-title">
-          筛选记录<span>同类多选，满足任一条件</span>
+          筛选记录<span>同类多选；状态可包含或排除</span>
         </div>
         <div v-for="group in groups" :key="group.key" class="filter-section">
-          <div class="menu-caption">{{ group.label }}</div>
+          <div class="menu-caption filter-caption">
+            <span>{{ group.label }}</span>
+            <span
+              v-if="group.key === 'status'"
+              class="status-filter-mode"
+              role="group"
+              aria-label="状态筛选方式"
+            >
+              <button
+                type="button"
+                :class="{ active: tasks.filters.status_mode === 'include' }"
+                :aria-pressed="tasks.filters.status_mode === 'include'"
+                @click="tasks.filters.status_mode = 'include'"
+              >
+                包含
+              </button>
+              <button
+                type="button"
+                :class="{ active: tasks.filters.status_mode === 'exclude' }"
+                :aria-pressed="tasks.filters.status_mode === 'exclude'"
+                @click="tasks.filters.status_mode = 'exclude'"
+              >
+                不包含
+              </button>
+            </span>
+          </div>
           <label
             v-for="option in options(group.key)"
             :key="option"
@@ -93,8 +134,28 @@ async function chooseSort(value: (typeof sorts)[number]["value"]) {
               class="option-dot"
               :style="{ background: meta.projectColor(option) }"
             ></span
+            ><span
+              v-else-if="group.key === 'priority'"
+              class="option-dot"
+              :class="'dot-' + priorityTone(option)"
+            ></span
             ><span>{{ option }}</span></label
           >
+          <template v-if="group.key === 'submitter' && submitterUserOptions.length">
+            <div class="menu-caption filter-caption filter-subcaption">
+              <span>提交人</span>
+            </div>
+            <label
+              v-for="name in submitterUserOptions"
+              :key="'u-' + name"
+              class="menu-item"
+              ><input
+                type="checkbox"
+                :checked="tasks.filters.submitter.includes(name)"
+                @change="tasks.toggleFilter('submitter', name)"
+              /><span>{{ name }}</span></label
+            >
+          </template>
           <div v-if="!options(group.key).length" class="menu-empty">
             暂无项目
           </div>

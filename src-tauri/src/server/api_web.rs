@@ -8,7 +8,7 @@ use axum::{
 use serde::Deserialize;
 
 pub use super::api_batch::batch_tasks;
-use crate::db::{attachments, permissions, projects, tasks};
+use crate::db::{attachments, permissions, projects, tasks, users};
 use crate::domain::attachment as attach;
 use crate::domain::task::now_str;
 use crate::domain::user::User;
@@ -42,6 +42,20 @@ pub async fn page_tasks(
 
 // ── 任务 ─────────────────────────────────────────────────
 
+/// 提交人筛选的用户名候选：未停用、且在可见项目内出现过任务归属的用户。
+/// 不做管理员收窄——普通用户也只能看到「可见项目里出现过任务」的名字。
+pub async fn submitter_directory(
+    State(core): State<CoreState>,
+    Extension(user): Extension<User>,
+) -> ApiResult<impl IntoResponse> {
+    let conn = core.db.lock().unwrap();
+    let visible = permissions::visible_projects(&conn, &user)?;
+    Ok(Json(users::list_submitter_names(
+        &conn,
+        visible.as_deref(),
+    )?))
+}
+
 pub async fn list_tasks(
     State(core): State<CoreState>,
     Extension(user): Extension<User>,
@@ -60,6 +74,7 @@ pub struct CreateTaskBody {
     pub task_type: Option<String>,
     pub description: Option<String>,
     pub note: Option<String>,
+    pub priority: Option<String>,
 }
 
 pub async fn create_task(
@@ -84,6 +99,9 @@ pub async fn create_task(
     if body.note.is_some() {
         fields.push(("note", None));
     }
+    if let Some(value) = body.priority.as_deref() {
+        fields.push(("priority", Some(value)));
+    }
     permissions::require_fields(&conn, &user, project.trim(), &fields)?;
     let task = tasks::create(
         &mut conn,
@@ -94,6 +112,7 @@ pub async fn create_task(
             note: body.note.as_deref().unwrap_or(""),
             submitter: "用户", // 网页端固定（规划 §4.3）
             owner_user_id: Some(&user.id),
+            priority: body.priority.as_deref(),
         },
     )?;
     drop(conn);
@@ -109,6 +128,7 @@ pub struct PatchTaskBody {
     pub description: Option<String>,
     pub note: Option<String>,
     pub status: Option<String>,
+    pub priority: Option<String>,
 }
 
 pub async fn patch_task(
@@ -135,6 +155,9 @@ pub async fn patch_task(
     if let Some(value) = body.status.as_deref() {
         fields.push(("status", Some(value)));
     }
+    if let Some(value) = body.priority.as_deref() {
+        fields.push(("priority", Some(value)));
+    }
     permissions::require_fields(&conn, &user, &current.project, &fields)?;
     if let Some(project) = body.project.as_deref() {
         permissions::require_project(&conn, &user, project)?;
@@ -148,6 +171,7 @@ pub async fn patch_task(
             description: body.description,
             note: body.note,
             status: body.status,
+            priority: body.priority,
         },
     )?;
     drop(conn);
@@ -508,6 +532,46 @@ pub async fn delete_attachment(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ── 视图设置（分组/排序/筛选，按登录账号在服务端保存） ──────
+
+/// 视图设置体积上限：只是几个筛选值，超过说明客户端在塞别的东西
+const VIEW_STATE_MAX: usize = 4096;
+
+pub async fn get_view_state(
+    State(core): State<CoreState>,
+    Extension(user): Extension<User>,
+) -> ApiResult<impl IntoResponse> {
+    let conn = core.db.lock().unwrap();
+    let saved = crate::db::view_state::get(&conn, &user.id)?;
+    // 存的是前端结构，服务端不解释语义；坏了就按「没保存过」处理，别让客户端起不来。
+    let filters = saved
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|value| value.is_object());
+    Ok(Json(serde_json::json!({ "filters": filters })))
+}
+
+#[derive(Deserialize)]
+pub struct ViewStateBody {
+    pub filters: serde_json::Value,
+}
+
+pub async fn put_view_state(
+    State(core): State<CoreState>,
+    Extension(user): Extension<User>,
+    Json(body): Json<ViewStateBody>,
+) -> ApiResult<impl IntoResponse> {
+    if !body.filters.is_object() {
+        return Err(ApiError::unprocessable("视图设置格式不正确"));
+    }
+    let raw = serde_json::to_string(&body.filters).map_err(ApiError::internal)?;
+    if raw.len() > VIEW_STATE_MAX {
+        return Err(ApiError::unprocessable("视图设置过大"));
+    }
+    let conn = core.db.lock().unwrap();
+    crate::db::view_state::put(&conn, &user.id, &raw)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ── SSE ──────────────────────────────────────────────────
 
 pub async fn events(
@@ -515,14 +579,48 @@ pub async fn events(
     Extension(_user): Extension<User>,
 ) -> impl IntoResponse {
     let mut rx = core.events.subscribe();
+    let mut theme_rx = core.theme_events.subscribe();
     let stream = async_stream::stream! {
         loop {
-            match rx.recv().await {
-                Ok(()) => yield Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().event("tasks_changed").data("{}")),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            // 任务与主题共用一条 SSE 连接：任务变化仍是空信号（不夹内容），
+            // 主题变化带值下发，前端免二次 GET。
+            tokio::select! {
+                r = rx.recv() => match r {
+                    Ok(()) => yield Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().event("tasks_changed").data("{}")),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+                r = theme_rx.changed() => match r {
+                    Ok(()) => {
+                        let theme = theme_rx.borrow_and_update().clone();
+                        let payload = serde_json::json!({ "theme": theme });
+                        yield Ok(axum::response::sse::Event::default().event("theme_changed").data(payload.to_string()));
+                    }
+                    Err(_) => break,
+                },
             }
         }
     };
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+// ── 全局主题（设置窗口与网页界面共用） ────────────────────
+
+/// 公开端点（登录页也要着色）：只回一个主题值，不含账号信息
+pub async fn get_appearance(State(core): State<CoreState>) -> ApiResult<impl IntoResponse> {
+    let theme = core.settings.read().unwrap().theme.clone();
+    Ok(Json(serde_json::json!({ "theme": theme })))
+}
+
+#[derive(Deserialize)]
+pub struct AppearanceBody {
+    pub theme: String,
+}
+
+pub async fn put_appearance(
+    State(core): State<CoreState>,
+    Json(body): Json<AppearanceBody>,
+) -> ApiResult<impl IntoResponse> {
+    super::set_theme(&core, &body.theme)?;
+    Ok(StatusCode::NO_CONTENT)
 }

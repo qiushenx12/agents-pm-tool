@@ -1,10 +1,10 @@
 import {
   GROUP_FIELDS,
-  SUBMITTERS,
+  PRIORITIES,
   TASK_STATUSES,
   TASK_TYPES,
   type GroupField,
-  type Submitter,
+  type Priority,
   type TaskListQuery,
   type TaskStatus,
   type TaskType,
@@ -13,14 +13,30 @@ export interface FilterState {
   project: string[];
   type: TaskType[];
   status: TaskStatus[];
-  submitter: Submitter[];
+  status_mode: "include" | "exclude";
+  /** 提交人：SUBMITTERS 大类或具体用户名（服务端按用户名解析到归属账号） */
+  submitter: string[];
+  priority: Priority[];
   keyword: string;
   sort_by: NonNullable<TaskListQuery["sort_by"]>;
   sort_order: "asc" | "desc";
   group_by: GroupField | "";
 }
-export const FILTER_KEYS = ["project", "type", "status", "submitter"] as const;
-const SORT_FIELDS = ["created_at", "finished_at", "seq", "updated_at", "manual"] as const;
+export const FILTER_KEYS = [
+  "project",
+  "type",
+  "status",
+  "submitter",
+  "priority",
+] as const;
+const SORT_FIELDS = [
+  "created_at",
+  "finished_at",
+  "seq",
+  "updated_at",
+  "manual",
+  "priority",
+] as const;
 export function sanitizeFilters(value: unknown): FilterState {
   const f =
     value && typeof value === "object"
@@ -44,9 +60,12 @@ export function sanitizeFilters(value: unknown): FilterState {
     status: strings("status").filter((v) =>
       TASK_STATUSES.includes(v as TaskStatus),
     ) as TaskStatus[],
-    submitter: strings("submitter").filter((v) =>
-      SUBMITTERS.includes(v as Submitter),
-    ) as Submitter[],
+    status_mode: f.status_mode === "exclude" ? "exclude" : "include",
+    // 提交人不过滤枚举：除大类（用户/Agent）外还接受具体用户名，由服务端解析
+    submitter: strings("submitter"),
+    priority: strings("priority").filter((v) =>
+      PRIORITIES.includes(v as Priority),
+    ) as Priority[],
     keyword: typeof f.keyword === "string" ? f.keyword : "",
     sort_by: SORT_FIELDS.includes(f.sort_by as FilterState["sort_by"])
       ? (f.sort_by as FilterState["sort_by"])
@@ -72,6 +91,7 @@ export function readFiltersFromUrl() {
 const FILTER_PARAMS = [
   ...FILTER_KEYS,
   "keyword",
+  "status_mode",
   "sort_by",
   "sort_order",
   "group_by",
@@ -99,6 +119,7 @@ export function saveFilters(f: FilterState) {
 export function writeFiltersToUrl(f: FilterState) {
   const p = new URLSearchParams();
   FILTER_KEYS.forEach((k) => f[k].forEach((v) => p.append(k, v)));
+  if (f.status_mode === "exclude") p.set("status_mode", "exclude");
   if (f.keyword) p.set("keyword", f.keyword);
   if (f.sort_by !== "created_at") p.set("sort_by", f.sort_by);
   if (f.sort_order !== "desc") p.set("sort_order", f.sort_order);

@@ -121,6 +121,7 @@ agents-pm-tool/
 │  ├─ src/lib.rs                 # Tauri 生命周期、托盘、设置命令、服务启停
 │  ├─ src/paths.rs               # 数据目录解析
 │  ├─ src/settings.rs            # 端口、访问范围、关闭行为
+│  ├─ src/window_state.rs        # 应用内窗口的位置/大小记忆
 │  ├─ src/server/
 │  │  ├─ mod.rs                  # Axum 路由、端口选择、runtime.json
 │  │  ├─ api_auth.rs             # 注册、登录、主机登录与会话
@@ -140,6 +141,7 @@ agents-pm-tool/
 │  │  ├─ task_page.rs            # 分页、分组计数和锚点定位
 │  │  ├─ projects.rs             # 项目 CRUD、重命名级联
 │  │  ├─ users.rs                # 用户、会话和 Agent token
+│  │  ├─ view_state.rs           # 按用户保存的分组/排序/筛选
 │  │  └─ permissions.rs          # 项目/字段/枚举选项授权
 │  ├─ src/domain/                # Task、ID、附件白名单等领域规则
 │  ├─ src/cli/main.rs            # pm-cli
@@ -243,8 +245,11 @@ Agent 不可以：
 
 - Rust DTO 和 `src/shared/types.ts` 必须保持字段名、可空性和枚举一致。
 - 任务查询支持项目、类型、状态、提交人、关键词、排序；分页接口还支持分组和锚点定位。
+- 提交人筛选的 `submitter` 查询参数接受三类值：大类（`用户`/`Agent`）按 `tasks.submitter` 匹配；裸用户名（如 `主机`）命中该账号作为「用户」提交的任务；`Agent（用户名）` 命中该账号作为 Agent 提交的任务——与任务 DTO 的 `submitter_name` 显示形态一一对应。混选取并集；`未知用户` 命中 `owner_user_id IS NULL` 的历史任务。候选清单来自 `GET /api/web/users/submitter-directory`（登录即可），返回可见项目内未停用账号出现过的所有 (owner, submitter) 组合。
 - 筛选、排序、分组状态会写入 URL query，相关逻辑集中在 `stores/filters.ts`。
-- 筛选方案存储在浏览器 `localStorage`，不是 SQLite 中的共享视图。
+- **分组、排序、筛选**按登录账号存在服务端 `user_view_state`（`/api/web/me/view-state`）：网页端与「进入应用」的内嵌窗口是两套 WebView 存储，localStorage 互不可见，只有服务端那份能两端共用。前端在登录后对账（服务端有则以服务端为准，没有就把本机推上去），本地一改就防抖回推；带筛选参数的 URL（分享链接）不参与对账。「是否分享链接」只看**首次加载**时的 query —— 本地筛选随后会被回写进 URL，之后再判断就永远是"带参数的链接"。
+- 筛选方案（命名视图）仍存浏览器 `localStorage`，不随账号同步。
+- 应用内网页窗口（label=`web`）关闭时把位置与大小写进 `data/window-state.json`，下次按它打开。窗口几何只在**正常态**采集：最大化（含拖到屏幕顶部触发）与最小化期间的位置大小不可信，只更新「下次要不要最大化」；贴边吸附（半屏、四分之一）是正常态，如实保存。还原时会夹进当前显示器工作区，并用 `.visible(false)` 先摆好再显示。
 - SSE 只负责通知“数据已变化”，前端收到后重新请求；断线期间由 10 秒轮询兜底。
 - 手动排序使用数据库中的 `position`。切换到手动排序时会按当前排序基线重铺位置；分组视图只允许组内拖动。
 

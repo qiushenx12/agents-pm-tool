@@ -53,6 +53,9 @@ pm-cli config show
 - Codex：`$HOME/.agents/skills/pm-cli`（当前官方用户级目录）；旧版 Codex 可使用 `$HOME/.codex/skills/pm-cli`。
 - Claude Code：`$HOME/.claude/skills/pm-cli`。
 - WorkBuddy：`$HOME/.workbuddy/skills/pm-cli`。
+- OpenCode：`$HOME/.config/opencode/skills/pm-cli`。
+- Cursor：`$HOME/.cursor/skills/pm-cli`。
+- Pi：`$HOME/.pi/agent/skills/pm-cli`。
 
 安装后如未被识别，重新启动对应 Agent 前端。
 
@@ -69,6 +72,8 @@ pm-cli config show
 
 ```text
 pm-cli list [--project <项目>] [--type <类型>] [--status <状态>] [--submitter <提交人>] [--keyword <关键词>] [--json]
+# --submitter 同时接受大类（用户/Agent）与具体提交人：裸用户名命中该账号作为「用户」提交的任务；
+# 「Agent（用户名）」命中该账号作为 Agent 提交的任务，与任务上的 submitter_name 显示形态一致。
 pm-cli get <任务ID> [--json]
 pm-cli attachments <任务ID> [--json]
 pm-cli download <附件ID> [--output <文件路径>] [--force] [--json]

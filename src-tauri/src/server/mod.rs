@@ -3,6 +3,7 @@ pub mod api_agent_access;
 pub mod api_auth;
 pub mod api_batch;
 pub mod api_skill;
+pub mod api_settings;
 pub mod api_users;
 pub mod api_web;
 pub mod auth;
@@ -31,6 +32,10 @@ pub struct CoreStateInner {
     pub data_dir: PathBuf,
     pub events: EventBus,
     pub actual_port: RwLock<u16>,
+    /// 全局主题变更通道：SSE 下发 theme_changed、Tauri 侧转发给设置窗口。
+    pub theme_events: watch::Sender<Option<String>>,
+    /// 网页主机设置修改端口/监听范围后，通知 Tauri 外壳重启 HTTP 服务。
+    pub settings_restart_events: watch::Sender<u64>,
 }
 
 pub type CoreState = Arc<CoreStateInner>;
@@ -41,6 +46,7 @@ impl CoreStateInner {
         // runtime.json 中的本机 token 归属内置主机账号；每次启动令旧 token 失效。
         crate::db::users::set_agent_token(&db, crate::domain::user::HOST_USER_ID, &token)
             .expect("初始化主机 Agent token 失败");
+        let theme = settings.theme.clone();
         Self {
             db: Mutex::new(db),
             token: tokio::sync::RwLock::new(token),
@@ -48,11 +54,29 @@ impl CoreStateInner {
             data_dir,
             events: EventBus::new(),
             actual_port: RwLock::new(0),
+            theme_events: watch::channel(theme).0,
+            settings_restart_events: watch::channel(0).0,
         }
     }
 }
 
-/// 解析查询串：project/type/status/submitter 可重复，keyword、sort_by、sort_order 单值
+/// 设置全局主题（设置窗口的 Tauri 命令与网页端 PUT 共用的唯一写入口）：
+/// 校验 → 落盘 settings.json → 更新内存 → 通知 SSE 订阅者与设置窗口。
+pub fn set_theme(core: &CoreState, theme: &str) -> crate::error::ApiResult<()> {
+    use crate::error::ApiError;
+    if !crate::settings::THEMES.contains(&theme) {
+        return Err(ApiError::unprocessable("主题只能是 light 或 dark"));
+    }
+    let mut next = core.settings.read().unwrap().clone();
+    next.theme = Some(theme.to_string());
+    next.save(&paths::settings_path(&core.data_dir))?;
+    *core.settings.write().unwrap() = next;
+    // watch::send 是异步签名；send_modify 同步完成同样的事（换值 + 唤醒等待者）
+    core.theme_events.send_modify(|v| *v = Some(theme.to_string()));
+    Ok(())
+}
+
+/// 解析查询串：project/type/status/submitter/priority 可重复；status_mode 支持 include/exclude。
 pub fn parse_task_filter(raw: Option<&str>) -> ApiResult<TaskFilter> {
     let mut f = TaskFilter::default();
     for (k, v) in url::form_urlencoded::parse(raw.unwrap_or("").as_bytes()) {
@@ -60,7 +84,17 @@ pub fn parse_task_filter(raw: Option<&str>) -> ApiResult<TaskFilter> {
             "project" => f.project.push(v.into_owned()),
             "type" => f.task_type.push(v.into_owned()),
             "status" => f.status.push(v.into_owned()),
+            "status_mode" => match v.as_ref() {
+                "include" => f.exclude_status = false,
+                "exclude" => f.exclude_status = true,
+                _ => {
+                    return Err(ApiError::bad_request(
+                        "状态筛选方式只能是 include 或 exclude",
+                    ))
+                }
+            },
             "submitter" => f.submitter.push(v.into_owned()),
+            "priority" => f.priority.push(v.into_owned()),
             "keyword" => f.keyword = Some(v.into_owned()),
             "sort_by" => f.sort_by = Some(v.into_owned()),
             "sort_order" => f.sort_order = Some(v.into_owned()),
@@ -122,6 +156,10 @@ fn build_router(core: CoreState) -> Router {
         )
         .route("/users", get(api_users::list_users))
         .route(
+            "/users/submitter-directory",
+            get(api_web::submitter_directory),
+        )
+        .route(
             "/users/{id}",
             axum::routing::patch(api_users::patch_user).delete(api_users::delete_user),
         )
@@ -131,12 +169,23 @@ fn build_router(core: CoreState) -> Router {
         )
         .route("/auth/me", get(api_auth::me))
         .route("/auth/logout", axum::routing::post(api_auth::logout))
+        // 分组/排序/筛选按账号存在服务端：网页端与应用内窗口读的是同一份
+        .route(
+            "/me/view-state",
+            get(api_web::get_view_state).put(api_web::put_view_state),
+        )
         .route("/me/agent-access", get(api_agent_access::get_access))
+        .route(
+            "/host-settings",
+            get(api_settings::get_host_settings).put(api_settings::save_host_settings),
+        )
         .route(
             "/me/agent-token",
             axum::routing::post(api_agent_access::regenerate_token)
                 .delete(api_agent_access::revoke_token),
         )
+        // 设置窗口与网页界面共用的全局主题（写入口，登录后可用）
+        .route("/appearance", axum::routing::put(api_web::put_appearance))
         .route_layer(middleware::from_fn_with_state(
             core.clone(),
             auth::require_web_auth,
@@ -148,7 +197,9 @@ fn build_router(core: CoreState) -> Router {
         .route(
             "/auth/host-login",
             axum::routing::post(api_auth::host_login),
-        );
+        )
+        // 登录页也要正确着色：主题读取公开，不带任何账号信息
+        .route("/appearance", get(api_web::get_appearance));
 
     let web = Router::new()
         .merge(public_web)
@@ -166,6 +217,10 @@ fn build_router(core: CoreState) -> Router {
         .route(
             "/tasks/{id}/status",
             axum::routing::patch(api_agent::patch_status),
+        )
+        .route(
+            "/tasks/{id}/priority",
+            axum::routing::patch(api_agent::patch_priority),
         )
         .route(
             "/tasks/{id}/description",
@@ -202,7 +257,16 @@ pub struct ServerHandle {
 impl ServerHandle {
     pub async fn stop(self) {
         let _ = self.shutdown.send(true);
-        let _ = self.join.await;
+        let mut join = self.join;
+        // SSE 是无限响应，单靠 graceful shutdown 可能永远等不到连接自行结束。
+        // 先给普通请求留出收尾时间，仍未退出就中止服务任务，确保设置保存后的重启能继续。
+        if tokio::time::timeout(std::time::Duration::from_millis(500), &mut join)
+            .await
+            .is_err()
+        {
+            join.abort();
+            let _ = join.await;
+        }
     }
 }
 

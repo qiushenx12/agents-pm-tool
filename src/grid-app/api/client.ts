@@ -10,12 +10,16 @@ import type {
   TaskListQuery,
   TaskStatus,
   TaskType,
+  Priority,
   User,
   UserRole,
   UserPermission,
   UserPermissionsResponse,
   AgentAccess,
   LocalSkillTarget,
+  HostSettingsResponse,
+  SaveHostSettingsResponse,
+  WorkspaceSettings,
 } from "@/shared/types";
 
 export class ApiRequestError extends Error {
@@ -66,7 +70,9 @@ function buildQuery(q: TaskPageQuery): string {
   q.project?.forEach((v) => p.append("project", v));
   q.type?.forEach((v) => p.append("type", v));
   q.status?.forEach((v) => p.append("status", v));
+  if (q.status_mode) p.set("status_mode", q.status_mode);
   q.submitter?.forEach((v) => p.append("submitter", v));
+  q.priority?.forEach((v) => p.append("priority", v));
   if (q.keyword) p.set("keyword", q.keyword);
   if (q.sort_by) p.set("sort_by", q.sort_by);
   if (q.sort_order) p.set("sort_order", q.sort_order);
@@ -111,6 +117,7 @@ export const api = {
     type: TaskType;
     description?: string;
     note?: string;
+    priority?: Priority;
   }) =>
     request<Task>("/api/web/tasks", {
       method: "POST",
@@ -125,6 +132,7 @@ export const api = {
       description: string;
       note: string;
       status: TaskStatus;
+      priority: Priority;
     }>,
   ) =>
     request<Task>(`/api/web/tasks/${id}`, {
@@ -206,6 +214,8 @@ export const api = {
     request<void>(`/api/web/attachments/${id}`, { method: "DELETE" }),
 
   listUsers: () => request<User[]>("/api/web/users"),
+  /** 提交人筛选的用户名候选：未停用、且在可见项目内出现过任务归属 */
+  listSubmitterNames: () => request<string[]>("/api/web/users/submitter-directory"),
   patchUser: (
     id: string,
     body: Partial<{ username: string; role: UserRole; disabled: boolean }>,
@@ -228,10 +238,34 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ permissions }) },
     ),
   getAgentAccess: () => request<AgentAccess>("/api/web/me/agent-access"),
+  getHostSettings: () =>
+    request<HostSettingsResponse>("/api/web/host-settings"),
+  putHostSettings: (settings: WorkspaceSettings) => {
+    const { theme: _theme, ...editable } = settings;
+    return request<SaveHostSettingsResponse>("/api/web/host-settings", {
+      method: "PUT",
+      body: JSON.stringify(editable),
+    });
+  },
+  /** 分组/排序/筛选：按账号存在服务端，网页端与应用内窗口共用同一份 */
+  getViewState: () => request<{ filters: unknown }>("/api/web/me/view-state"),
+  putViewState: (filters: unknown) =>
+    request<void>("/api/web/me/view-state", {
+      method: "PUT",
+      body: JSON.stringify({ filters }),
+    }),
   regenerateAgentToken: () =>
     request<AgentAccess>("/api/web/me/agent-token", { method: "POST" }),
   revokeAgentToken: () =>
     request<void>("/api/web/me/agent-token", { method: "DELETE" }),
+  /** 全局主题：设置窗口与网页界面共用一份；GET 公开（登录页也要着色） */
+  getAppearance: () =>
+    request<{ theme: string | null }>("/api/web/appearance"),
+  putAppearance: (theme: string) =>
+    request<void>("/api/web/appearance", {
+      method: "PUT",
+      body: JSON.stringify({ theme }),
+    }),
   listLocalSkills: () =>
     request<LocalSkillTarget[]>("/api/web/local-skills"),
   installLocalSkills: (frontend: LocalSkillTarget["frontend_id"]) =>
@@ -246,10 +280,11 @@ export const api = {
     }),
 };
 
-/** SSE 订阅：任务变更时触发 onChange；断线自动降级为 10s 轮询 */
+/** SSE 订阅：任务变更触发 onChange、主题变更触发 onThemeChange；断线自动降级为 10s 轮询 */
 export function subscribeTaskEvents(
   onChange: () => void,
   onStatus?: (state: "connecting" | "live" | "reconnecting") => void,
+  onThemeChange?: (theme: string | null) => void,
 ): () => void {
   let stopped = false;
   let pollTimer: number | undefined;
@@ -271,6 +306,17 @@ export function subscribeTaskEvents(
     onStatus?.("connecting");
     es = new EventSource("/api/web/events");
     es.addEventListener("tasks_changed", () => onChange());
+    es.addEventListener("theme_changed", (e) => {
+      if (!onThemeChange) return;
+      try {
+        const payload = JSON.parse((e as MessageEvent).data) as {
+          theme?: string | null;
+        };
+        onThemeChange(payload.theme ?? null);
+      } catch {
+        /* 坏帧忽略 */
+      }
+    });
     es.onopen = () => {
       stopPolling();
       onStatus?.("live");

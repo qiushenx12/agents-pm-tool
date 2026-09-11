@@ -14,6 +14,9 @@ pub const STATUSES: [&str; 7] = [
 /// Agent 仅可切到的状态（验收类状态留给用户，规划 §5.4）
 pub const AGENT_STATUSES: [&str; 3] = ["进行中", "待验证", "已完成"];
 pub const SUBMITTERS: [&str; 2] = ["用户", "Agent"];
+/// 优先级：默认「中」；展示颜色高=红、中=黄、低=绿（对齐状态色）
+pub const PRIORITIES: [&str; 3] = ["高", "中", "低"];
+pub const DEFAULT_PRIORITY: &str = "中";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
@@ -25,6 +28,8 @@ pub struct Task {
     pub description: String,
     pub note: String,
     pub status: String,
+    #[serde(default = "default_priority")]
+    pub priority: String,
     pub submitter: String,
     pub submitter_name: String,
     pub created_at: String,
@@ -49,6 +54,18 @@ pub fn is_valid_task_type(s: &str) -> bool {
 
 pub fn is_valid_status(s: &str) -> bool {
     STATUSES.contains(&s)
+}
+
+pub fn is_valid_priority(s: &str) -> bool {
+    PRIORITIES.contains(&s)
+}
+
+pub fn is_valid_submitter(s: &str) -> bool {
+    SUBMITTERS.contains(&s)
+}
+
+fn default_priority() -> String {
+    DEFAULT_PRIORITY.to_string()
 }
 
 pub fn is_agent_status(s: &str) -> bool {
@@ -143,5 +160,8 @@ mod tests {
         assert!(AGENT_STATUSES.iter().all(|s| is_valid_status(s)));
         assert!(!is_agent_status("验收通过"));
         assert!(!is_agent_status("取消"), "取消只能由网页端设置");
+        assert_eq!(PRIORITIES, ["高", "中", "低"]);
+        assert!(is_valid_priority(DEFAULT_PRIORITY));
+        assert!(!is_valid_priority("紧急"));
     }
 }

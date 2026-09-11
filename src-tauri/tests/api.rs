@@ -10,6 +10,7 @@ struct TestApp {
     base: String,
     token: String,
     http: reqwest::Client,
+    core: server::CoreState,
     _handle: server::ServerHandle,
     _tmp: tempfile::TempDir,
 }
@@ -28,7 +29,7 @@ async fn spawn_app_with_host(bind_host: [u8; 4]) -> TestApp {
         Settings::default(),
     ));
     let token = core.token.read().await.clone();
-    let handle = server::start_server(core, 0, bind_host).await.unwrap();
+    let handle = server::start_server(core.clone(), 0, bind_host).await.unwrap();
     // 0.0.0.0 绑定时用回环地址访问（测试机本机）
     let base = format!("http://127.0.0.1:{}", handle.port);
     let bootstrap = reqwest::Client::new();
@@ -60,6 +61,7 @@ async fn spawn_app_with_host(bind_host: [u8; 4]) -> TestApp {
         base,
         token,
         http,
+        core,
         _handle: handle,
         _tmp: tmp,
     }
@@ -196,6 +198,97 @@ async fn register_user(app: &TestApp, username: &str) -> (Value, reqwest::Client
         .build()
         .unwrap();
     (user, client)
+}
+
+#[tokio::test]
+async fn host_settings_are_local_host_only_and_persist_valid_changes() {
+    let app = spawn_app().await;
+
+    let response = app
+        .web(reqwest::Method::GET, "/host-settings")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body = response.json::<Value>().await.unwrap();
+    assert_eq!(body["settings"]["port"], 17890);
+    assert_eq!(body["status"]["running"], true);
+    assert_eq!(body["status"]["port"].as_u64(), Some(app._handle.port as u64));
+    assert!(body["status"]["data_dir"].as_str().unwrap().len() > 3);
+
+    // 主题由独立入口维护；保存设置表单不能用客户端数据覆盖它。
+    let appearance = app
+        .web(reqwest::Method::PUT, "/appearance")
+        .json(&json!({"theme": "dark"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(appearance.status(), 204);
+    let saved = app
+        .web(reqwest::Method::PUT, "/host-settings")
+        .json(&json!({
+            "port": 17890,
+            "autostart": false,
+            "close_behavior": "stop_all",
+            "listen_scope": "local",
+            "agent_server_url": " http://192.168.1.2:17890 "
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), 200);
+    let saved = saved.json::<Value>().await.unwrap();
+    assert_eq!(saved["settings"]["autostart"], false);
+    assert_eq!(saved["settings"]["theme"], "dark");
+    assert_eq!(saved["settings"]["agent_server_url"], "http://192.168.1.2:17890");
+    assert_eq!(saved["restarted"], false);
+
+    let persisted = std::fs::read_to_string(app._tmp.path().join("settings.json")).unwrap();
+    let persisted: Value = serde_json::from_str(&persisted).unwrap();
+    assert_eq!(persisted["close_behavior"], "stop_all");
+    assert_eq!(persisted["theme"], "dark");
+
+    let invalid = app
+        .web(reqwest::Method::PUT, "/host-settings")
+        .json(&json!({
+            "port": 80,
+            "autostart": true,
+            "close_behavior": "keep_service",
+            "listen_scope": "local",
+            "agent_server_url": ""
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), 422);
+
+    let mut restart_events = app.core.settings_restart_events.subscribe();
+    let restart = app
+        .web(reqwest::Method::PUT, "/host-settings")
+        .json(&json!({
+            "port": 17891,
+            "autostart": false,
+            "close_behavior": "stop_all",
+            "listen_scope": "local",
+            "agent_server_url": ""
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(restart.status(), 200);
+    assert_eq!(restart.json::<Value>().await.unwrap()["restarted"], true);
+    tokio::time::timeout(std::time::Duration::from_secs(1), restart_events.changed())
+        .await
+        .expect("网络设置变化应发出服务重启通知")
+        .unwrap();
+
+    let (_, regular_user) = register_user(&app, "settings-user").await;
+    let forbidden = regular_user
+        .get(format!("{}/api/web/host-settings", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(forbidden.status(), 403);
 }
 
 #[tokio::test]
@@ -843,6 +936,8 @@ async fn web_crud_and_filter() {
     assert_eq!(t["owner_user_id"], "host");
     assert_eq!(t["status"], "未开始");
     assert_eq!(t["note"], "");
+    // 未显式给优先级时默认「中」
+    assert_eq!(t["priority"], "中");
     assert_eq!(t["id"].as_str().unwrap().len(), 18);
 
     // 网页端可修改备注，且关键词会匹配备注
@@ -918,6 +1013,249 @@ async fn web_crud_and_filter() {
         .unwrap();
     let list: Value = res.json().await.unwrap();
     assert!(list.as_array().unwrap().is_empty());
+}
+
+// ── 优先级字段（高/中/低，默认中） ──────────────────────
+
+#[tokio::test]
+async fn priority_create_patch_filter_group_and_batch() {
+    let app = spawn_app().await;
+
+    // 创建时指定优先级
+    let res = app
+        .web(reqwest::Method::POST, "/tasks")
+        .json(&json!({
+            "project": "default-project",
+            "type": "新增需求",
+            "description": "高优先级任务",
+            "priority": "高"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let high = res.json::<Value>().await.unwrap();
+    assert_eq!(high["priority"], "高");
+    let high_id = high["id"].as_str().unwrap().to_string();
+
+    // 非法优先级 → 422
+    let res = app
+        .web(reqwest::Method::POST, "/tasks")
+        .json(&json!({
+            "project": "default-project",
+            "type": "新增需求",
+            "description": "非法优先级",
+            "priority": "紧急"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 422);
+
+    let low = create_task(&app, false, "默认优先级任务").await;
+    let low_id = low["id"].as_str().unwrap().to_string();
+    assert_eq!(low["priority"], "中");
+
+    // patch 修改优先级
+    let res = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{low_id}"))
+        .json(&json!({"priority": "低"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.json::<Value>().await.unwrap()["priority"], "低");
+    // patch 非法值 → 422
+    let res = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{low_id}"))
+        .json(&json!({"priority": "最高"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 422);
+
+    // 筛选 priority=高
+    let res = app
+        .web(
+            reqwest::Method::GET,
+            "/tasks?priority=%E9%AB%98", // 「高」
+        )
+        .send()
+        .await
+        .unwrap();
+    let list: Value = res.json().await.unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["id"], high_id);
+
+    // 分组 group_by=priority（按 高→中→低 业务顺序）
+    let res = app
+        .web(reqwest::Method::GET, "/tasks/page?group_by=priority")
+        .send()
+        .await
+        .unwrap();
+    let page: Value = res.json().await.unwrap();
+    let groups = page["groups"].as_array().unwrap();
+    assert_eq!(
+        groups
+            .iter()
+            .map(|g| g["value"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["高", "低"]
+    );
+
+    // 排序 sort_by=priority：asc 高在前，desc 低在前
+    let res = app
+        .web(
+            reqwest::Method::GET,
+            "/tasks?sort_by=priority&sort_order=asc",
+        )
+        .send()
+        .await
+        .unwrap();
+    let list: Value = res.json().await.unwrap();
+    assert_eq!(list[0]["priority"], "高");
+    let res = app
+        .web(
+            reqwest::Method::GET,
+            "/tasks?sort_by=priority&sort_order=desc",
+        )
+        .send()
+        .await
+        .unwrap();
+    let list: Value = res.json().await.unwrap();
+    assert_eq!(list[0]["priority"], "低");
+
+    // 批量修改优先级
+    let res = app
+        .web(reqwest::Method::POST, "/tasks/batch")
+        .json(&json!({
+            "action": "update",
+            "ids": [high_id, low_id],
+            "patch": {"priority": "中"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = res.json::<Value>().await.unwrap();
+    assert_eq!(body["succeeded"], 2);
+    assert_eq!(body["failed"], 0);
+}
+
+#[tokio::test]
+async fn agent_can_set_priority_but_stays_within_permissions() {
+    let app = spawn_app().await;
+
+    // Agent 创建时带优先级
+    let res = app
+        .agent(reqwest::Method::POST, "/tasks")
+        .json(&json!({
+            "project": "default-project",
+            "type": "BUG",
+            "description": "Agent 高优先级",
+            "priority": "高"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let task = res.json::<Value>().await.unwrap();
+    assert_eq!(task["priority"], "高");
+    let id = task["id"].as_str().unwrap().to_string();
+
+    // Agent patch 优先级
+    let res = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{id}/priority"))
+        .json(&json!({"priority": "低"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.json::<Value>().await.unwrap()["priority"], "低");
+
+    // 非法值 → 422；缺字段 → 422
+    for body in [json!({"priority": "特急"}), json!({})] {
+        let res = app
+            .agent(reqwest::Method::PATCH, &format!("/tasks/{id}/priority"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 422, "应 422：{body}");
+    }
+
+    // Agent list 按优先级筛选
+    let res = app
+        .agent(reqwest::Method::GET, "/tasks?priority=%E4%BD%8E") // 「低」
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let list: Value = res.json().await.unwrap();
+    assert!(list
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|t| t["priority"] == "低"));
+
+    // 普通用户的 priority 受字段授权收窄
+    let (alice, alice_http) = register_user(&app, "alice-priority").await;
+    let alice_id = alice["id"].as_str().unwrap();
+    let token_response = alice_http
+        .post(format!("{}/api/web/me/agent-token", app.base))
+        .send()
+        .await
+        .unwrap();
+    let alice_token = token_response.json::<Value>().await.unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let grant = app
+        .web(
+            reqwest::Method::PUT,
+            &format!("/users/{alice_id}/permissions"),
+        )
+        .json(&json!({"permissions":[
+            {"project":"default-project","field":"project_access","allowed_values":null},
+            {"project":"default-project","field":"priority","allowed_values":["中"]}
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(grant.status(), 200);
+
+    let alice_agent = reqwest::Client::new();
+    // 未授权值 → 403
+    let denied = alice_agent
+        .patch(format!("{}/api/agent/tasks/{id}/priority", app.base))
+        .bearer_auth(&alice_token)
+        .json(&json!({"priority": "高"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 403);
+    // 授权值 → 200
+    let allowed = alice_agent
+        .patch(format!("{}/api/agent/tasks/{id}/priority", app.base))
+        .bearer_auth(&alice_token)
+        .json(&json!({"priority": "中"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(allowed.status(), 200);
+    // 非法权限值写不进授权
+    let bad = app
+        .web(
+            reqwest::Method::PUT,
+            &format!("/users/{alice_id}/permissions"),
+        )
+        .json(&json!({"permissions":[
+            {"project":"default-project","field":"priority","allowed_values":["特急"]}
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 422);
 }
 
 // ── 手动排序（拖动换序） ─────────────────────────────────
@@ -1334,6 +1672,250 @@ async fn project_rename_cascade_and_delete_protection() {
     assert_eq!(res.status(), 409);
 }
 
+// ── 提交人筛选：大类 + 具体用户名（任务 202609101105430000） ──────────
+
+#[tokio::test]
+async fn submitter_filter_supports_categories_and_usernames() {
+    let app = spawn_app().await;
+    // 主机用户的网页任务 + Agent 任务
+    let host_web = create_task(&app, false, "主机网页任务").await;
+    let host_agent = create_task(&app, true, "主机 Agent 任务").await;
+    let host_web_id = host_web["id"].as_str().unwrap().to_string();
+    let host_agent_id = host_agent["id"].as_str().unwrap().to_string();
+
+    // alice 的网页任务（用户提交）
+    let (alice, alice_http) = register_user(&app, "alice-filter").await;
+    let alice_id = alice["id"].as_str().unwrap().to_string();
+    let grant = app
+        .web(
+            reqwest::Method::PUT,
+            &format!("/users/{alice_id}/permissions"),
+        )
+        .json(&json!({"permissions":[
+            {"project":"default-project","field":"project_access","allowed_values":null},
+            {"project":"default-project","field":"task_create","allowed_values":null},
+            {"project":"default-project","field":"type","allowed_values":["新增需求"]},
+            {"project":"default-project","field":"description","allowed_values":null}
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(grant.status(), 200);
+    let alice_task = alice_http
+        .post(format!("{}/api/web/tasks", app.base))
+        .json(&json!({
+            "project": "default-project",
+            "type": "新增需求",
+            "description": "alice 的用户任务"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(alice_task.status(), 201);
+    let alice_task_id = alice_task.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let list_ids = |path: &str| {
+        let app = &app;
+        let path = path.to_string();
+        async move {
+            let res = app
+                .web(reqwest::Method::GET, &format!("/tasks?{path}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(res.status(), 200, "list {path} 应成功");
+            res.json::<Value>()
+                .await
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["id"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        }
+    };
+    let enc = |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+
+    // 大类语义不变
+    let ids = list_ids(&format!("submitter={}", enc("用户"))).await;
+    assert!(ids.contains(&host_web_id) && ids.contains(&alice_task_id) && !ids.contains(&host_agent_id));
+    let ids = list_ids(&format!("submitter={}", enc("Agent"))).await;
+    assert!(ids.contains(&host_agent_id) && !ids.contains(&host_web_id));
+
+    // 按具体提交人：裸用户名只命中「用户」提交；`Agent（用户名）` 只命中 Agent 提交
+    let ids = list_ids(&format!("submitter={}", enc("主机"))).await;
+    assert!(
+        ids.contains(&host_web_id) && !ids.contains(&host_agent_id) && !ids.contains(&alice_task_id),
+        "裸用户名只应命中该账号作为用户提交的任务"
+    );
+    let ids = list_ids(&format!("submitter={}", enc("Agent（主机）"))).await;
+    assert!(
+        ids.contains(&host_agent_id) && !ids.contains(&host_web_id) && !ids.contains(&alice_task_id),
+        "Agent（用户名）只应命中该账号作为 Agent 提交的任务"
+    );
+    let ids = list_ids(&format!("submitter={}", enc("alice-filter"))).await;
+    assert!(ids.contains(&alice_task_id) && !ids.contains(&host_web_id));
+
+    // 大类 + 具体提交人混选：并集
+    let ids = list_ids(&format!("submitter={}&submitter={}", enc("Agent"), enc("alice-filter"))).await;
+    assert!(
+        ids.contains(&host_agent_id) && ids.contains(&alice_task_id) && !ids.contains(&host_web_id)
+    );
+
+    // 分页接口同样接受具体提交人筛选（与 list 同一 filter_sql）
+    let res = app
+        .web(
+            reqwest::Method::GET,
+            &format!("/tasks/page?submitter={}", enc("主机")),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let page: Value = res.json().await.unwrap();
+    let ids: Vec<String> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(ids.contains(&host_web_id) && !ids.contains(&host_agent_id) && !ids.contains(&alice_task_id));
+
+    // 「未知用户」捞回 owner 置空的历史任务（模拟账号已删除）
+    {
+        let conn = app.core.db.lock().unwrap();
+        conn.execute(
+            "UPDATE tasks SET owner_user_id=NULL WHERE id=?1",
+            [&alice_task_id],
+        )
+        .unwrap();
+    }
+    let ids = list_ids(&format!("submitter={}", enc("未知用户"))).await;
+    assert!(ids.contains(&alice_task_id) && !ids.contains(&host_web_id));
+
+    // alice 账号还在但任务 owner 已置空 → 她的「用户」组合消失，只剩「未知用户」；删除账号后也一样
+    let res = app
+        .web(reqwest::Method::GET, "/users/submitter-directory")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let names: Vec<String> = res
+        .json::<Value>()
+        .await
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "Agent（主机）".to_string(),
+            "主机".to_string(),
+            "未知用户".to_string()
+        ]
+    );
+    let res = app
+        .web(reqwest::Method::DELETE, &format!("/users/{alice_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+}
+
+#[tokio::test]
+async fn submitter_directory_lists_active_task_owners() {
+    let app = spawn_app().await;
+    let (alice, alice_http) = register_user(&app, "alice-dir").await;
+    let alice_id = alice["id"].as_str().unwrap().to_string();
+    let grant = app
+        .web(
+            reqwest::Method::PUT,
+            &format!("/users/{alice_id}/permissions"),
+        )
+        .json(&json!({"permissions":[
+            {"project":"default-project","field":"project_access","allowed_values":null},
+            {"project":"default-project","field":"task_create","allowed_values":null},
+            {"project":"default-project","field":"type","allowed_values":["新增需求"]},
+            {"project":"default-project","field":"description","allowed_values":null}
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(grant.status(), 200);
+    let created = alice_http
+        .post(format!("{}/api/web/tasks", app.base))
+        .json(&json!({
+            "project": "default-project",
+            "type": "新增需求",
+            "description": "alice 的任务"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+    // 主机同时有「用户」任务和 Agent 任务
+    create_task(&app, false, "主机的任务").await;
+    create_task(&app, true, "主机的 Agent 任务").await;
+
+    // 管理员看全量：每个 (owner, submitter) 组合一条
+    let res = app
+        .web(reqwest::Method::GET, "/users/submitter-directory")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let names: Vec<String> = res
+        .json::<Value>()
+        .await
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "Agent（主机）".to_string(),
+            "alice-dir".to_string(),
+            "主机".to_string()
+        ]
+    );
+
+    // 停用 alice → 她的组合从候选名单消失
+    let res = app
+        .web(reqwest::Method::PATCH, &format!("/users/{alice_id}"))
+        .json(&json!({"disabled": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let res = app
+        .web(reqwest::Method::GET, "/users/submitter-directory")
+        .send()
+        .await
+        .unwrap();
+    let names: Vec<String> = res
+        .json::<Value>()
+        .await
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["Agent（主机）".to_string(), "主机".to_string()]
+    );
+}
+
 // ── 删除任务时清理磁盘附件（review P2-1） ────────────────
 
 #[tokio::test]
@@ -1397,4 +1979,166 @@ async fn lan_bind_serves_on_all_interfaces() {
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
+}
+
+// ── 全局主题（设置窗口与网页界面共用一份） ────────────────
+
+#[tokio::test]
+async fn appearance_read_is_public_and_defaults_to_null() {
+    let app = spawn_app().await;
+    // 未登录也能读：登录页要靠它着色
+    let raw = reqwest::Client::new();
+    let res = raw
+        .get(format!("{}/api/web/appearance", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.json::<Value>().await.unwrap()["theme"], Value::Null);
+}
+
+#[tokio::test]
+async fn appearance_write_requires_session_and_client_header() {
+    let app = spawn_app().await;
+    let raw = reqwest::Client::new();
+    // 完全匿名的 PUT（无头无会话）先被 X-PM-Client 检查拦下 → 403
+    let res = raw
+        .put(format!("{}/api/web/appearance", app.base))
+        .json(&json!({"theme": "dark"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+
+    // 带自定义头但无会话 → 401（写入口需要登录）
+    let res = raw
+        .put(format!("{}/api/web/appearance", app.base))
+        .header("X-PM-Client", "web")
+        .json(&json!({"theme": "dark"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+
+    // 有会话但缺 X-PM-Client 头 → 403
+    let login = raw
+        .post(format!("{}/api/web/auth/host-login", app.base))
+        .header("X-PM-Client", "web")
+        .send()
+        .await
+        .unwrap();
+    let cookie = login
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let res = raw
+        .put(format!("{}/api/web/appearance", app.base))
+        .header(reqwest::header::COOKIE, &cookie)
+        .json(&json!({"theme": "dark"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+}
+
+#[tokio::test]
+async fn appearance_put_updates_state_and_persists_to_settings_json() {
+    let app = spawn_app().await;
+    let data_dir = app._tmp.path().to_path_buf();
+
+    // 非法值 → 422
+    let res = app
+        .web(reqwest::Method::PUT, "/appearance")
+        .json(&json!({"theme": "blue"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 422);
+
+    // 合法写入 → 204，读回新值，settings.json 落盘
+    let res = app
+        .web(reqwest::Method::PUT, "/appearance")
+        .json(&json!({"theme": "dark"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+
+    let res = app
+        .web(reqwest::Method::GET, "/appearance")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.json::<Value>().await.unwrap()["theme"], json!("dark"));
+
+    let saved = std::fs::read_to_string(data_dir.join("settings.json")).unwrap();
+    let saved: Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(saved["theme"], json!("dark"), "主题应写入 settings.json");
+}
+
+#[tokio::test]
+async fn sse_broadcasts_theme_changed_with_value() {
+    let app = spawn_app().await;
+    // 先建立 SSE 订阅，再改主题：应收到带值的 theme_changed 事件
+    let mut resp = app
+        .http
+        .get(format!("{}/api/web/events", app.base))
+        .send()
+        .await
+        .unwrap();
+
+    let res = app
+        .web(reqwest::Method::PUT, "/appearance")
+        .json(&json!({"theme": "light"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+
+    let deadline = std::time::Duration::from_secs(5);
+    let mut got = None;
+    while let Ok(Ok(Some(chunk))) = tokio::time::timeout(deadline, resp.chunk()).await {
+        let text = String::from_utf8_lossy(&chunk).to_string();
+        // SSE 帧：event: theme_changed\ndata: {"theme":"light"}
+        if text.contains("theme_changed") {
+            got = Some(text);
+            break;
+        }
+    }
+    let frame = got.expect("5 秒内应收到 theme_changed 事件");
+    assert!(
+        frame.contains("\"theme\":\"light\"") || frame.contains("\"theme\": \"light\""),
+        "事件应携带主题值：{frame}"
+    );
+}
+
+#[tokio::test]
+async fn stopping_server_is_bounded_even_with_an_open_sse_stream() {
+    let app = spawn_app().await;
+    let stream = app
+        .http
+        .get(format!("{}/api/web/events", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stream.status(), 200);
+
+    let TestApp {
+        _handle: handle,
+        _tmp: temp,
+        core,
+        http,
+        ..
+    } = app;
+    let _keep_alive = (stream, temp, core, http);
+    tokio::time::timeout(std::time::Duration::from_secs(2), handle.stop())
+        .await
+        .expect("SSE 长连接不应无限阻塞服务重启");
 }
