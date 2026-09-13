@@ -56,6 +56,7 @@ pm-cli config show
 - OpenCode：`$HOME/.config/opencode/skills/pm-cli`。
 - Cursor：`$HOME/.cursor/skills/pm-cli`。
 - Pi：`$HOME/.pi/agent/skills/pm-cli`。
+- DeepSeek Harness：`$HOME/.dsh/skills/pm-cli`（设置了 `DSH_HOME` 时用 `$DSH_HOME/skills/pm-cli`）。
 
 安装后如未被识别，重新启动对应 Agent 前端。
 

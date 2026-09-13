@@ -163,7 +163,7 @@ async function close() {
         <UiIcon name="folder" :size="24" />
       </span>
       <div>
-        <span>{{ editing ? "管理当前项目" : "创建新的工作空间" }}</span>
+        <span>{{ editing ? "管理当前项目" : "创建新的项目" }}</span>
         <strong>{{ name.trim() || "未命名项目" }}</strong>
         <p>
           {{

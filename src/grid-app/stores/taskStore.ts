@@ -6,7 +6,6 @@ import type {
   Task,
   TaskPageQuery,
   TaskPage,
-  TaskStatus,
   TaskGroupCount,
   TaskBatchRequest,
 } from "@/shared/types";
@@ -394,10 +393,6 @@ export const useTaskStore = defineStore("tasks", () => {
   function setProject(project?: string) {
     filters.value.project = project ? [project] : [];
   }
-  function setPreset(status?: TaskStatus) {
-    clearFilters();
-    filters.value.status = status ? [status] : [];
-  }
   function applyFilters(value: unknown) {
     filters.value = sanitizeFilters(value);
   }
@@ -472,7 +467,6 @@ export const useTaskStore = defineStore("tasks", () => {
     toggleFilter,
     clearFilters,
     setProject,
-    setPreset,
     toggleSort,
     applyFilters,
     toggleSelection,

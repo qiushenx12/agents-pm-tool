@@ -4,11 +4,11 @@
 //! 注：`build.rs` 给测试目标补了 Common-Controls v6 的清单依赖，
 //! 否则链接了托盘代码的测试进程会因 comctl32 退回 5.82 而启动即失败。
 
-use agents_pm_tool_lib::focus_or_create_app_window;
 use agents_pm_tool_lib::server::CoreStateInner;
 use agents_pm_tool_lib::settings::Settings;
-use agents_pm_tool_lib::window_state::{self, GeometryTracker, WindowGeometry};
+use agents_pm_tool_lib::window_state::{self, ActiveView, GeometryTracker, WindowGeometry};
 use agents_pm_tool_lib::AppState;
+use agents_pm_tool_lib::{focus_or_create_app_window, restore_active_view};
 use std::sync::Mutex;
 use tauri::Manager;
 
@@ -30,6 +30,7 @@ fn mock_app_with_data_dir(data_dir: &std::path::Path) -> tauri::App<tauri::test:
         core,
         server: Mutex::new(None),
         app_window: Mutex::new(GeometryTracker::default()),
+        active_view: Mutex::new(window_state::load_active_view(data_dir)),
     });
     app
 }
@@ -138,4 +139,34 @@ fn clamps_a_geometry_from_another_display_instead_of_failing() {
     focus_or_create_app_window(app.handle(), 17890).unwrap();
 
     assert!(app.get_webview_window("web").is_some());
+}
+
+#[test]
+fn restores_the_workspace_view_saved_on_exit() {
+    let dir = tempfile::tempdir().unwrap();
+    window_state::save_active_view(dir.path(), ActiveView::Workspace).unwrap();
+    let app = mock_app_with_data_dir(dir.path());
+
+    restore_active_view(app.handle(), Some(17890)).unwrap();
+
+    assert!(app.get_webview_window("web").is_some());
+    assert_eq!(
+        *app.state::<AppState>().active_view.lock().unwrap(),
+        ActiveView::Workspace
+    );
+}
+
+#[test]
+fn workspace_view_falls_back_to_settings_without_a_server() {
+    let dir = tempfile::tempdir().unwrap();
+    window_state::save_active_view(dir.path(), ActiveView::Workspace).unwrap();
+    let app = mock_app_with_data_dir(dir.path());
+
+    restore_active_view(app.handle(), None).unwrap();
+
+    assert!(app.get_webview_window("web").is_none());
+    assert_eq!(
+        *app.state::<AppState>().active_view.lock().unwrap(),
+        ActiveView::Settings
+    );
 }

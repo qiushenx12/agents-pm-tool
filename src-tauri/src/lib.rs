@@ -18,6 +18,8 @@ pub struct AppState {
     pub server: Mutex<Option<server::ServerHandle>>,
     /// 应用内网页窗口的几何记忆（关闭时落盘，见 window_state）
     pub app_window: Mutex<window_state::GeometryTracker>,
+    /// 当前停留的桌面界面；退出时写入 window-state.json，供下次启动恢复。
+    pub active_view: Mutex<window_state::ActiveView>,
 }
 
 #[derive(Serialize)]
@@ -181,6 +183,18 @@ fn persist_app_window_geometry<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+/// 退出前把当前界面与工作区窗口几何一起持久化。
+fn persist_desktop_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    persist_app_window_geometry(app);
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let active_view = *state.active_view.lock().unwrap();
+    if let Err(error) = window_state::save_active_view(&state.core.data_dir, active_view) {
+        eprintln!("保存应用界面状态失败：{error}");
+    }
+}
+
 #[tauri::command]
 async fn save_settings(
     app: tauri::AppHandle,
@@ -306,6 +320,57 @@ fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+fn active_view<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> window_state::ActiveView {
+    app.try_state::<AppState>()
+        .map(|state| *state.active_view.lock().unwrap())
+        .unwrap_or_default()
+}
+
+fn set_active_view<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    active_view: window_state::ActiveView,
+) {
+    if let Some(state) = app.try_state::<AppState>() {
+        *state.active_view.lock().unwrap() = active_view;
+    }
+}
+
+fn show_settings_view<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    show_main_window(app);
+    set_active_view(app, window_state::ActiveView::Settings);
+}
+
+fn show_workspace_view<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    port: u16,
+) -> Result<(), String> {
+    focus_or_create_app_window(app, port)?;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    set_active_view(app, window_state::ActiveView::Workspace);
+    Ok(())
+}
+
+/// 恢复上次退出时停留的界面。工作区依赖内嵌服务；服务不可用时回退到设置页。
+/// 公开是为了让窗口级测试覆盖真实的启动选择逻辑。
+pub fn restore_active_view<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    port: Option<u16>,
+) -> Result<(), String> {
+    if active_view(app) == window_state::ActiveView::Workspace {
+        if let Some(port) = port {
+            if let Err(error) = show_workspace_view(app, port) {
+                show_settings_view(app);
+                return Err(error);
+            }
+            return Ok(());
+        }
+    }
+    show_settings_view(app);
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WindowCloseAction {
     /// 设置窗口在保留服务时隐藏，以便从托盘再次打开。
@@ -343,7 +408,7 @@ pub fn show_settings_and_close_app_window<R: tauri::Runtime>(
             .destroy()
             .map_err(|error| format!("关闭应用窗口失败：{error}"))?;
     }
-    show_main_window(app);
+    show_settings_view(app);
     Ok(())
 }
 
@@ -359,7 +424,7 @@ fn open_web_page(app: &tauri::AppHandle) {
 #[tauri::command]
 async fn open_app_window(app: tauri::AppHandle) -> Result<(), String> {
     let port = server_port(&app).ok_or("服务未运行，无法进入应用")?;
-    focus_or_create_app_window(&app, port)
+    show_workspace_view(&app, port)
 }
 
 /// 应用内工作台的“设置”：关闭工作台窗口并回到桌面设置窗口。
@@ -390,13 +455,13 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .tooltip("Agents PM Tool")
         .icon(app.default_window_icon().unwrap().clone())
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "tray_show" => show_main_window(app),
+            "tray_show" => show_settings_view(app),
             "tray_open_web" => open_web_page(app),
             "tray_quit" => {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    // 先记录应用窗口几何，再停服务退出
-                    persist_app_window_geometry(&app);
+                    // 先记录当前界面与应用窗口几何，再停服务退出
+                    persist_desktop_state(&app);
                     shutdown_server(&app).await;
                     app.exit(0);
                 });
@@ -410,7 +475,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                show_main_window(tray.app_handle());
+                show_settings_view(tray.app_handle());
             }
         })
         .build(app)?;
@@ -422,7 +487,7 @@ pub fn run() {
     tauri::Builder::default()
         // 单实例：重复启动时聚焦已有窗口，避免起第二个服务（端口顺延导致双实例）
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main_window(app);
+            let _ = restore_active_view(app, server_port(app));
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
@@ -434,6 +499,7 @@ pub fn run() {
             })?;
             let db_conn = db::open(&paths::db_path(&data_dir))?;
             let app_settings = Settings::load(&paths::settings_path(&data_dir));
+            let startup_view = window_state::load_active_view(&data_dir);
             let core = server::CoreStateInner::new(data_dir, db_conn, app_settings.clone());
             let core = std::sync::Arc::new(core);
 
@@ -441,6 +507,7 @@ pub fn run() {
                 core: core.clone(),
                 server: Mutex::new(None),
                 app_window: Mutex::new(window_state::GeometryTracker::default()),
+                active_view: Mutex::new(startup_view),
             });
 
             // 网页端改主题（PUT appearance）→ 转发给设置窗口实时换肤
@@ -511,17 +578,42 @@ pub fn run() {
                             let actual = h.port;
                             *handle.state::<AppState>().server.lock().unwrap() = Some(h);
                             eprintln!("服务已启动 http://127.0.0.1:{actual}");
+                            // 只有上次停留在工作区、且启动期间没有切回设置页时才直接恢复。
+                            if active_view(&handle) == window_state::ActiveView::Workspace {
+                                if let Err(error) = restore_active_view(&handle, Some(actual)) {
+                                    eprintln!("恢复应用界面失败：{error}");
+                                }
+                            }
                         }
-                        Err(e) => eprintln!("服务启动失败：{}", e.message),
+                        Err(e) => {
+                            eprintln!("服务启动失败：{}", e.message);
+                            if active_view(&handle) == window_state::ActiveView::Workspace {
+                                show_settings_view(&handle);
+                            }
+                        }
                     }
                 });
             }
 
-            // 窗口创建完成后显示（frameless 避免白屏闪烁）
-            show_main_window(app.handle());
+            // 设置页可立即显示；工作区则等内嵌服务成功后直接恢复，避免先闪出设置页。
+            if !app_settings.autostart || startup_view == window_state::ActiveView::Settings {
+                show_settings_view(app.handle());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
+            // 若设置页与工作区因托盘操作短暂同时存在，以最后获得焦点的界面为准。
+            if matches!(event, WindowEvent::Focused(true)) {
+                match window.label() {
+                    "main" => {
+                        set_active_view(window.app_handle(), window_state::ActiveView::Settings)
+                    }
+                    APP_WINDOW_LABEL => {
+                        set_active_view(window.app_handle(), window_state::ActiveView::Workspace)
+                    }
+                    _ => {}
+                }
+            }
             // 应用内网页窗口：位置/大小/最大化状态随时记，关窗时落盘
             if window.label() == APP_WINDOW_LABEL {
                 match event {
@@ -559,7 +651,7 @@ pub fn run() {
                         api.prevent_close();
                         let app = window.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
-                            persist_app_window_geometry(&app);
+                            persist_desktop_state(&app);
                             shutdown_server(&app).await;
                             app.exit(0);
                         });

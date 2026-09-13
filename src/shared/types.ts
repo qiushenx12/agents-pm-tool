@@ -90,7 +90,8 @@ export type LocalSkillFrontendId =
   | "workbuddy"
   | "opencode"
   | "cursor"
-  | "pi";
+  | "pi"
+  | "deepseek_harness";
 
 export interface LocalSkillTarget {
   frontend_id: LocalSkillFrontendId;

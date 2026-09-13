@@ -28,7 +28,7 @@ import HostSettingsDialog from "./components/users/HostSettingsDialog.vue";
 import { useMetaStore } from "./stores/metaStore";
 import { useTaskStore } from "./stores/taskStore";
 import { useViewStore } from "./stores/viewStore";
-import type { Task, TaskStatus, User } from "@/shared/types";
+import type { Task, User } from "@/shared/types";
 import { setAgentPromptAccess } from "./taskActions";
 import {
   collapseHeight,
@@ -146,25 +146,8 @@ const title = computed(() => activeProject.value || "任务管理");
 const isAdmin = computed(() =>
   ["admin", "super_admin"].includes(currentUser.value?.role ?? ""),
 );
-const presets: { label: string; icon: string; status?: TaskStatus }[] = [
-  { label: "全部任务", icon: "grid" },
-  { label: "待验证", icon: "review", status: "待验证" },
-  { label: "验收未通过", icon: "circle", status: "验收未通过" },
-];
-function presetActive(status?: TaskStatus) {
-  const f = tasks.filters;
-  return (
-    !f.project.length &&
-    !f.type.length &&
-    !f.submitter.length &&
-    !f.keyword &&
-    (status
-      ? f.status_mode === "include" &&
-        f.status.length === 1 &&
-        f.status[0] === status
-      : !f.status.length)
-  );
-}
+/** 侧栏收成图标栏后标题（折叠开关）会被隐藏，项目列表就保持可见。 */
+const projectsVisible = computed(() => view.projectsOpen || view.collapsed);
 function onCreated(task: Task) {
   showCreate.value = false;
   const latest = tasks.records[task.id] ?? task;
@@ -359,34 +342,42 @@ onBeforeUnmount(() => {
   <AuthScreen v-else-if="!currentUser" @authenticated="authenticated" />
   <div v-else class="workspace" :class="{ 'sidebar-collapsed': view.collapsed }">
     <aside class="workspace-sidebar" aria-label="工作区导航">
-      <div class="brand">
-        <span class="brand-mark"><UiIcon name="layers" :size="22" /></span>
-        <div class="brand-copy">
-          <strong>Agents PM</strong><span>项目与任务工作台</span>
-        </div>
-      </div>
-      <div class="sidebar-content">
-        <div class="nav-section-label">工作空间</div>
-        <nav class="workspace-nav">
+      <div class="sidebar-module">
+        <div class="sidebar-module-head">
           <button
-            v-for="preset in presets"
-            :key="preset.label"
-            class="nav-item"
-            :class="{ active: presetActive(preset.status) }"
-            :aria-current="presetActive(preset.status) ? 'page' : undefined"
-            :title="preset.label"
-            @click="tasks.setPreset(preset.status)"
+            type="button"
+            class="module-toggle"
+            :aria-expanded="view.projectsOpen"
+            aria-controls="sidebar-projects"
+            :title="view.projectsOpen ? '收起项目' : '展开项目'"
+            @click="view.projectsOpen = !view.projectsOpen"
           >
-            <UiIcon :name="preset.icon" /><span>{{ preset.label }}</span>
+            Agents PM Tool
           </button>
-        </nav>
-        <SidebarProjects
-          :active-project="activeProject"
-          :is-admin="isAdmin"
-          @select="tasks.setProject"
-          @create="openProjectCreate"
-          @edit="openProjectSettings"
-        />
+          <button
+            v-if="isAdmin"
+            type="button"
+            class="icon-btn"
+            aria-label="新建项目"
+            title="新建项目"
+            @click="openProjectCreate"
+          >
+            <UiIcon name="plus" :size="14" />
+          </button>
+        </div>
+        <div
+          id="sidebar-projects"
+          v-show="projectsVisible"
+          class="sidebar-content"
+        >
+          <SidebarProjects
+            :active-project="activeProject"
+            :is-admin="isAdmin"
+            @select="tasks.setProject"
+            @create="openProjectCreate"
+            @edit="openProjectSettings"
+          />
+        </div>
       </div>
       <div class="sidebar-footer">
         <button
@@ -426,7 +417,7 @@ onBeforeUnmount(() => {
             @click="view.collapsed = !view.collapsed"
           >
             <UiIcon name="sidebar" /></button
-          ><span>工作空间</span><UiIcon name="right" :size="12" /><span>{{
+          ><span>Agents PM Tool</span><UiIcon name="right" :size="12" /><span>{{
             title
           }}</span>
         </div>

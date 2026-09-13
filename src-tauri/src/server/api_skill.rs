@@ -113,13 +113,14 @@ pub struct SkillTarget {
 type SkillRoot = (&'static str, &'static str, PathBuf);
 
 /// 支持一键安装 skill 的 Agent 前端：前端 id 与展示名。
-const FRONTENDS: [(&str, &str); 6] = [
+const FRONTENDS: [(&str, &str); 7] = [
     ("codex", "Codex"),
     ("claude_code", "Claude Code"),
     ("workbuddy", "WorkBuddy"),
     ("opencode", "OpenCode"),
     ("cursor", "Cursor"),
     ("pi", "Pi"),
+    ("deepseek_harness", "DeepSeek Harness"),
 ];
 
 fn frontend_label(frontend_id: &str) -> Option<&'static str> {
@@ -129,12 +130,24 @@ fn frontend_label(frontend_id: &str) -> Option<&'static str> {
         .map(|(_, label)| *label)
 }
 
+/// DeepSeek Harness 把全部用户数据收在单一根目录下：`$DSH_HOME`（默认 `~/.dsh`），
+/// skill 目录是它下面的 `skills/`。空白的 `$DSH_HOME` 按未设置处理，避免解析到当前工作目录。
+fn deepseek_harness_skills_root(home: &std::path::Path, configured: Option<&str>) -> PathBuf {
+    configured
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".dsh"))
+        .join("skills")
+}
+
 /// 每个前端的 skill 根目录定义，不做存在性过滤。
 /// 目录取自各前端官方文档的全局（用户级）skill 位置。
 fn all_skill_roots() -> Vec<SkillRoot> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
+    let dsh_home = std::env::var("DSH_HOME").ok();
     vec![
         ("codex", "Codex", home.join(".agents").join("skills")),
         (
@@ -162,6 +175,11 @@ fn all_skill_roots() -> Vec<SkillRoot> {
             "pi",
             "Pi",
             home.join(".pi").join("agent").join("skills"),
+        ),
+        (
+            "deepseek_harness",
+            "DeepSeek Harness",
+            deepseek_harness_skills_root(&home, dsh_home.as_deref()),
         ),
     ]
 }
@@ -429,7 +447,46 @@ mod tests {
             );
             assert!(matched.iter().any(|(_, name, _)| *name == label));
         }
-        assert_eq!(roots.len(), 7, "Codex 有两个 skill 目录，其余前端各一个");
+        assert_eq!(roots.len(), 8, "Codex 有两个 skill 目录，其余前端各一个");
+    }
+
+    #[test]
+    fn deepseek_harness_uses_dsh_home_for_its_skill_root() {
+        let home = PathBuf::from("C:\\Users\\tester");
+        assert_eq!(
+            deepseek_harness_skills_root(&home, None),
+            home.join(".dsh").join("skills"),
+            "未设置 DSH_HOME 时回落到 ~/.dsh"
+        );
+        assert_eq!(
+            deepseek_harness_skills_root(&home, Some("   ")),
+            home.join(".dsh").join("skills"),
+            "空白 DSH_HOME 视为未设置"
+        );
+        assert_eq!(
+            deepseek_harness_skills_root(&home, Some(" D:\\dsh-home ")),
+            PathBuf::from("D:\\dsh-home").join("skills"),
+            "DSH_HOME 覆盖默认根目录，并容忍首尾空白"
+        );
+    }
+
+    #[test]
+    fn deepseek_harness_install_writes_into_dsh_skills_root() {
+        let temporary = tempfile::tempdir().unwrap();
+        let roots = vec![(
+            "deepseek_harness",
+            "DeepSeek Harness",
+            deepseek_harness_skills_root(temporary.path(), None),
+        )];
+        let selected = select_frontend_roots(roots, "deepseek_harness").unwrap();
+        assert_eq!(selected.len(), 1);
+        install_into_roots(&selected, b"fake executable").unwrap();
+        let installed = selected[0].2.join(SKILL_NAME);
+        assert!(installed.join("SKILL.md").is_file());
+        assert_eq!(
+            std::fs::read(installed.join("bin").join("pm-cli.exe")).unwrap(),
+            b"fake executable"
+        );
     }
 
     #[test]

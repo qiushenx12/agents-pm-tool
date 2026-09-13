@@ -60,6 +60,7 @@ export const useViewStore = defineStore("view", () => {
     columns?: { key: string; width: number; visible: boolean }[];
     density?: number;
     collapsed?: boolean;
+    projectsOpen?: boolean;
   } = {};
   try {
     saved = JSON.parse(localStorage.getItem("pm-table-view-v1") || "{}") ?? {};
@@ -104,6 +105,8 @@ export const useViewStore = defineStore("view", () => {
     [32, 36, 44].includes(saved.density ?? 0) ? saved.density! : 36,
   );
   const collapsed = ref(saved.collapsed ?? window.innerWidth < 1100);
+  /** 侧栏「Agents PM」模块的展开状态：收起只留模块标题，展开显示项目列表。 */
+  const projectsOpen = ref(saved.projectsOpen ?? true);
   const visibleColumns = computed(() => columns.value.filter((c) => c.visible));
   function reset() {
     columns.value = DEFAULT_COLUMNS.map((c) => ({ ...c }));
@@ -141,7 +144,7 @@ export const useViewStore = defineStore("view", () => {
     );
   }
   watch(
-    [columns, density, collapsed],
+    [columns, density, collapsed, projectsOpen],
     () => {
       try {
         localStorage.setItem(
@@ -150,6 +153,7 @@ export const useViewStore = defineStore("view", () => {
             columns: columns.value,
             density: density.value,
             collapsed: collapsed.value,
+            projectsOpen: projectsOpen.value,
           }),
         );
       } catch {
@@ -163,6 +167,7 @@ export const useViewStore = defineStore("view", () => {
     visibleColumns,
     density,
     collapsed,
+    projectsOpen,
     reset,
     moveColumn,
     moveBefore,

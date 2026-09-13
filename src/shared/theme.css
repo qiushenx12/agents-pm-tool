@@ -42,6 +42,9 @@
   --brand-claude-fg: #c05f3c;
   --brand-workbuddy-bg: #d6f7ee;
   --brand-workbuddy-fg: #00a37c;
+  /* DeepSeek 品牌蓝取自官方标识 #4D6BFE： */
+  --brand-deepseek-bg: #e6ebff;
+  --brand-deepseek-fg: #4d6bfe;
   /* OpenCode / Cursor / Pi 官方标识只有黑白两态，直接取各自官网的 ink： */
   /* OpenCode 画布/surface #131010 + ink-primary #F2EDED；Cursor 暗色 theme-color #14120b + 亮色 #f7f7f4；Pi favicon #09090b + 白标。 */
   --brand-opencode-bg: #131010;
@@ -110,6 +113,8 @@
   --brand-claude-fg: #e8a184;
   --brand-workbuddy-bg: #143b32;
   --brand-workbuddy-fg: #33d6ab;
+  --brand-deepseek-bg: #232c56;
+  --brand-deepseek-fg: #8aa2ff;
   /* OpenCode / Cursor / Pi 是单色品牌，官方只有一套 ink 素材，明暗主题沿用 :root 的值不反转； */
   /* 深色卡片上它们仍是"更暗的墨块 + 浅色标"，只需把强调条换成浅色 ink。 */
   --brand-opencode-accent: #f2eded;

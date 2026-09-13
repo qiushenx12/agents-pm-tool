@@ -24,10 +24,23 @@ const emit = defineEmits<{
 const meta = useMetaStore(),
   tasks = useTaskStore(),
   queue = useUploadQueue();
-const initialProject =
-  tasks.filters.project.length === 1
-    ? tasks.filters.project[0]
-    : (meta.projects[0]?.name ?? "");
+const LAST_PROJECT_KEY = "pm-create-task-project-v1";
+function lastProject() {
+  try {
+    return localStorage.getItem(LAST_PROJECT_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+function initialProjectFrom(projects = meta.projects) {
+  const saved = lastProject();
+  if (projects.some((item) => item.name === saved)) return saved;
+  const filtered =
+    tasks.filters.project.length === 1 ? tasks.filters.project[0] : "";
+  if (projects.some((item) => item.name === filtered)) return filtered;
+  return projects[0]?.name ?? "";
+}
+const initialProject = initialProjectFrom();
 const project = ref(initialProject),
   type = ref<TaskType>("新增需求"),
   priority = ref<Priority>(DEFAULT_PRIORITY),
@@ -43,9 +56,17 @@ watch(
   () => meta.projects,
   (list) => {
     if (!list.some((p) => p.name === project.value))
-      project.value = list[0]?.name ?? "";
+      project.value = initialProjectFrom(list);
   },
 );
+watch(project, (value) => {
+  if (!value) return;
+  try {
+    localStorage.setItem(LAST_PROJECT_KEY, value);
+  } catch {
+    /* browsing without storage still works */
+  }
+});
 const busy = computed(() => submitting.value || queue.busy.value);
 function finish() {
   if (!createdTask.value) return;

@@ -53,6 +53,10 @@ const frontendCards = computed(() =>
       id: "pi" as const,
       title: "Pi",
     },
+    {
+      id: "deepseek_harness" as const,
+      title: "DeepSeek Harness",
+    },
   ].map((frontend) => {
     const detected = targets.value.filter(
       (target) => target.frontend_id === frontend.id,

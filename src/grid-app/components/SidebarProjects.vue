@@ -108,18 +108,6 @@ function moveWithKeyboard(name: string, direction: -1 | 1) {
 </script>
 
 <template>
-  <div class="nav-section-label project-section-label">
-    <span>项目</span
-    ><button
-      v-if="props.isAdmin"
-      class="icon-btn"
-      aria-label="新建项目"
-      title="新建项目"
-      @click="emit('create')"
-    >
-      <UiIcon name="plus" :size="14" />
-    </button>
-  </div>
   <nav class="workspace-nav project-nav" aria-label="项目列表">
     <div
       v-for="project in meta.projects"

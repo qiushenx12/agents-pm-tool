@@ -361,7 +361,10 @@ it("keeps only the sidebar toggle beside the workspace breadcrumb", async () => 
     return buttons[0];
   });
   expect(collapseButton.closest(".breadcrumb")).not.toBeNull();
-  expect(host.querySelector(".brand button")).toBeNull();
+  // 侧栏标题行只有折叠标题和新建项目，整栏收起按钮只有面包屑上这一个。
+  expect(
+    host.querySelector('.sidebar-module-head [aria-label="收起侧栏"]'),
+  ).toBeNull();
 
   collapseButton.click();
   await nextTick();

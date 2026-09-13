@@ -172,6 +172,62 @@ it("renders and installs the WorkBuddy skill target", async () => {
   );
 });
 
+it("renders and installs the DeepSeek Harness skill target", async () => {
+  const user: User = {
+    id: "host",
+    username: "主机",
+    role: "super_admin",
+    created_at: "2026-09-10 10:00:00",
+    disabled: false,
+    is_host: true,
+  };
+  const harness: LocalSkillTarget = {
+    frontend_id: "deepseek_harness",
+    frontend: "DeepSeek Harness",
+    path: "C:/Users/test/.dsh/skills/pm-cli",
+    installed: false,
+    version: null,
+  };
+  vi.mocked(api.getAgentAccess).mockResolvedValue({
+    server_url: "http://127.0.0.1:17890",
+    token: "host-token",
+    access_instructions: "本机 pm-cli 会自动读取连接信息。",
+  });
+  vi.mocked(api.listLocalSkills).mockResolvedValue([harness]);
+  vi.mocked(api.installLocalSkills).mockResolvedValue([
+    { ...harness, installed: true, version: "1.0.0" },
+  ]);
+
+  root = document.createElement("div");
+  document.body.append(root);
+  app = createApp(AgentAccessDialog, { user });
+  app.mount(root);
+
+  await vi.waitFor(() =>
+    expect(
+      document.querySelector('[data-frontend="deepseek_harness"] .skill-path')
+        ?.textContent,
+    ).toContain(".dsh"),
+  );
+  expect(
+    document.querySelector('[data-frontend="deepseek_harness"]')?.textContent,
+  ).toContain("DeepSeek Harness");
+  document
+    .querySelector<HTMLButtonElement>(
+      '[data-frontend="deepseek_harness"] .skill-install-button',
+    )!
+    .click();
+  await vi.waitFor(() =>
+    expect(api.installLocalSkills).toHaveBeenCalledWith("deepseek_harness"),
+  );
+  await vi.waitFor(() =>
+    expect(
+      document.querySelector('[data-frontend="deepseek_harness"] .skill-state')
+        ?.textContent,
+    ).toContain("已就绪"),
+  );
+});
+
 it("renders each Agent frontend with its official logo mark", async () => {
   const user: User = {
     id: "host",
@@ -194,7 +250,7 @@ it("renders each Agent frontend with its official logo mark", async () => {
   app.mount(root);
 
   await vi.waitFor(() =>
-    expect(document.querySelectorAll(".skill-frontend-card").length).toBe(6),
+    expect(document.querySelectorAll(".skill-frontend-card").length).toBe(7),
   );
   for (const frontend of [
     "codex",
@@ -203,6 +259,7 @@ it("renders each Agent frontend with its official logo mark", async () => {
     "opencode",
     "cursor",
     "pi",
+    "deepseek_harness",
   ]) {
     const mark = document.querySelector(`[data-frontend="${frontend}"] .skill-frontend-mark`)!;
     // 用真实矢量标识替换占位文字，卡片上不再出现 "CX"/"CL"/"WB" 之类的字母占位。

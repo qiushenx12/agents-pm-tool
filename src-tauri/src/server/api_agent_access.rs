@@ -70,7 +70,7 @@ pub async fn get_access(
         format!(
             "Agents PM Tool 位于远程主机，Agent 通过受限客户端 pm-cli 读取和推进任务。\
              pm-cli 由 pm-cli-skill 提供：可在网页端「我的 Agent 访问」下载 ZIP，解压到 Codex、\
-             Claude Code 或 WorkBuddy 的 skills 目录后即可使用；解压出的 exe 未注册到 PATH，\
+             Claude Code、WorkBuddy 或 DeepSeek Harness 等前端的 skills 目录后即可使用；解压出的 exe 未注册到 PATH，\
              需用完整路径调用，并先阅读同目录的 SKILL.md 了解完整用法。\
              远程环境不会自动读取端口与 token，需要手动配置：设置 PM_SERVER_URL={server_url} \
              与网页中签发的 PM_AGENT_TOKEN，或运行 pm-cli config set server-url {server_url} \

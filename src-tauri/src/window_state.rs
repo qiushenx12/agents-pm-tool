@@ -26,6 +26,10 @@ pub const MIN_HEIGHT: f64 = 600.0;
 /// 首次运行、没有历史几何时的默认尺寸
 pub const DEFAULT_WIDTH: f64 = 1280.0;
 pub const DEFAULT_HEIGHT: f64 = 840.0;
+/// Windows 的可调整大小窗口在贴住工作区边缘时，`outer_position` 会包含一小段
+/// DWM 隐藏边框（常见为 -6 到 -8 逻辑像素）。还原时必须容许这段偏移，否则左侧
+/// 吸附每次都会被强行推到 x=0，视觉内容反而向右错位。
+const WINDOWS_FRAME_ALLOWANCE: f64 = 16.0;
 
 /// 窗口几何（逻辑像素）
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -59,24 +63,57 @@ pub enum WindowPlacement {
     Minimized,
 }
 
+/// 桌面应用退出前最后停留的界面；旧版状态文件没有该字段时仍从设置页启动。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActiveView {
+    #[default]
+    Settings,
+    Workspace,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct WindowStateFile {
     #[serde(default)]
     app: Option<WindowGeometry>,
+    #[serde(default)]
+    active_view: ActiveView,
+}
+
+fn load_file(data_dir: &Path) -> Option<WindowStateFile> {
+    let raw = std::fs::read_to_string(paths::window_state_path(data_dir)).ok()?;
+    serde_json::from_str(&raw).ok()
 }
 
 /// 读取上次保存的窗口几何；文件缺失或损坏时按「没保存过」处理
 pub fn load(data_dir: &Path) -> Option<WindowGeometry> {
-    let raw = std::fs::read_to_string(paths::window_state_path(data_dir)).ok()?;
-    serde_json::from_str::<WindowStateFile>(&raw).ok()?.app
+    load_file(data_dir)?.app
+}
+
+/// 读取上次退出时的界面；首次启动或旧版/损坏状态文件默认进入设置页。
+pub fn load_active_view(data_dir: &Path) -> ActiveView {
+    load_file(data_dir)
+        .map(|state| state.active_view)
+        .unwrap_or_default()
+}
+
+fn save_file(data_dir: &Path, state: &WindowStateFile) -> std::io::Result<()> {
+    let body = serde_json::to_string_pretty(state)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(paths::window_state_path(data_dir), body)
 }
 
 pub fn save(data_dir: &Path, geometry: &WindowGeometry) -> std::io::Result<()> {
-    let body = serde_json::to_string_pretty(&WindowStateFile {
-        app: Some(*geometry),
-    })
-    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(paths::window_state_path(data_dir), body)
+    let mut state = load_file(data_dir).unwrap_or_default();
+    state.app = Some(*geometry);
+    save_file(data_dir, &state)
+}
+
+/// 保存退出时停留的界面，同时保留已经记录的工作区窗口几何。
+pub fn save_active_view(data_dir: &Path, active_view: ActiveView) -> std::io::Result<()> {
+    let mut state = load_file(data_dir).unwrap_or_default();
+    state.active_view = active_view;
+    save_file(data_dir, &state)
 }
 
 /// 记住最近一次"正常态"的位置与大小：最大化/最小化期间的事件不覆盖它。
@@ -168,6 +205,28 @@ fn fit_minimum(geometry: WindowGeometry) -> WindowGeometry {
     }
 }
 
+fn fit_to_work_area(
+    geometry: WindowGeometry,
+    left: f64,
+    top: f64,
+    room_width: f64,
+    room_height: f64,
+    frame_allowance: f64,
+) -> WindowGeometry {
+    let width = geometry.width.min(room_width.max(MIN_WIDTH));
+    let height = geometry.height.min(room_height.max(MIN_HEIGHT));
+    let min_x = left - frame_allowance.max(0.0);
+    let max_x = (left + room_width - width).max(left);
+    let max_y = (top + room_height - height).max(top);
+    WindowGeometry {
+        x: geometry.x.clamp(min_x, max_x),
+        y: geometry.y.clamp(top, max_y),
+        width,
+        height,
+        maximized: geometry.maximized,
+    }
+}
+
 /// 把保存的几何夹进当前显示器的工作区：换过显示器、拔掉副屏或改过分辨率之后，
 /// 窗口不会还原到看不见的地方，也不会比工作区还大。
 pub fn fit_to_desktop<R: Runtime>(
@@ -175,6 +234,11 @@ pub fn fit_to_desktop<R: Runtime>(
     geometry: WindowGeometry,
 ) -> WindowGeometry {
     let fitted = fit_minimum(geometry);
+    let frame_allowance = if cfg!(target_os = "windows") {
+        WINDOWS_FRAME_ALLOWANCE
+    } else {
+        0.0
+    };
     let Ok(monitors) = window.available_monitors() else {
         return fitted;
     };
@@ -185,12 +249,13 @@ pub fn fit_to_desktop<R: Runtime>(
     let contains = |monitor: &tauri::Monitor| {
         let position = monitor.position();
         let size = monitor.size();
-        let left = f64::from(position.x);
-        let top = f64::from(position.y);
-        geometry.x >= left
+        let scale = monitor.scale_factor().max(f64::EPSILON);
+        let left = f64::from(position.x) / scale;
+        let top = f64::from(position.y) / scale;
+        geometry.x >= left - frame_allowance
             && geometry.y >= top
-            && geometry.x < left + f64::from(size.width)
-            && geometry.y < top + f64::from(size.height)
+            && geometry.x < left + f64::from(size.width) / scale
+            && geometry.y < top + f64::from(size.height) / scale
     };
     let primary = window.primary_monitor().ok().flatten();
     let monitor = monitors
@@ -208,15 +273,7 @@ pub fn fit_to_desktop<R: Runtime>(
     let room_height = f64::from(area.size.height) / scale;
     let left = f64::from(area.position.x) / scale;
     let top = f64::from(area.position.y) / scale;
-    let width = fitted.width.min(room_width.max(MIN_WIDTH));
-    let height = fitted.height.min(room_height.max(MIN_HEIGHT));
-    WindowGeometry {
-        x: fitted.x.clamp(left, (left + room_width - width).max(left)),
-        y: fitted.y.clamp(top, (top + room_height - height).max(top)),
-        width,
-        height,
-        maximized: fitted.maximized,
-    }
+    fit_to_work_area(fitted, left, top, room_width, room_height, frame_allowance)
 }
 
 /// 按这份几何摆放窗口，返回实际生效的几何。
@@ -337,6 +394,34 @@ mod tests {
     }
 
     #[test]
+    fn old_state_file_defaults_to_the_settings_view() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            paths::window_state_path(dir.path()),
+            r#"{"app":{"x":1.0,"y":2.0,"width":1000.0,"height":700.0,"maximized":false}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(load_active_view(dir.path()), ActiveView::Settings);
+    }
+
+    #[test]
+    fn active_view_and_geometry_are_preserved_when_saved_independently() {
+        let dir = tempfile::tempdir().unwrap();
+        let first_geometry = geometry(140.0, 96.0, 1440.0, 900.0);
+        save(dir.path(), &first_geometry).unwrap();
+        save_active_view(dir.path(), ActiveView::Workspace).unwrap();
+
+        assert_eq!(load(dir.path()), Some(first_geometry));
+        assert_eq!(load_active_view(dir.path()), ActiveView::Workspace);
+
+        let second_geometry = geometry(20.0, 30.0, 1000.0, 700.0);
+        save(dir.path(), &second_geometry).unwrap();
+        assert_eq!(load(dir.path()), Some(second_geometry));
+        assert_eq!(load_active_view(dir.path()), ActiveView::Workspace);
+    }
+
+    #[test]
     fn corrupt_state_file_is_ignored() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(paths::window_state_path(dir.path()), "{ not json").unwrap();
@@ -349,5 +434,24 @@ mod tests {
         let fitted = fit_minimum(geometry(f64::NAN, 10.0, 10.0, f64::INFINITY));
         assert_eq!((fitted.x, fitted.y), (0.0, 10.0));
         assert_eq!((fitted.width, fitted.height), (MIN_WIDTH, DEFAULT_HEIGHT));
+    }
+
+    #[test]
+    fn windows_snap_frame_offset_is_not_clamped_away() {
+        // 150% DPI 下左半屏吸附的真实记录：负坐标是 DWM 隐藏边框，不是窗口越界。
+        let snapped = geometry(-6.0, 0.0, 1277.333, 1360.667);
+        let fitted = fit_to_work_area(snapped, 0.0, 0.0, 2560.0, 1392.0, 16.0);
+
+        assert_eq!(fitted.x, -6.0);
+        assert_eq!(fitted.y, 0.0);
+        assert_eq!((fitted.width, fitted.height), (1277.333, 1360.667));
+    }
+
+    #[test]
+    fn position_beyond_the_window_frame_is_still_clamped() {
+        let offscreen = geometry(-200.0, -120.0, 1280.0, 840.0);
+        let fitted = fit_to_work_area(offscreen, 0.0, 0.0, 2560.0, 1392.0, 16.0);
+
+        assert_eq!((fitted.x, fitted.y), (-16.0, 0.0));
     }
 }

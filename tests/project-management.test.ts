@@ -72,8 +72,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-it("opens creation and per-project settings from the sidebar and reorders by drag", async () => {
-  const create = vi.fn();
+it("opens per-project settings from the sidebar and reorders by drag", async () => {
   const edit = vi.fn();
   let serverProjects = [
     project("Alpha", 0),
@@ -97,7 +96,6 @@ it("opens creation and per-project settings from the sidebar and reorders by dra
     {
       activeProject: "Alpha",
       isAdmin: true,
-      onCreate: create,
       onEdit: edit,
     },
     serverProjects,
@@ -108,14 +106,13 @@ it("opens creation and per-project settings from the sidebar and reorders by dra
   );
 
   host!
-    .querySelector<HTMLButtonElement>('[aria-label="新建项目"]')!
-    .click();
-  host!
     .querySelector<HTMLButtonElement>('[aria-label="项目设置：Alpha"]')!
     .click();
-  expect(create).toHaveBeenCalledOnce();
   expect(edit).toHaveBeenCalledWith("Alpha");
   expect(host!.textContent).not.toContain("项目管理");
+  // 项目小标题和它上面的新建入口已经移到侧栏标题行，列表里不再重复出现。
+  expect(host!.querySelector(".nav-section-label")).toBeNull();
+  expect(host!.querySelector('[aria-label="新建项目"]')).toBeNull();
 
   const rows = host!.querySelectorAll<HTMLElement>(".project-nav-row");
   rows[1].dispatchEvent(
@@ -136,6 +133,26 @@ it("opens creation and per-project settings from the sidebar and reorders by dra
   ]);
   expect(api.patchProject).toHaveBeenCalledWith("Beta", { sort_order: 0 });
   expect(api.patchProject).toHaveBeenCalledWith("Alpha", { sort_order: 1 });
+});
+
+it("只有项目列表为空时才在列表内提示创建项目", async () => {
+  const create = vi.fn();
+
+  mount(SidebarProjects, {
+    activeProject: "",
+    isAdmin: true,
+    onCreate: create,
+  });
+
+  const entry = await vi.waitFor(() => {
+    const button = host!.querySelector<HTMLButtonElement>(".nav-item.subtle");
+    expect(button).not.toBeNull();
+    return button!;
+  });
+  expect(entry.textContent).toContain("创建第一个项目");
+  entry.click();
+
+  expect(create).toHaveBeenCalledOnce();
 });
 
 it("edits all existing project settings in the redesigned dialog", async () => {

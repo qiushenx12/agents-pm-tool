@@ -5,20 +5,24 @@ import { createPinia, disposePinia, type Pinia } from "pinia";
 import TaskCreateModal from "@/grid-app/components/TaskCreateModal.vue";
 import { useMetaStore } from "@/grid-app/stores/metaStore";
 import { api } from "@/grid-app/api/client";
-import type { Task } from "@/shared/types";
+import type { Project, Task } from "@/shared/types";
 vi.mock("@/grid-app/api/client", () => ({
   api: { createTask: vi.fn(), uploadAttachment: vi.fn(), pageTasks: vi.fn() },
 }));
-let app: App, pinia: Pinia, host: HTMLElement;
+let app: App | undefined,
+  pinia: Pinia | undefined,
+  host: HTMLElement | undefined;
 const flush = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
   await nextTick();
 };
 afterEach(() => {
   app?.unmount();
-  disposePinia(pinia);
+  if (pinia) disposePinia(pinia);
   host?.remove();
   vi.useRealTimers();
+  vi.clearAllMocks();
+  localStorage.clear();
 });
 it("creates the task only once when retrying an attachment failure in the new-task dialog", async () => {
   vi.useFakeTimers();
@@ -93,4 +97,57 @@ it("creates the task only once when retrying an attachment failure in the new-ta
   expect(api.createTask).toHaveBeenCalledTimes(1);
   expect(api.uploadAttachment).toHaveBeenCalledTimes(3);
   expect(onCreated).toHaveBeenCalledWith(task);
+});
+
+it("remembers the last project selected in the new-task dialog", async () => {
+  window.history.replaceState(null, "", "/?project=Alpha");
+  localStorage.setItem("pm-create-task-project-v1", "Beta");
+  const projects: Project[] = ["Alpha", "Beta"].map((name, sort_order) => ({
+    name,
+    color: "#3370ff",
+    sort_order,
+    local_path: "",
+    git_url: "",
+    created_at: "",
+  }));
+
+  const mountModal = () => {
+    pinia = createPinia();
+    useMetaStore(pinia).projects = projects;
+    host = document.createElement("div");
+    document.body.append(host);
+    app = createApp(TaskCreateModal);
+    app.use(pinia);
+    app.mount(host);
+  };
+
+  mountModal();
+  const projectTrigger = document.body.querySelector<HTMLButtonElement>(
+    '[aria-label="项目：Beta"]',
+  );
+  expect(projectTrigger).not.toBeNull();
+  projectTrigger!.click();
+  await nextTick();
+  const alpha = Array.from(
+    document.body.querySelectorAll<HTMLButtonElement>(
+      '[role="listbox"][aria-label="项目"] [role="option"]',
+    ),
+  ).find((option) => option.textContent?.trim() === "Alpha");
+  expect(alpha).not.toBeUndefined();
+  alpha!.click();
+  await nextTick();
+  expect(localStorage.getItem("pm-create-task-project-v1")).toBe("Alpha");
+
+  app!.unmount();
+  disposePinia(pinia!);
+  host!.remove();
+  app = undefined;
+  pinia = undefined;
+  host = undefined;
+  window.history.replaceState(null, "", "/");
+
+  mountModal();
+  expect(
+    document.body.querySelector('[aria-label="项目：Alpha"]'),
+  ).not.toBeNull();
 });

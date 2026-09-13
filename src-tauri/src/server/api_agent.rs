@@ -323,7 +323,7 @@ pub async fn patch_priority(
 pub async fn help(State(core): State<CoreState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "name": "Agents PM Tool Agent API",
-        "introduction": "Agents PM Tool 是本地任务管理工具，Agent 通过受限客户端 pm-cli 或本接口（HTTP + Bearer token）读取和推进任务。pm-cli 由 pm-cli-skill 提供：可在网页端「我的 Agent 访问」下载 ZIP，解压到 Codex、Claude Code 或 WorkBuddy 的 skills 目录后即可使用，完整用法见同目录的 SKILL.md。",
+        "introduction": "Agents PM Tool 是本地任务管理工具，Agent 通过受限客户端 pm-cli 或本接口（HTTP + Bearer token）读取和推进任务。pm-cli 由 pm-cli-skill 提供：可在网页端「我的 Agent 访问」下载 ZIP，解压到 Codex、Claude Code、WorkBuddy 或 DeepSeek Harness 等前端的 skills 目录后即可使用，完整用法见同目录的 SKILL.md。",
         "server_url": super::api_agent_access::reachable_server_url(&core),
         "authentication": "Authorization: Bearer <PM_AGENT_TOKEN>",
         "requires_token": true,
@@ -340,7 +340,7 @@ pub async fn help(State(core): State<CoreState>) -> Json<serde_json::Value> {
                 "pm-cli doctor"
             ],
             "if_pm_cli_missing": [
-                "由用户在网页端「我的 Agent 访问」下载 pm-cli-skill，解压到 Codex、Claude Code 或 WorkBuddy 的 skills 目录。",
+                "由用户在网页端「我的 Agent 访问」下载 pm-cli-skill，解压到 Codex、Claude Code、WorkBuddy 或 DeepSeek Harness 等前端的 skills 目录。",
                 "或直接用 curl：<curl> -H \"Authorization: Bearer <token>\" <服务地址>/api/agent/tasks"
             ]
         },

@@ -15,41 +15,42 @@
     width 0.15s,
     flex-basis 0.15s;
 }
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 86px;
-  padding: 20px 14px 16px 20px;
-  flex-shrink: 0;
-}
-.brand-mark {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  flex-shrink: 0;
-  color: #fff;
-  background: #3370ff;
-  border-radius: 9px;
-  box-shadow: 0 3px 8px #3370ff25;
-}
-.brand-copy {
-  min-width: 0;
-  flex: 1;
+/* 「Agents PM Tool」是侧栏唯一的模块：标题常驻，展开区放项目列表。 */
+.sidebar-module {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  white-space: nowrap;
+  flex: 1;
+  min-height: 0;
 }
-.brand-copy strong {
+.sidebar-module-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 56px;
+  padding: 0 12px 0 20px;
+  flex-shrink: 0;
+}
+/* 标题本身就是折叠开关：点击文字展开或收起项目列表。 */
+.module-toggle {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  border-radius: 5px;
+  padding: 6px 4px;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
   font-size: 15px;
+  font-weight: 600;
   letter-spacing: -0.3px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
 }
-.brand-copy span {
-  font-size: 10px;
-  color: var(--text-tertiary);
+.module-toggle:hover {
+  color: var(--primary);
 }
 .sidebar-content {
   min-height: 0;
@@ -156,16 +157,6 @@
 .project-nav-row:focus-within .project-row-actions {
   opacity: 1;
 }
-.project-section-label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 24px;
-  padding-right: 4px;
-}
-.project-section-label .icon-btn {
-  height: 20px;
-}
 .sidebar-footer {
   padding: 10px 12px 0;
 }
@@ -203,10 +194,9 @@
   width: 60px;
   flex-basis: 60px;
 }
-.sidebar-collapsed .brand {
-  padding: 20px 13px;
+.sidebar-collapsed .sidebar-module-head {
+  display: none;
 }
-.sidebar-collapsed .brand-copy,
 .sidebar-collapsed .nav-item > span:not(.project-symbol),
 .sidebar-collapsed .nav-section-label,
 .sidebar-collapsed .local-profile {
@@ -221,7 +211,7 @@
   padding: 10px 14px;
 }
 .sidebar-collapsed .project-nav {
-  margin-top: 24px;
+  margin-top: 12px;
 }
 .sidebar-collapsed .project-nav-row {
   display: block;
@@ -1416,8 +1406,8 @@ button.attachment-preview:focus-visible {
     width: 180px;
     flex-basis: 180px;
   }
-  .brand {
-    padding: 20px 12px;
+  .sidebar-module-head {
+    padding: 0 8px 0 12px;
   }
   .page-heading p,
   .view-description,
@@ -2359,6 +2349,9 @@ button.attachment-preview:focus-visible {
 .skill-frontend-card.frontend-pi::before {
   background: var(--brand-pi-accent);
 }
+.skill-frontend-card.frontend-deepseek_harness::before {
+  background: var(--brand-deepseek-fg);
+}
 .skill-frontend-card > header {
   display: flex;
   align-items: center;
@@ -2401,6 +2394,10 @@ button.attachment-preview:focus-visible {
 .frontend-pi .skill-frontend-mark {
   color: var(--brand-pi-fg);
   background: var(--brand-pi-bg);
+}
+.frontend-deepseek_harness .skill-frontend-mark {
+  color: var(--brand-deepseek-fg);
+  background: var(--brand-deepseek-bg);
 }
 /* 单色品牌的墨块在深色卡片上对比度偏低，补一圈极淡内描边保住"芯片"轮廓。 */
 [data-theme="dark"] .frontend-opencode .skill-frontend-mark,
