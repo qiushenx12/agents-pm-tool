@@ -16,6 +16,8 @@ use tauri::{Emitter, Manager, State, WindowEvent};
 pub struct AppState {
     pub core: server::CoreState,
     pub server: Mutex<Option<server::ServerHandle>>,
+    /// 串行化启动、停止与重启，避免自动启动和设置页按钮同时拉起两个服务。
+    pub server_transition: tokio::sync::Mutex<()>,
     /// 应用内网页窗口的几何记忆（关闭时落盘，见 window_state）
     pub app_window: Mutex<window_state::GeometryTracker>,
     /// 当前停留的桌面界面；退出时写入 window-state.json，供下次启动恢复。
@@ -60,6 +62,45 @@ fn server_port(app: &tauri::AppHandle) -> Option<u16> {
 /// 本机服务的访问地址；服务未运行时为 None
 fn server_url(app: &tauri::AppHandle) -> Option<String> {
     server_port(app).map(|port| format!("http://127.0.0.1:{port}"))
+}
+
+/// 调用方须先持有 `server_transition`。
+async fn start_embedded_server(state: &AppState) -> Result<u16, String> {
+    if let Some(port) = state
+        .server
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|handle| handle.port)
+    {
+        return Ok(port);
+    }
+    let (port, bind_host) = {
+        let settings = state.core.settings.read().unwrap();
+        (settings.port, settings.bind_host())
+    };
+    let handle = server::start_server(state.core.clone(), port, bind_host)
+        .await
+        .map_err(|error| error.message)?;
+    let actual = handle.port;
+    *state.server.lock().unwrap() = Some(handle);
+    Ok(actual)
+}
+
+/// 调用方须先持有 `server_transition`。返回停止前是否确有服务在运行。
+async fn stop_embedded_server(state: &AppState) -> bool {
+    let old = state.server.lock().unwrap().take();
+    let was_running = old.is_some();
+    if let Some(handle) = old {
+        handle.stop().await;
+    }
+    *state.core.actual_port.write().unwrap() = 0;
+    match std::fs::remove_file(paths::runtime_path(&state.core.data_dir)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => eprintln!("清理服务运行信息失败：{error}"),
+    }
+    was_running
 }
 
 fn app_window_url(port: u16) -> Result<tauri::Url, String> {
@@ -213,15 +254,12 @@ async fn save_settings(
     // 端口或监听范围变化 → 重启服务（规划 §5.6：保存即重启）
     let mut restarted = false;
     if settings.port != old.port || settings.bind_host() != old.bind_host() {
-        let old_handle = state.server.lock().unwrap().take();
-        if let Some(h) = old_handle {
-            h.stop().await;
+        let _transition = state.server_transition.lock().await;
+        // 手动停止后仍允许修改并保存连接设置，但不能因此意外重新启动服务。
+        if stop_embedded_server(&state).await {
+            start_embedded_server(&state).await?;
+            restarted = true;
         }
-        let handle = server::start_server(state.core.clone(), settings.port, settings.bind_host())
-            .await
-            .map_err(|e| e.message)?;
-        restarted = true;
-        *state.server.lock().unwrap() = Some(handle);
     }
     let port = state
         .server
@@ -252,6 +290,10 @@ fn lan_ipv4() -> Option<std::net::Ipv4Addr> {
 
 #[tauri::command]
 fn get_server_status(state: State<'_, AppState>) -> ServerStatus {
+    current_server_status(&state)
+}
+
+fn current_server_status(state: &AppState) -> ServerStatus {
     let guard = state.server.lock().unwrap();
     let is_lan = state.core.settings.read().unwrap().bind_host() == [0, 0, 0, 0];
     match guard.as_ref() {
@@ -276,6 +318,34 @@ fn get_server_status(state: State<'_, AppState>) -> ServerStatus {
             data_dir: state.core.data_dir.display().to_string(),
         },
     }
+}
+
+/// 设置页手动启动或停止内嵌服务；返回操作后的真实状态供界面立即刷新。
+#[tauri::command]
+async fn set_server_running(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    running: bool,
+) -> Result<ServerStatus, String> {
+    {
+        let _transition = state.server_transition.lock().await;
+        if running {
+            let port = start_embedded_server(&state).await?;
+            sync_app_window(&app, port);
+        } else {
+            stop_embedded_server(&state).await;
+        }
+    }
+
+    if !running {
+        // 服务停止后不保留一个必然断线的工作区窗口；当前控制入口仍停留在设置页。
+        persist_app_window_geometry(&app);
+        if let Some(window) = app.get_webview_window(APP_WINDOW_LABEL) {
+            let _ = window.destroy();
+        }
+        show_settings_view(&app);
+    }
+    Ok(current_server_status(&state))
 }
 
 #[tauri::command]
@@ -306,10 +376,8 @@ async fn regenerate_token(state: State<'_, AppState>) -> Result<(), String> {
 
 async fn shutdown_server(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
-    let old = state.server.lock().unwrap().take();
-    if let Some(h) = old {
-        h.stop().await;
-    }
+    let _transition = state.server_transition.lock().await;
+    stop_embedded_server(&state).await;
 }
 
 fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
@@ -506,6 +574,7 @@ pub fn run() {
             app.manage(AppState {
                 core: core.clone(),
                 server: Mutex::new(None),
+                server_transition: tokio::sync::Mutex::new(()),
                 app_window: Mutex::new(window_state::GeometryTracker::default()),
                 active_view: Mutex::new(startup_view),
             });
@@ -542,23 +611,15 @@ pub fn run() {
                         if rx.changed().await.is_err() {
                             break;
                         }
-                        let old = app.state::<AppState>().server.lock().unwrap().take();
-                        if let Some(handle) = old {
-                            handle.stop().await;
-                        }
-                        *core.actual_port.write().unwrap() = 0;
-                        let (port, bind_host) = {
-                            let settings = core.settings.read().unwrap();
-                            (settings.port, settings.bind_host())
-                        };
-                        match server::start_server(core.clone(), port, bind_host).await {
-                            Ok(handle) => {
-                                let actual = handle.port;
-                                *app.state::<AppState>().server.lock().unwrap() = Some(handle);
+                        let state = app.state::<AppState>();
+                        let _transition = state.server_transition.lock().await;
+                        stop_embedded_server(&state).await;
+                        match start_embedded_server(&state).await {
+                            Ok(actual) => {
                                 sync_app_window(&app, actual);
                                 eprintln!("服务已按网页设置重启 http://127.0.0.1:{actual}");
                             }
-                            Err(error) => eprintln!("按网页设置重启服务失败：{}", error.message),
+                            Err(error) => eprintln!("按网页设置重启服务失败：{error}"),
                         }
                     }
                 });
@@ -566,17 +627,12 @@ pub fn run() {
 
             // 启动内嵌 HTTP 服务（规划 §5.6：autostart 默认开）
             if app_settings.autostart {
-                let core = core.clone();
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let (port, bind_host) = {
-                        let s = core.settings.read().unwrap();
-                        (s.port, s.bind_host())
-                    };
-                    match server::start_server(core.clone(), port, bind_host).await {
-                        Ok(h) => {
-                            let actual = h.port;
-                            *handle.state::<AppState>().server.lock().unwrap() = Some(h);
+                    let state = handle.state::<AppState>();
+                    let _transition = state.server_transition.lock().await;
+                    match start_embedded_server(&state).await {
+                        Ok(actual) => {
                             eprintln!("服务已启动 http://127.0.0.1:{actual}");
                             // 只有上次停留在工作区、且启动期间没有切回设置页时才直接恢复。
                             if active_view(&handle) == window_state::ActiveView::Workspace {
@@ -585,8 +641,8 @@ pub fn run() {
                                 }
                             }
                         }
-                        Err(e) => {
-                            eprintln!("服务启动失败：{}", e.message);
+                        Err(error) => {
+                            eprintln!("服务启动失败：{error}");
                             if active_view(&handle) == window_state::ActiveView::Workspace {
                                 show_settings_view(&handle);
                             }
@@ -664,6 +720,7 @@ pub fn run() {
             save_settings,
             set_theme,
             get_server_status,
+            set_server_running,
             regenerate_token,
             open_app_window,
             open_settings_window,

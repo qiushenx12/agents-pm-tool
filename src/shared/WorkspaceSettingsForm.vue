@@ -10,6 +10,10 @@ withDefaults(
     loading?: boolean;
     busy?: boolean;
     tokenBusy?: boolean;
+    serviceBusy?: boolean;
+    showServiceToggle?: boolean;
+    showEnterApp?: boolean;
+    enterBusy?: boolean;
     openLabel?: string;
     showAddressCopy?: boolean;
   }>(),
@@ -17,6 +21,10 @@ withDefaults(
     loading: false,
     busy: false,
     tokenBusy: false,
+    serviceBusy: false,
+    showServiceToggle: false,
+    showEnterApp: false,
+    enterBusy: false,
     openLabel: "打开网页",
     showAddressCopy: false,
   },
@@ -24,6 +32,8 @@ withDefaults(
 const settings = defineModel<WorkspaceSettings>({ required: true });
 defineEmits<{
   open: [];
+  enterApp: [];
+  toggleService: [];
   regenerateToken: [];
   copyAddress: [value: string];
 }>();
@@ -52,13 +62,45 @@ const closeOptions = [
             }}
           </p>
         </div>
-        <button
-          class="btn btn-primary btn-sm"
-          :disabled="!status?.running"
-          @click="$emit('open')"
-        >
-          {{ openLabel }}<UiIcon name="globe" :size="13" />
-        </button>
+        <div class="service-actions">
+          <button
+            v-if="showServiceToggle"
+            type="button"
+            class="btn btn-sm"
+            :disabled="!loaded || busy || serviceBusy"
+            @click="$emit('toggleService')"
+          >
+            <UiIcon :name="status?.running ? 'stop' : 'play'" :size="12" />{{
+              serviceBusy
+                ? status?.running
+                  ? "正在停止…"
+                  : "正在启动…"
+                : status?.running
+                  ? "停止服务"
+                  : "启动服务"
+            }}
+          </button>
+          <button
+            v-if="showEnterApp"
+            type="button"
+            class="btn btn-sm"
+            :disabled="!status?.running || enterBusy || serviceBusy"
+            title="在应用内打开任务工作区"
+            @click="$emit('enterApp')"
+          >
+            <UiIcon name="app-window" :size="13" />{{
+              enterBusy ? "正在打开…" : "进入应用"
+            }}
+          </button>
+          <button
+            type="button"
+            class="btn btn-primary btn-sm"
+            :disabled="!status?.running || serviceBusy"
+            @click="$emit('open')"
+          >
+            {{ openLabel }}<UiIcon name="globe" :size="13" />
+          </button>
+        </div>
       </div>
       <div v-if="status" class="service-address">
         <div
@@ -208,8 +250,11 @@ const closeOptions = [
   font-size: 13px;
   font-weight: 600;
 }
-.service-overview-top > .btn {
+.service-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .service-icon {
   display: grid;

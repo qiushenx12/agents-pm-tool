@@ -38,7 +38,17 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 
-invoke.mockImplementation(async (command: string) => {
+function serverStatus() {
+  return {
+    running: running.value,
+    port: running.value ? 17890 : 0,
+    url: running.value ? "http://127.0.0.1:17890" : "",
+    lan_url: running.value ? lanUrl.value : "",
+    data_dir: "C:/data",
+  };
+}
+
+invoke.mockImplementation(async (command: string, args?: unknown) => {
   if (command === "get_settings") {
     return {
       port: 17890,
@@ -50,13 +60,11 @@ invoke.mockImplementation(async (command: string) => {
     };
   }
   if (command === "get_server_status") {
-    return {
-      running: running.value,
-      port: 17890,
-      url: running.value ? "http://127.0.0.1:17890" : "",
-      lan_url: lanUrl.value,
-      data_dir: "C:/data",
-    };
+    return serverStatus();
+  }
+  if (command === "set_server_running") {
+    running.value = (args as { running: boolean }).running;
+    return serverStatus();
   }
   return undefined;
 });
@@ -123,6 +131,40 @@ it("顶部的「打开网页」按钮用网页图标，并在系统浏览器打�
   expect(invoke).not.toHaveBeenCalledWith("open_app_window");
 });
 
+it("按启动/停止服务、进入应用、打开网页的顺序提供服务操作", async () => {
+  const mounted = await mountConfig();
+  const actions = [...mounted.querySelectorAll(".service-actions button")];
+  expect(actions.map((button) => button.textContent?.trim())).toEqual([
+    "停止服务",
+    "进入应用",
+    "打开网页",
+  ]);
+
+  (actions[0] as HTMLButtonElement).click();
+  await vi.waitFor(() =>
+    expect(invoke).toHaveBeenCalledWith("set_server_running", {
+      running: false,
+    }),
+  );
+  await vi.waitFor(() =>
+    expect(actions[0].textContent?.trim()).toBe("启动服务"),
+  );
+  expect((actions[1] as HTMLButtonElement).disabled).toBe(true);
+  expect((actions[2] as HTMLButtonElement).disabled).toBe(true);
+
+  (actions[0] as HTMLButtonElement).click();
+  await vi.waitFor(() =>
+    expect(invoke).toHaveBeenCalledWith("set_server_running", {
+      running: true,
+    }),
+  );
+  await vi.waitFor(() =>
+    expect(actions[0].textContent?.trim()).toBe("停止服务"),
+  );
+  expect((actions[1] as HTMLButtonElement).disabled).toBe(false);
+  expect((actions[2] as HTMLButtonElement).disabled).toBe(false);
+});
+
 it("为本机和局域网地址分别提供复制按钮", async () => {
   lanUrl.value = "http://192.168.1.20:17890";
   const writeText = vi.fn().mockResolvedValue(undefined);
@@ -152,37 +194,47 @@ it("为本机和局域网地址分别提供复制按钮", async () => {
   expect(writeText).toHaveBeenCalledTimes(2);
 });
 
-it("「进入应用」位于「保存设置」左侧，点击后在应用内打开窗口", async () => {
+it("「进入应用」位于服务开关和「打开网页」之间，点击后在应用内打开窗口", async () => {
   const mounted = await mountConfig();
-  const buttons = [...mounted.querySelectorAll(".footer-actions button")];
-  expect(buttons.map((button) => button.textContent?.trim())).toEqual([
+  const actions = [...mounted.querySelectorAll(".service-actions button")];
+  expect(actions.map((button) => button.textContent?.trim())).toEqual([
+    "停止服务",
     "进入应用",
-    "保存设置",
+    "打开网页",
   ]);
+  expect(
+    [...mounted.querySelectorAll(".footer-actions button")].map((button) =>
+      button.textContent?.trim(),
+    ),
+  ).toEqual(["保存设置"]);
 
-  (buttons[0] as HTMLButtonElement).click();
+  (actions[1] as HTMLButtonElement).click();
   await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("open_app_window"));
   await vi.waitFor(() => expect(hideWindow).toHaveBeenCalledOnce());
   expect(shellOpen).not.toHaveBeenCalled();
 });
 
-it("服务未运行时两个入口都不可点", async () => {
+it("服务未运行时打开入口不可点，但仍可手动启动服务", async () => {
   running.value = false;
   const mounted = await mountConfig();
   await nextTick();
 
-  const enter = [...mounted.querySelectorAll(".footer-actions button")].find(
+  const enter = [...mounted.querySelectorAll(".service-overview button")].find(
     (button) => button.textContent?.includes("进入应用"),
   ) as HTMLButtonElement;
   const openWeb = [...mounted.querySelectorAll(".service-overview button")].find(
     (button) => button.textContent?.includes("打开网页"),
   ) as HTMLButtonElement;
+  const startService = [
+    ...mounted.querySelectorAll(".service-overview button"),
+  ].find((button) => button.textContent?.includes("启动服务")) as HTMLButtonElement;
   const localCopy = mounted.querySelector<HTMLButtonElement>(
     '[aria-label="复制本机地址"]',
   );
 
   expect(enter.disabled).toBe(true);
   expect(openWeb.disabled).toBe(true);
+  expect(startService.disabled).toBe(false);
   expect(localCopy?.disabled).toBe(true);
   enter.click();
   expect(invoke).not.toHaveBeenCalledWith("open_app_window");

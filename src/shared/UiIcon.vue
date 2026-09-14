@@ -42,6 +42,8 @@ const paths: Record<string, string> = {
   up: "m6 14 6-6 6 6",
   down: "m6 10 6 6 6-6",
   minus: "M5 12h14",
+  play: "m8 5 11 7-11 7z",
+  stop: "M7 7h10v10H7z",
   window: "M4 4h16v16H4z",
   "app-window": "M3 4h18v16H3z M3 9h18 M6.5 6.5h.01 M9.5 6.5h.01",
   globe:

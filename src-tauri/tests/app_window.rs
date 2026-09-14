@@ -29,6 +29,7 @@ fn mock_app_with_data_dir(data_dir: &std::path::Path) -> tauri::App<tauri::test:
     app.manage(AppState {
         core,
         server: Mutex::new(None),
+        server_transition: tokio::sync::Mutex::new(()),
         app_window: Mutex::new(GeometryTracker::default()),
         active_view: Mutex::new(window_state::load_active_view(data_dir)),
     });

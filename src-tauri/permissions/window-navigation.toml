@@ -6,6 +6,7 @@ commands.allow = [
   "save_settings",
   "set_theme",
   "get_server_status",
+  "set_server_running",
   "regenerate_token",
   "open_app_window",
 ]

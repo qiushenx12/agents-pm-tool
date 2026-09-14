@@ -38,6 +38,7 @@ const baseline = ref(""),
   saving = ref(false),
   loading = ref(false),
   tokenBusy = ref(false),
+  serviceBusy = ref(false),
   enterBusy = ref(false),
   error = ref("");
 const dirty = computed(() => JSON.stringify(settings.value) !== baseline.value);
@@ -114,7 +115,7 @@ async function load() {
   }
 }
 async function save() {
-  if (!desktop || saving.value) return;
+  if (!desktop || saving.value || serviceBusy.value) return;
   if (
     !Number.isInteger(settings.value.port) ||
     settings.value.port < 1024 ||
@@ -167,9 +168,31 @@ async function openWeb() {
     error.value = "打开网页失败：" + errorText(e);
   }
 }
+async function toggleService() {
+  if (!desktop || !loaded.value || serviceBusy.value) return;
+  const running = !status.value?.running;
+  serviceBusy.value = true;
+  error.value = "";
+  try {
+    status.value = await invoke<WorkspaceServerStatus>("set_server_running", {
+      running,
+    });
+    notify(running ? "服务已启动" : "服务已停止");
+  } catch (e) {
+    error.value = `${running ? "启动" : "停止"}服务失败：${errorText(e)}`;
+    // 命令可能已完成部分操作；重新读取一次，以真实状态为准。
+    try {
+      status.value = await invoke<WorkspaceServerStatus>("get_server_status");
+    } catch {
+      // 保留原状态与首个错误，避免二次失败掩盖真正原因。
+    }
+  } finally {
+    serviceBusy.value = false;
+  }
+}
 /** 在应用内打开网页同款界面（独立窗口），不走系统浏览器。 */
 async function enterApp() {
-  if (!status.value?.running || enterBusy.value) return;
+  if (!status.value?.running || enterBusy.value || serviceBusy.value) return;
   enterBusy.value = true;
   error.value = "";
   try {
@@ -183,7 +206,7 @@ async function enterApp() {
   }
 }
 async function closeWindow() {
-  if (saving.value) return;
+  if (saving.value || serviceBusy.value) return;
   if (
     loaded.value &&
     dirty.value &&
@@ -272,37 +295,36 @@ onBeforeUnmount(() => {
         :status="status"
         :loaded="loaded"
         :loading="loading"
-        :busy="saving"
+        :busy="saving || serviceBusy"
         :token-busy="tokenBusy"
+        :service-busy="serviceBusy"
+        :enter-busy="enterBusy"
+        :show-enter-app="desktop"
+        show-service-toggle
         show-address-copy
         @open="openWeb"
+        @enter-app="enterApp"
+        @toggle-service="toggleService"
         @copy-address="copyText"
         @regenerate-token="regenerateToken"
       />
     </main>
     <footer class="config-footer">
       <span>{{
-        saving
-          ? "正在保存设置…"
+        serviceBusy
+          ? status?.running
+            ? "正在停止服务…"
+            : "正在启动服务…"
+          : saving
+            ? "正在保存设置…"
           : loaded && dirty
             ? "有未保存的更改"
             : "设置保存在本机"
       }}</span>
       <div class="footer-actions">
         <button
-          v-if="desktop"
-          class="btn"
-          :disabled="!status?.running || enterBusy"
-          title="在应用内打开任务工作区"
-          @click="enterApp"
-        >
-          <UiIcon name="app-window" :size="13" />{{
-            enterBusy ? "正在打开…" : "进入应用"
-          }}
-        </button>
-        <button
           class="btn btn-primary"
-          :disabled="!loaded || saving || !dirty"
+          :disabled="!loaded || saving || serviceBusy || !dirty"
           @click="save"
         >
           {{ saving ? "保存中…" : "保存设置" }}
