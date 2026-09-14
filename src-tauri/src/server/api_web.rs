@@ -175,6 +175,9 @@ pub async fn patch_task(
         },
     )?;
     drop(conn);
+    if let Some(notice) = super::finish_notice::notice_on_finish(&current, &task) {
+        core.finish_notices.notify(notice);
+    }
     core.events.notify();
     Ok(Json(task))
 }

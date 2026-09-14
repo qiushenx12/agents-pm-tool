@@ -76,6 +76,7 @@ pub async fn batch_tasks(
     let mut conn = core.db.lock().unwrap();
     let mut results = Vec::with_capacity(ids.len());
     let mut cleanup = Vec::new();
+    let mut notices = Vec::new();
     let mut succeeded = 0;
     for id in ids {
         let result: ApiResult<Option<Task>> = (|| {
@@ -111,7 +112,14 @@ pub async fn batch_tasks(
                             note: None,
                         },
                     )
-                    .map(Some)
+                    .map(|task| {
+                        if let Some(notice) =
+                            super::finish_notice::notice_on_finish(&current, &task)
+                        {
+                            notices.push(notice);
+                        }
+                        Some(task)
+                    })
                 }
                 None => {
                     permissions::require_field(
@@ -148,6 +156,9 @@ pub async fn batch_tasks(
         }
     }
     drop(conn);
+    for notice in notices {
+        core.finish_notices.notify(notice);
+    }
     for path in cleanup {
         if let Err(error) = std::fs::remove_file(core.data_dir.join(&path)) {
             eprintln!("清理附件文件失败 {path}: {error}");

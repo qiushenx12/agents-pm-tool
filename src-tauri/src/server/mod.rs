@@ -8,6 +8,7 @@ pub mod api_users;
 pub mod api_web;
 pub mod auth;
 pub mod events;
+pub mod finish_notice;
 pub mod static_site;
 
 use std::net::SocketAddr;
@@ -31,6 +32,8 @@ pub struct CoreStateInner {
     pub settings: RwLock<Settings>,
     pub data_dir: PathBuf,
     pub events: EventBus,
+    /// 任务进入「待验证」「已完成」的进程内提醒（Tauri 外壳据此弹系统通知）
+    pub finish_notices: finish_notice::FinishNoticeBus,
     pub actual_port: RwLock<u16>,
     /// 全局主题变更通道：SSE 下发 theme_changed、Tauri 侧转发给设置窗口。
     pub theme_events: watch::Sender<Option<String>>,
@@ -53,6 +56,7 @@ impl CoreStateInner {
             settings: RwLock::new(settings),
             data_dir,
             events: EventBus::new(),
+            finish_notices: finish_notice::FinishNoticeBus::new(),
             actual_port: RwLock::new(0),
             theme_events: watch::channel(theme).0,
             settings_restart_events: watch::channel(0).0,

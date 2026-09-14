@@ -487,6 +487,24 @@ fn open_web_page(app: &tauri::AppHandle) {
     }
 }
 
+/// 任务进入「待验证」「已完成」时弹出系统通知（Windows 通知中心 Toast）。
+/// 通知只在本地桌面展示；发送失败（如系统通知被关闭）不影响任务状态本身。
+fn show_finish_notification(
+    app: &tauri::AppHandle,
+    notice: &server::finish_notice::FinishNotice,
+) {
+    use tauri_plugin_notification::NotificationExt;
+    let title = format!("任务{}", notice.status);
+    let body = format!(
+        "[{}] {}",
+        notice.project,
+        server::finish_notice::summarize(&notice.description, 80)
+    );
+    if let Err(error) = app.notification().builder().title(title).body(body).show() {
+        eprintln!("发送任务状态系统通知失败：{error}");
+    }
+}
+
 /// 「进入应用」：在应用内打开网页同款的界面。
 /// 已打开则聚焦，不重复创建；地址随端口变化时自动纠正。
 #[tauri::command]
@@ -559,6 +577,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             setup_tray(app)?;
             let data_dir = paths::data_dir().map_err(|e| {
@@ -595,6 +614,23 @@ pub fn run() {
                         if let Some(window) = app.get_webview_window(APP_WINDOW_LABEL) {
                             let _ =
                                 window.set_theme(native_title_bar_theme(theme.as_deref()));
+                        }
+                    }
+                });
+            }
+
+            // 任务进入待验证/已完成 → 系统通知（网页端、批量操作与 Agent 推进都会触发）
+            {
+                let app = app.handle().clone();
+                let core = core.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut rx = core.finish_notices.subscribe();
+                    loop {
+                        match rx.recv().await {
+                            Ok(notice) => show_finish_notification(&app, &notice),
+                            // 通知只是提醒：积压丢失可接受，继续等下一条
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
                     }
                 });

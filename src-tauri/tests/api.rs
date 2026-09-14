@@ -1396,6 +1396,150 @@ async fn finished_at_on_direct_acceptance() {
     );
 }
 
+// ── 任务进入待验证/已完成时的桌面提醒（系统通知数据源） ────────
+
+#[tokio::test]
+async fn finish_notice_emitted_on_review_and_done_transitions() {
+    let app = spawn_app().await;
+    let mut rx = app.core.finish_notices.subscribe();
+    let no_notice = |rx: &mut tokio::sync::broadcast::Receiver<
+        server::finish_notice::FinishNotice,
+    >| {
+        assert!(
+            rx.try_recv().is_err(),
+            "不应触发完成提醒（进入待验证/已完成之外的动作）"
+        );
+    };
+
+    let t = create_task(&app, false, "完成提醒任务").await;
+    let id = t["id"].as_str().unwrap().to_string();
+
+    // 未开始 → 进行中：不提醒
+    let res = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{id}"))
+        .json(&json!({"status": "进行中"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    no_notice(&mut rx);
+
+    // 网页端：进行中 → 待验证：提醒一条，带任务摘要
+    let res = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{id}"))
+        .json(&json!({"status": "待验证"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let notice = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .expect("进入待验证应收到完成提醒")
+        .unwrap();
+    assert_eq!(notice.id, id);
+    assert_eq!(notice.status, "待验证");
+    assert_eq!(notice.project, "default-project");
+    assert_eq!(notice.description, "完成提醒任务");
+    no_notice(&mut rx);
+
+    // 同状态重复保存：不重复提醒
+    let res = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{id}"))
+        .json(&json!({"status": "待验证"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    no_notice(&mut rx);
+
+    // 验收类状态不属于提醒范围
+    let res = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{id}"))
+        .json(&json!({"status": "验收通过"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    no_notice(&mut rx);
+
+    // Agent 推进到已完成同样提醒
+    let res = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{id}/status"))
+        .json(&json!({"status": "进行中"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    no_notice(&mut rx);
+    let res = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{id}/status"))
+        .json(&json!({"status": "已完成"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let notice = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .expect("Agent 推进到已完成应收到完成提醒")
+        .unwrap();
+    assert_eq!(notice.id, id);
+    assert_eq!(notice.status, "已完成");
+    no_notice(&mut rx);
+}
+
+#[tokio::test]
+async fn finish_notice_emitted_for_each_task_in_batch_update() {
+    let app = spawn_app().await;
+    let mut rx = app.core.finish_notices.subscribe();
+
+    let a = create_task(&app, false, "批量提醒A").await;
+    let b = create_task(&app, false, "批量提醒B").await;
+    let a = a["id"].as_str().unwrap().to_string();
+    let b = b["id"].as_str().unwrap().to_string();
+
+    // 批量改优先级：不提醒
+    let res = app
+        .web(reqwest::Method::POST, "/tasks/batch")
+        .json(&json!({
+            "action": "update",
+            "ids": [&a, &b],
+            "patch": {"priority": "高"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert!(rx.try_recv().is_err(), "批量改优先级不应触发完成提醒");
+
+    // 批量改状态到待验证：每个任务一条提醒
+    let res = app
+        .web(reqwest::Method::POST, "/tasks/batch")
+        .json(&json!({
+            "action": "update",
+            "ids": [&a, &b],
+            "patch": {"status": "待验证"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let mut noticed = Vec::new();
+    for _ in 0..2 {
+        noticed.push(
+            tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("批量进入待验证应每个任务各收到一条提醒")
+                .unwrap()
+                .id,
+        );
+    }
+    noticed.sort();
+    let mut expected = vec![a, b];
+    expected.sort();
+    assert_eq!(noticed, expected);
+    assert!(rx.try_recv().is_err(), "不应有多余的完成提醒");
+}
+
 // ── Agent 权限收窄（规划 §5.4 验收：越权全部 403/422） ────
 
 #[tokio::test]
