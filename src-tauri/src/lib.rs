@@ -20,7 +20,7 @@ pub struct AppState {
     pub server_transition: tokio::sync::Mutex<()>,
     /// 应用内网页窗口的几何记忆（关闭时落盘，见 window_state）
     pub app_window: Mutex<window_state::GeometryTracker>,
-    /// 当前停留的桌面界面；退出时写入 window-state.json，供下次启动恢复。
+    /// 当前停留的桌面界面；供托盘即时恢复，并在退出时落盘供下次启动恢复。
     pub active_view: Mutex<window_state::ActiveView>,
 }
 
@@ -403,6 +403,14 @@ fn set_active_view<R: tauri::Runtime>(
     }
 }
 
+fn view_for_window(window_label: &str) -> Option<window_state::ActiveView> {
+    match window_label {
+        "main" => Some(window_state::ActiveView::Settings),
+        APP_WINDOW_LABEL => Some(window_state::ActiveView::Workspace),
+        _ => None,
+    }
+}
+
 fn show_settings_view<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     show_main_window(app);
     set_active_view(app, window_state::ActiveView::Settings);
@@ -420,7 +428,7 @@ fn show_workspace_view<R: tauri::Runtime>(
     Ok(())
 }
 
-/// 恢复上次退出时停留的界面。工作区依赖内嵌服务；服务不可用时回退到设置页。
+/// 恢复最近停留的界面。工作区依赖内嵌服务；服务不可用时回退到设置页。
 /// 公开是为了让窗口级测试覆盖真实的启动选择逻辑。
 pub fn restore_active_view<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -561,7 +569,11 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                show_settings_view(tray.app_handle());
+                if let Err(error) =
+                    restore_active_view(tray.app_handle(), server_port(tray.app_handle()))
+                {
+                    eprintln!("从托盘恢复应用界面失败：{error}");
+                }
             }
         })
         .build(app)?;
@@ -694,16 +706,15 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 若设置页与工作区因托盘操作短暂同时存在，以最后获得焦点的界面为准。
-            if matches!(event, WindowEvent::Focused(true)) {
-                match window.label() {
-                    "main" => {
-                        set_active_view(window.app_handle(), window_state::ActiveView::Settings)
-                    }
-                    APP_WINDOW_LABEL => {
-                        set_active_view(window.app_handle(), window_state::ActiveView::Workspace)
-                    }
-                    _ => {}
+            // 通常以最后获得焦点的界面为准；关窗时再锁定一次刚关闭的界面。
+            if matches!(
+                event,
+                WindowEvent::Focused(true) | WindowEvent::CloseRequested { .. }
+            ) {
+                if let Some(view) = view_for_window(window.label()) {
+                    // CloseRequested 时再记一次，确保托盘恢复的是刚刚关掉的窗口，
+                    // 不受关闭过程中焦点切换事件先后顺序影响。
+                    set_active_view(window.app_handle(), view);
                 }
             }
             // 应用内网页窗口：位置/大小/最大化状态随时记，关窗时落盘
@@ -767,7 +778,8 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{native_title_bar_theme, window_close_action, WindowCloseAction};
+    use super::{native_title_bar_theme, view_for_window, window_close_action, WindowCloseAction};
+    use crate::window_state::ActiveView;
 
     #[test]
     fn maps_global_theme_to_native_title_bar() {
@@ -810,5 +822,12 @@ mod tests {
             window_close_action("web", "unexpected"),
             WindowCloseAction::StopAll
         );
+    }
+
+    #[test]
+    fn desktop_window_labels_map_to_the_view_restored_from_the_tray() {
+        assert_eq!(view_for_window("main"), Some(ActiveView::Settings));
+        assert_eq!(view_for_window("web"), Some(ActiveView::Workspace));
+        assert_eq!(view_for_window("other"), None);
     }
 }

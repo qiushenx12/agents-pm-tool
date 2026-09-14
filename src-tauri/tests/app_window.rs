@@ -171,3 +171,23 @@ fn workspace_view_falls_back_to_settings_without_a_server() {
         ActiveView::Settings
     );
 }
+
+#[test]
+fn reopens_the_workspace_after_its_window_was_closed_to_the_tray() {
+    let dir = tempfile::tempdir().unwrap();
+    window_state::save_active_view(dir.path(), ActiveView::Workspace).unwrap();
+    let app = mock_app_with_data_dir(dir.path());
+
+    restore_active_view(app.handle(), Some(17890)).unwrap();
+    app.get_webview_window("web").unwrap().destroy().unwrap();
+    // MockRuntime 会继续返回已经 destroy 的窗口句柄；这里只验证关闭动作没有把
+    // 活动界面改回设置页，以及托盘使用的恢复入口仍能正常完成。
+    assert_eq!(
+        *app.state::<AppState>().active_view.lock().unwrap(),
+        ActiveView::Workspace,
+        "关闭工作区窗口后仍应记住最后所在界面"
+    );
+
+    restore_active_view(app.handle(), Some(17890)).unwrap();
+    assert!(app.get_webview_window("web").is_some());
+}
