@@ -83,7 +83,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example serve
 
 ## Agent CLI
 
-`pm-cli` 是 Agent 使用的 HTTP 客户端。它不会直接访问 SQLite，而是调用服务端的受限 API。本机默认从主程序生成的 `data/runtime.json` 读取当前端口和主机 token；远程用户使用自己在“我的 Agent 访问”中签发的 token。
+`pm-cli` 是 Agent 使用的 HTTP 客户端。它不会直接访问 SQLite，而是调用服务端的受限 API。本机默认从主程序生成的 `data/runtime.json` 读取当前端口和主机 token；主机 token 固定不变，应用重启不会失效，只有在设置窗口或“我的 Agent 访问”面板手动重新生成时才会更换。远程用户使用自己在“我的 Agent 访问”中签发的 token。
 
 安装版会将 `pm-cli.exe` 随主程序安装，并把安装目录加入当前用户的 `PATH`。安装或升级后需重新打开终端或 Agent 前端，之后可在任意目录直接执行 `pm-cli`；卸载时会移除由安装器添加的 PATH 项。
 

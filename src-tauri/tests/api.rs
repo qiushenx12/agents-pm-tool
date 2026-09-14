@@ -909,6 +909,43 @@ async fn user_agent_token_ownership_permissions_and_revocation() {
     assert_eq!(revoked.status(), 401);
 }
 
+#[tokio::test]
+async fn host_agent_token_persists_across_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().to_path_buf();
+
+    let first = {
+        let conn = db::open(&paths::db_path(&data_dir)).unwrap();
+        let core = server::CoreStateInner::new(data_dir.clone(), conn, Settings::default());
+        let token = core.token.read().await.clone();
+        token
+    };
+
+    // 模拟应用重启：同一数据目录重新打开数据库、初始化核心状态。
+    let second = {
+        let conn = db::open(&paths::db_path(&data_dir)).unwrap();
+        let core = server::CoreStateInner::new(data_dir.clone(), conn, Settings::default());
+        let token = core.token.read().await.clone();
+        token
+    };
+    assert_eq!(first, second, "主机 Agent token 重启后应保持不变");
+
+    // 只有手动重新生成才会更换，且新 token 同样在重启后保持。
+    let regenerated = {
+        let conn = db::open(&paths::db_path(&data_dir)).unwrap();
+        db::users::regenerate_agent_token(&conn, agents_pm_tool_lib::domain::user::HOST_USER_ID)
+            .unwrap()
+    };
+    assert_ne!(regenerated, second, "手动重新生成应更换主机 token");
+    let third = {
+        let conn = db::open(&paths::db_path(&data_dir)).unwrap();
+        let core = server::CoreStateInner::new(data_dir.clone(), conn, Settings::default());
+        let token = core.token.read().await.clone();
+        token
+    };
+    assert_eq!(third, regenerated, "重新生成后的 token 重启后也应保持");
+}
+
 async fn create_task(app: &TestApp, via_agent: bool, desc: &str) -> Value {
     let body = json!({
         "project": "default-project",

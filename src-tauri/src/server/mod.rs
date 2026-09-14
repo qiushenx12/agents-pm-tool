@@ -45,10 +45,20 @@ pub type CoreState = Arc<CoreStateInner>;
 
 impl CoreStateInner {
     pub fn new(data_dir: PathBuf, db: rusqlite::Connection, settings: Settings) -> Self {
-        let token = uuid::Uuid::new_v4().to_string();
-        // runtime.json 中的本机 token 归属内置主机账号；每次启动令旧 token 失效。
-        crate::db::users::set_agent_token(&db, crate::domain::user::HOST_USER_ID, &token)
-            .expect("初始化主机 Agent token 失败");
+        // 主机 Agent token 固定不变：已有有效 token 直接复用，仅首次启动（或被吊销后）生成。
+        // 重启不再令旧 token 失效，避免本机之外的 Agent 每次都要重新取 token；
+        // 需要更换时在设置窗口或网页「我的 Agent 访问」手动重新生成。
+        let existing = crate::db::users::active_agent_token(&db, crate::domain::user::HOST_USER_ID)
+            .expect("读取主机 Agent token 失败");
+        let token = match existing {
+            Some(token) => token,
+            None => {
+                let token = uuid::Uuid::new_v4().to_string();
+                crate::db::users::set_agent_token(&db, crate::domain::user::HOST_USER_ID, &token)
+                    .expect("初始化主机 Agent token 失败");
+                token
+            }
+        };
         let theme = settings.theme.clone();
         Self {
             db: Mutex::new(db),

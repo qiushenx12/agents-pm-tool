@@ -65,7 +65,7 @@ pub async fn get_access(
     };
     let server_url = server_url(&core, &user);
     let access_instructions = if user.id == HOST_USER_ID {
-        "Agents PM Tool 是本地任务管理工具，Agent 通过受限客户端 pm-cli 读取和推进任务。请先确保桌面应用正在运行；安装版会注册 pm-cli 到用户 PATH，并自动读取实际端口和临时 token，无需手动配置。安装或升级后需重新打开终端/Agent 前端。".to_string()
+        "Agents PM Tool 是本地任务管理工具，Agent 通过受限客户端 pm-cli 读取和推进任务。请先确保桌面应用正在运行；安装版会注册 pm-cli 到用户 PATH，并自动读取实际端口和主机 token，无需手动配置。安装或升级后需重新打开终端/Agent 前端。".to_string()
     } else {
         format!(
             "Agents PM Tool 位于远程主机，Agent 通过受限客户端 pm-cli 读取和推进任务。\
