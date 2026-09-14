@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import UiIcon from "@/shared/UiIcon.vue";
 import ColumnSettings from "./ColumnSettings.vue";
 import type { GroupField } from "@/shared/types";
@@ -14,13 +14,14 @@ const tasks = useTaskStore(),
   view = useViewStore();
 const priorityTone = (value: string) => priorityTones[value] ?? "gray";
 const groups = [
-  { key: "project", label: "项目" },
-  { key: "type", label: "任务类型" },
-  { key: "priority", label: "优先级" },
-  { key: "status", label: "当前状态" },
-  { key: "submitter", label: "提交人" },
+  { key: "project", label: "项目", icon: "folder" },
+  { key: "type", label: "任务类型", icon: "tag" },
+  { key: "priority", label: "优先级", icon: "flag" },
+  { key: "status", label: "当前状态", icon: "review" },
+  { key: "submitter", label: "提交人", icon: "user" },
 ] as const;
-function options(key: string): readonly string[] {
+type ConditionKey = (typeof groups)[number]["key"];
+function options(key: ConditionKey): readonly string[] {
   return key === "project"
     ? meta.projects.map((p) => p.name)
     : key === "type"
@@ -38,16 +39,92 @@ const submitterUserOptions = computed(() => {
   );
   return [...new Set([...meta.submitterNames, ...selected])];
 });
-const chips = computed(() =>
-  groups.flatMap((g) =>
-    tasks.filters[g.key].map((value) => ({
-      key: g.key,
-      label:
-        g.key === "status" && tasks.filters.status_mode === "exclude"
-          ? `${g.label} · 不包含`
-          : g.label,
-      value,
-    })),
+const activeConditionKeys = ref<ConditionKey[]>(
+  groups
+    .filter((group) => tasks.filters[group.key].length > 0)
+    .map((group) => group.key),
+);
+const activeGroups = computed(() =>
+  activeConditionKeys.value.flatMap((key) => {
+    const group = groups.find((item) => item.key === key);
+    return group ? [group] : [];
+  }),
+);
+const availableGroups = computed(() =>
+  groups.filter((group) => !activeConditionKeys.value.includes(group.key)),
+);
+/** 外部恢复出的非空筛选要补成条件行；值清空后则保留条件，等待用户重新选择。 */
+watch(
+  () => groups.map((group) => tasks.filters[group.key].length),
+  (lengths) => {
+    groups.forEach((group, index) => {
+      if (
+        lengths[index] > 0 &&
+        !activeConditionKeys.value.includes(group.key)
+      ) {
+        activeConditionKeys.value.push(group.key);
+      }
+    });
+  },
+);
+function addCondition(key: ConditionKey) {
+  if (!activeConditionKeys.value.includes(key))
+    activeConditionKeys.value.push(key);
+}
+function toggleFilterBuilder(toggle: () => void, open: boolean) {
+  if (!open && activeConditionKeys.value.length === 0) addCondition(groups[0].key);
+  toggle();
+}
+function fieldChoices(current: ConditionKey) {
+  return groups.filter(
+    (group) =>
+      group.key === current || !activeConditionKeys.value.includes(group.key),
+  );
+}
+function clearConditionValues(key: ConditionKey) {
+  (tasks.filters[key] as string[]).splice(0);
+  if (key === "status") tasks.filters.status_mode = "include";
+}
+function replaceCondition(current: ConditionKey, next: ConditionKey) {
+  if (current === next) return;
+  const index = activeConditionKeys.value.indexOf(current);
+  if (index < 0 || activeConditionKeys.value.includes(next)) return;
+  clearConditionValues(current);
+  activeConditionKeys.value.splice(index, 1, next);
+}
+function removeCondition(key: ConditionKey) {
+  const index = activeConditionKeys.value.indexOf(key);
+  if (index >= 0) activeConditionKeys.value.splice(index, 1);
+  clearConditionValues(key);
+}
+function clearAllConditions() {
+  tasks.clearFilters();
+  activeConditionKeys.value = [];
+}
+function optionSections(key: ConditionKey) {
+  if (key === "submitter") {
+    return [
+      { label: "提交来源", values: [...meta.submitters] as string[] },
+      { label: "具体提交人", values: submitterUserOptions.value },
+    ].filter((section) => section.values.length > 0);
+  }
+  const selected = tasks.filters[key] as string[];
+  return [
+    {
+      label: "",
+      values: [...new Set([...options(key), ...selected])],
+    },
+  ];
+}
+function conditionSummary(key: ConditionKey) {
+  const values = tasks.filters[key] as string[];
+  if (!values.length) return `选择${groups.find((group) => group.key === key)?.label}`;
+  return values.length === 1 ? values[0] : `${values[0]} 等 ${values.length} 项`;
+}
+const filterValueCount = computed(() =>
+  groups.reduce(
+    (total, group) => total + tasks.filters[group.key].length,
+    0,
   ),
 );
 const sorts = [
@@ -76,89 +153,211 @@ async function chooseSort(value: (typeof sorts)[number]["value"]) {
       <UiIcon name="plus" :size="15" />新建任务
     </button>
     <span class="toolbar-divider"></span>
-    <UiPopover :width="300" label="筛选任务"
+    <UiPopover :width="560" label="筛选任务"
       ><template #trigger="{ toggle, open }"
         ><button
           class="btn btn-ghost btn-sm"
           :class="{ active: tasks.activeFilterCount > 0 || open }"
           :aria-expanded="open"
-          @click="toggle"
+          @click="toggleFilterBuilder(toggle, open)"
         >
           <UiIcon name="filter" :size="15" />筛选<span
-            v-if="chips.length"
+            v-if="filterValueCount"
             class="tool-count"
-            >{{ chips.length }}</span
+            >{{ filterValueCount }}</span
           >
         </button></template
       ><template #default>
-        <div class="menu-title">
-          筛选记录<span>同类多选；状态可包含或排除</span>
+        <div class="menu-title filter-builder-title">
+          <span class="filter-builder-heading"
+            >设置筛选条件<UiIcon name="info" :size="14"
+          /></span>
+          <span>同一字段可多选；当前状态支持包含或不包含</span>
         </div>
-        <div v-for="group in groups" :key="group.key" class="filter-section">
-          <div class="menu-caption filter-caption">
-            <span>{{ group.label }}</span>
-            <span
-              v-if="group.key === 'status'"
-              class="status-filter-mode"
-              role="group"
-              aria-label="状态筛选方式"
-            >
-              <button
-                type="button"
-                :class="{ active: tasks.filters.status_mode === 'include' }"
-                :aria-pressed="tasks.filters.status_mode === 'include'"
-                @click="tasks.filters.status_mode = 'include'"
-              >
-                包含
-              </button>
-              <button
-                type="button"
-                :class="{ active: tasks.filters.status_mode === 'exclude' }"
-                :aria-pressed="tasks.filters.status_mode === 'exclude'"
-                @click="tasks.filters.status_mode = 'exclude'"
-              >
-                不包含
-              </button>
-            </span>
-          </div>
-          <label
-            v-for="option in options(group.key)"
-            :key="option"
-            class="menu-item"
-            ><input
-              type="checkbox"
-              :checked="(tasks.filters[group.key] as string[]).includes(option)"
-              @change="tasks.toggleFilter(group.key, option)"
-            /><span
-              v-if="group.key === 'project'"
-              class="option-dot"
-              :style="{ background: meta.projectColor(option) }"
-            ></span
-            ><span
-              v-else-if="group.key === 'priority'"
-              class="option-dot"
-              :class="'dot-' + priorityTone(option)"
-            ></span
-            ><span>{{ option }}</span></label
+        <div v-if="activeGroups.length" class="filter-condition-list">
+          <div
+            v-for="group in activeGroups"
+            :key="group.key"
+            class="filter-condition"
+            :data-filter-key="group.key"
           >
-          <template v-if="group.key === 'submitter' && submitterUserOptions.length">
-            <div class="menu-caption filter-caption filter-subcaption">
-              <span>提交人</span>
-            </div>
-            <label
-              v-for="name in submitterUserOptions"
-              :key="'u-' + name"
-              class="menu-item"
-              ><input
-                type="checkbox"
-                :checked="tasks.filters.submitter.includes(name)"
-                @change="tasks.toggleFilter('submitter', name)"
-              /><span>{{ name }}</span></label
+            <UiPopover :width="210" label="选择筛选字段"
+              ><template #trigger="{ toggle, open: fieldOpen }"
+                ><button
+                  type="button"
+                  class="filter-condition-control filter-field-control"
+                  :aria-expanded="fieldOpen"
+                  :aria-label="`更换筛选字段：${group.label}`"
+                  @click="toggle"
+                >
+                  <UiIcon :name="group.icon" :size="14" />
+                  <span>{{ group.label }}</span>
+                  <UiIcon name="chevron" :size="13" /></button
+                ></template
+              ><template #default="{ close }">
+                <div class="menu-caption">选择筛选字段</div>
+                <button
+                  v-for="choice in fieldChoices(group.key)"
+                  :key="choice.key"
+                  type="button"
+                  class="menu-item"
+                  :aria-selected="choice.key === group.key"
+                  @click="
+                    replaceCondition(group.key, choice.key);
+                    close();
+                  "
+                >
+                  <UiIcon :name="choice.icon" :size="14" />{{ choice.label
+                  }}<UiIcon
+                    v-if="choice.key === group.key"
+                    name="check"
+                    class="menu-check"
+                  /></button></template
+            ></UiPopover>
+            <UiPopover
+              v-if="group.key === 'status'"
+              :width="150"
+              label="当前状态筛选方式"
             >
-          </template>
-          <div v-if="!options(group.key).length" class="menu-empty">
-            暂无项目
+              <template #trigger="{ toggle, open: modeOpen }"
+                ><button
+                  type="button"
+                  class="filter-condition-control filter-operator-control"
+                  aria-label="切换当前状态筛选方式"
+                  :aria-expanded="modeOpen"
+                  @click="toggle"
+                >
+                  {{ tasks.filters.status_mode === "exclude" ? "不包含" : "包含" }}
+                  <UiIcon name="chevron" :size="13" /></button
+                ></template
+              ><template #default="{ close }">
+                <button
+                  v-for="mode in [
+                    { value: 'include', label: '包含' },
+                    { value: 'exclude', label: '不包含' },
+                  ] as const"
+                  :key="mode.value"
+                  type="button"
+                  class="menu-item"
+                  :aria-selected="tasks.filters.status_mode === mode.value"
+                  @click="
+                    tasks.filters.status_mode = mode.value;
+                    close();
+                  "
+                >
+                  {{ mode.label
+                  }}<UiIcon
+                    v-if="tasks.filters.status_mode === mode.value"
+                    name="check"
+                    class="menu-check"
+                  /></button></template
+            ></UiPopover>
+            <span v-else class="filter-condition-control filter-operator-static"
+              >等于</span
+            >
+            <UiPopover :width="270" :label="`选择${group.label}`"
+              ><template #trigger="{ toggle, open: valueOpen }"
+                ><button
+                  type="button"
+                  class="filter-condition-control filter-value-control"
+                  :class="{
+                    placeholder: !(tasks.filters[group.key] as string[]).length,
+                  }"
+                  :aria-expanded="valueOpen"
+                  @click="toggle"
+                >
+                  <span>{{ conditionSummary(group.key) }}</span>
+                  <UiIcon name="chevron" :size="13" /></button
+                ></template
+              ><template #default>
+                <div class="menu-title filter-value-title">选择{{ group.label }}</div>
+                <div class="filter-value-options">
+                  <template
+                    v-for="section in optionSections(group.key)"
+                    :key="section.label"
+                  >
+                    <div v-if="section.label" class="menu-caption filter-value-caption">
+                      {{ section.label }}
+                    </div>
+                    <label
+                      v-for="option in section.values"
+                      :key="option"
+                      class="menu-item"
+                      ><input
+                        type="checkbox"
+                        :checked="
+                          (tasks.filters[group.key] as string[]).includes(option)
+                        "
+                        @change="tasks.toggleFilter(group.key, option)"
+                      /><span
+                        v-if="group.key === 'project'"
+                        class="option-dot"
+                        :style="{ background: meta.projectColor(option) }"
+                      ></span
+                      ><span
+                        v-else-if="group.key === 'priority'"
+                        class="option-dot"
+                        :class="'dot-' + priorityTone(option)"
+                      ></span
+                      ><span>{{ option }}</span></label
+                    >
+                  </template>
+                  <div
+                    v-if="!optionSections(group.key).length"
+                    class="menu-empty"
+                  >
+                    暂无可选项
+                  </div>
+                </div></template
+            ></UiPopover>
+            <button
+              type="button"
+              class="icon-btn filter-condition-remove"
+              :aria-label="`移除${group.label}筛选条件`"
+              @click="removeCondition(group.key)"
+            >
+              <UiIcon name="close" :size="13" />
+            </button>
           </div>
+        </div>
+        <div v-else class="filter-builder-empty">尚未添加筛选条件</div>
+        <div class="filter-builder-actions">
+          <UiPopover :width="220" label="添加筛选条件"
+            ><template #trigger="{ toggle, open: addOpen }"
+              ><button
+                type="button"
+                class="add-filter-condition"
+                :aria-expanded="addOpen"
+                @click="toggle"
+              >
+                <UiIcon name="plus" :size="15" />添加条件
+              </button></template
+            ><template #default="{ close }">
+              <div class="menu-caption">选择筛选字段</div>
+              <button
+                v-for="group in availableGroups"
+                :key="group.key"
+                type="button"
+                class="menu-item"
+                @click="
+                  addCondition(group.key);
+                  close();
+                "
+              >
+                <UiIcon :name="group.icon" :size="14" />{{ group.label }}
+              </button>
+              <div v-if="!availableGroups.length" class="menu-empty">
+                所有字段均已添加
+              </div></template
+          ></UiPopover>
+          <button
+            v-if="filterValueCount"
+            type="button"
+            class="clear-filters filter-builder-clear"
+            @click="clearAllConditions"
+          >
+            清空条件
+          </button>
         </div>
       </template></UiPopover
     >
@@ -304,27 +503,5 @@ async function chooseSort(value: (typeof sorts)[number]["value"]) {
         <UiIcon name="close" :size="12" /></button
       ><kbd v-else>Ctrl K</kbd>
     </div>
-  </div>
-  <div v-if="chips.length || tasks.filters.keyword" class="filter-chips">
-    <span class="subtle">筛选条件</span
-    ><button
-      v-for="chip in chips"
-      :key="chip.key + chip.value"
-      class="filter-chip"
-      :aria-label="'移除筛选：' + chip.label + ' ' + chip.value"
-      @click="tasks.toggleFilter(chip.key, chip.value)"
-    >
-      {{ chip.label }}<span>{{ chip.value }}</span
-      ><UiIcon name="close" :size="12" /></button
-    ><button
-      v-if="tasks.filters.keyword"
-      class="filter-chip"
-      @click="tasks.filters.keyword = ''"
-    >
-      搜索<span>{{ tasks.filters.keyword }}</span
-      ><UiIcon name="close" :size="12" /></button
-    ><button class="clear-filters" @click="tasks.clearFilters()">
-      清空条件
-    </button>
   </div>
 </template>
