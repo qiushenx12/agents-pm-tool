@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   applyTheme,
   currentTheme,
@@ -30,13 +30,6 @@ import { useTaskStore } from "./stores/taskStore";
 import { useViewStore } from "./stores/viewStore";
 import type { Task, User } from "@/shared/types";
 import { setAgentPromptAccess } from "./taskActions";
-import {
-  collapseHeight,
-  collapseProgress,
-  isFullyCollapsed,
-  normalizeWheelDelta,
-  resolveCollapseOffset,
-} from "./headerCollapse";
 import { openWorkspaceSettings } from "./settingsNavigation";
 
 const tasks = useTaskStore(),
@@ -85,59 +78,6 @@ async function switchTheme() {
   }
 }
 const table = ref<InstanceType<typeof TaskGrid>>();
-/**
- * 页头折叠：指针停在表格上方区域时的滚轮驱动，滚几格收几成，向上滚原路退回。
- * 任务表自身的滚动不参与 —— 它按位置判定，这里按方向推进，混在一起会互相打架。
- */
-const collapseOffset = ref(0);
-const headerContent = ref<HTMLElement>();
-/** 折叠区域的自然高度，由 ResizeObserver 量得（内层不裁剪，收起时也能量准）。 */
-const headerNatural = ref(0);
-const headerCollapsed = computed(() =>
-  isFullyCollapsed(collapseOffset.value, headerNatural.value),
-);
-/** 折叠进度交给 CSS 折算页头底部留白，数值留在样式表里。 */
-const headerStyle = computed(() => {
-  const natural = headerNatural.value;
-  if (natural <= 0) return undefined;
-  return {
-    "--collapse-progress": `${collapseProgress(collapseOffset.value, natural)}`,
-  } as Record<string, string>;
-});
-/** 折叠高度只能给像素（要连续值，做不出逐步收起的中间态就是两态切换）。 */
-const collapsibleStyle = computed(() => {
-  const natural = headerNatural.value;
-  if (natural <= 0) return undefined;
-  return { height: `${collapseHeight(collapseOffset.value, natural)}px` };
-});
-
-function measureHeader() {
-  const element = headerContent.value;
-  if (element) headerNatural.value = element.getBoundingClientRect().height;
-}
-
-/** 任务表那几块：表身、分组条、分页脚。落在它们上面的滚轮不折叠页头。 */
-const TASK_AREA_SELECTOR = ".grid-wrap, .group-strip, .grid-footer";
-
-function onWorkspaceWheel(event: WheelEvent) {
-  const target = event.target;
-  if (!(target instanceof Element) || target.closest(TASK_AREA_SELECTOR)) return;
-  const natural = headerNatural.value;
-  if (natural <= 0) return;
-  const pixels = normalizeWheelDelta(
-    event.deltaY,
-    event.deltaMode,
-    window.innerHeight,
-  );
-  if (pixels === 0) return;
-  // 上方区域自身不滚动，这次滚轮就是折叠指令，吃掉默认行为。
-  event.preventDefault();
-  collapseOffset.value = resolveCollapseOffset(
-    collapseOffset.value,
-    pixels,
-    natural,
-  );
-}
 const savedViews = useSavedViewStore();
 const activeProject = computed(() =>
   tasks.filters.project.length === 1 ? tasks.filters.project[0] : "",
@@ -303,26 +243,6 @@ function reconnectToSettingsPort(port: number) {
   }, 1200);
 }
 
-/** 折叠区域要等登录态确定后才渲染，所以按引用出现/消失来挂测量。 */
-let headerObserver: ResizeObserver | undefined;
-watch(
-  headerContent,
-  (element, _previous, onCleanup) => {
-    headerObserver?.disconnect();
-    headerObserver = undefined;
-    if (!element) return;
-    measureHeader();
-    if (typeof ResizeObserver === "undefined") return;
-    headerObserver = new ResizeObserver(measureHeader);
-    headerObserver.observe(element);
-    onCleanup(() => {
-      headerObserver?.disconnect();
-      headerObserver = undefined;
-    });
-  },
-  { flush: "post" },
-);
-
 onMounted(() => {
   void initialize();
   // 未登录也先拉全局主题（GET 公开），登录页就能正确着色
@@ -407,8 +327,8 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </aside>
-    <main class="workspace-main" @wheel="onWorkspaceWheel">
-      <header class="workspace-header" :style="headerStyle">
+    <main class="workspace-main">
+      <header class="workspace-header">
         <div class="breadcrumb">
           <button
             class="icon-btn"
@@ -421,44 +341,7 @@ onBeforeUnmount(() => {
             title
           }}</span>
         </div>
-        <div
-          class="workspace-collapsible"
-          :class="{ 'is-collapsed': headerCollapsed }"
-          :style="collapsibleStyle"
-        >
-          <div ref="headerContent" class="workspace-collapsible-inner">
-            <div class="page-heading">
-              <div class="page-identity">
-                <span class="page-icon"><UiIcon name="grid" :size="23" /></span>
-                <div>
-                  <h1>{{ title }}</h1>
-                  <p>
-                    {{
-                      activeProject
-                        ? "项目任务与进展，集中在这里"
-                        : "让每一项需求、问题与进展都有迹可循"
-                    }}
-                  </p>
-                </div>
-              </div>
-              <div
-                class="connection-state"
-                :class="tasks.connection"
-                role="status"
-              >
-                <span class="connection-dot"></span
-                >{{
-                  tasks.connection === "live"
-                    ? "实时同步已连接"
-                    : tasks.connection === "reconnecting"
-                      ? "连接恢复中"
-                      : "正在连接"
-                }}
-              </div>
-            </div>
-            <SavedViews />
-          </div>
-        </div>
+        <SavedViews />
       </header>
       <FilterBar @create="showCreate = true" />
       <BulkActions />

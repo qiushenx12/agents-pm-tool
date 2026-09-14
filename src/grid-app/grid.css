@@ -236,23 +236,6 @@
 .workspace-header {
   padding: 12px 28px 20px;
   flex-shrink: 0;
-  /* 折叠进度由 GridApp 写到 --collapse-progress，底部留白随之收紧，
-     否则收到底会留下一条空带。 */
-  padding-bottom: calc(20px - 8px * var(--collapse-progress, 0));
-  transition: padding-bottom 0.16s ease-out;
-}
-/* 在表格上方区域滚动滚轮时，把「任务管理」标题块 + 视图标签栏逐步收起，纵向空间让给列表。
-   高度是连续值，由 GridApp 依据滚轮位移写成 inline px，这里只负责裁剪
-   （不用 grid-template-rows：那只能 0fr/1fr 两态，做不出逐步收起）。
-   面包屑（含侧栏开关）留在外面，收起时仍可操作。 */
-.workspace-collapsible {
-  overflow: hidden;
-  transition: height 0.16s ease-out;
-}
-/* 测量用的内层：不裁剪，收起后 ResizeObserver 仍能量到自然高度。
-   flow-root 兜住子元素的外边距，避免量出来的高度比实际显示矮一截。 */
-.workspace-collapsible-inner {
-  display: flow-root;
 }
 .breadcrumb {
   display: flex;
@@ -269,66 +252,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.page-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding-top: 20px;
-}
-.page-identity {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-.page-identity > div {
-  min-width: 0;
-}
-.page-icon {
-  display: grid;
-  place-items: center;
-  background: var(--tag-teal-bg);
-  color: var(--tag-teal-fg);
-  border-radius: 8px;
-  width: 40px;
-  height: 44px;
-  flex-shrink: 0;
-}
-.page-heading h1 {
-  font-size: 20px;
-  line-height: 1.4;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.page-heading p {
-  font-size: 12px;
-  color: var(--text-tertiary);
-  margin-top: 4px;
-}
-.connection-state {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-tertiary);
-  font-size: 11px;
-  white-space: nowrap;
-}
-.connection-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-tertiary);
-}
-.live .connection-dot {
-  background: var(--success);
-}
-.reconnecting .connection-dot {
-  background: var(--warning);
 }
 .view-tabs {
   height: 42px;
@@ -347,12 +270,6 @@
   font-weight: 500;
   border-bottom: 2px solid var(--primary);
   padding: 0 3px;
-}
-.view-description {
-  margin-left: auto;
-  align-self: center;
-  color: var(--text-tertiary);
-  font-size: 11px;
 }
 .table-toolbar {
   display: flex;
@@ -436,13 +353,14 @@
 .filter-builder-heading {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
+  margin: 0 !important;
+  color: var(--text-primary) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
 }
 .filter-builder-heading .ui-icon {
   color: var(--text-tertiary);
-  font-size: 10px;
-  letter-spacing: 0.3px;
 }
 .filter-condition-list {
   display: grid;
@@ -470,16 +388,14 @@
   border: 1px solid var(--input-border);
   border-radius: 6px;
   background: var(--card);
-  color: var(--primary);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  color: var(--text-primary);
+  font-size: 12px;
 }
 button.filter-condition-control {
   display: flex;
   align-items: center;
-  gap: 7px;
-  flex-wrap: wrap;
-  padding: 0 28px 12px;
-  font-size: 11px;
+  gap: 6px;
+  cursor: pointer;
 }
 button.filter-condition-control:hover,
 button.filter-condition-control:focus-visible,
@@ -502,14 +418,7 @@ button.filter-condition-control[aria-expanded="true"] {
 .filter-operator-static {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 7px;
-  border: 1px solid var(--input-border);
-  border-radius: 4px;
-  background: var(--hover);
-  font-size: 11px;
   color: var(--text-secondary);
-  max-width: 300px;
 }
 .filter-value-control.placeholder {
   color: var(--text-tertiary);
@@ -1488,9 +1397,6 @@ button.attachment-preview:focus-visible {
   .table-search {
     width: 190px;
   }
-  .connection-state {
-    font-size: 10px;
-  }
 }
 @media (max-width: 760px) {
   .workspace-sidebar {
@@ -1500,10 +1406,7 @@ button.attachment-preview:focus-visible {
   .sidebar-module-head {
     padding: 0 8px 0 12px;
   }
-  .page-heading p,
-  .view-description,
-  .keyboard-hint,
-  .connection-state {
+  .keyboard-hint {
     display: none;
   }
   .workspace-header {
@@ -1516,9 +1419,6 @@ button.attachment-preview:focus-visible {
   .project-danger-zone {
     align-items: stretch;
     flex-direction: column;
-  }
-  .page-heading {
-    padding-top: 12px;
   }
   .table-search {
     flex: 1;
@@ -1573,9 +1473,6 @@ button.attachment-preview:focus-visible {
 .workspace-header {
   padding-top: 8px;
   padding-bottom: 16px;
-}
-.page-heading {
-  padding-top: 14px;
 }
 .detail-title {
   display: -webkit-box;
@@ -1850,9 +1747,6 @@ button.attachment-preview:focus-visible {
   padding: 0 5px;
 }
 @media (max-width: 1000px) {
-  .saved-view-bar .view-description {
-    display: none;
-  }
   .bulk-toolbar {
     padding: 7px 16px;
     gap: 5px;

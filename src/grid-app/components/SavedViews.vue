@@ -141,7 +141,6 @@ function update() {
     <button class="btn btn-ghost btn-sm save-view-button" @click="openSave">
       <UiIcon name="plus" :size="13" />保存方案
     </button>
-    <span class="view-description">筛选、排序与分组，一键切换</span>
   </div>
   <UiDialog
     v-if="dialog"
