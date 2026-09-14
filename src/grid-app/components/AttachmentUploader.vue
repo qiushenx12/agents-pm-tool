@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import UiIcon from "@/shared/UiIcon.vue";
+import { clipboardFiles } from "../clipboardFiles";
 import { formatSize, type UploadItem } from "./useUploadQueue";
 defineProps<{ items: UploadItem[]; busy: boolean }>();
 const emit = defineEmits<{ add: [files: File[]]; remove: [id: number] }>();
 const input = ref<HTMLInputElement>();
+const zone = ref<HTMLElement>();
 const dragging = ref(false);
 function choose(e: Event) {
   const el = e.target as HTMLInputElement;
@@ -15,14 +17,31 @@ function drop(e: DragEvent) {
   dragging.value = false;
   emit("add", Array.from(e.dataTransfer?.files ?? []));
 }
+function focusZone(event: MouseEvent) {
+  const target = event.target;
+  if (target instanceof Element && target.closest("button,input")) return;
+  zone.value?.focus();
+}
+function paste(event: ClipboardEvent) {
+  const files = clipboardFiles(event);
+  if (!files.length) return;
+  event.preventDefault();
+  event.stopPropagation();
+  emit("add", files);
+}
 </script>
 <template>
   <div
+    ref="zone"
     class="upload-zone"
     :class="{ dragging, 'upload-disabled': busy }"
+    :tabindex="busy ? -1 : 0"
+    aria-label="附件上传区，可选择、拖入或粘贴文件"
+    @click="focusZone"
     @dragover.prevent="dragging = !busy"
     @dragleave.prevent="dragging = false"
     @drop.prevent="!busy && drop($event)"
+    @paste="!busy && paste($event)"
   >
     <UiIcon name="upload" :size="22" />
     <div>
@@ -33,7 +52,7 @@ function drop(e: DragEvent) {
         @click="input?.click()"
       >
         选择文件</button
-      ><span class="muted"> 或拖拽文件到这里</span>
+      ><span class="muted"> 或拖拽、粘贴文件到这里</span>
       <p class="form-hint">支持图片、视频及文档附件</p>
     </div>
     <input

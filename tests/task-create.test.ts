@@ -16,6 +16,18 @@ const flush = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
   await nextTick();
 };
+function filePasteEvent(files: File[], exposeAsItems = false) {
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", {
+    value: {
+      files: exposeAsItems ? [] : files,
+      items: exposeAsItems
+        ? files.map((file) => ({ kind: "file", getAsFile: () => file }))
+        : [],
+    },
+  });
+  return event;
+}
 afterEach(() => {
   app?.unmount();
   if (pinia) disposePinia(pinia);
@@ -96,6 +108,77 @@ it("creates the task only once when retrying an attachment failure in the new-ta
   await flush();
   expect(api.createTask).toHaveBeenCalledTimes(1);
   expect(api.uploadAttachment).toHaveBeenCalledTimes(3);
+  expect(onCreated).toHaveBeenCalledWith(task);
+});
+
+it.each([
+  ["clipboard files", false],
+  ["clipboard items", true],
+])("queues files pasted into the new-task attachment box from %s", async (_, asItems) => {
+  window.history.replaceState(null, "", "/");
+  pinia = createPinia();
+  useMetaStore(pinia).projects = [
+    {
+      name: "测试项目",
+      color: "#3370ff",
+      sort_order: 0,
+      local_path: "",
+      git_url: "",
+      created_at: "",
+    },
+  ];
+  const task: Task = {
+    id: "created-from-paste",
+    seq: 2,
+    project: "测试项目",
+    type: "新增需求",
+    description: "",
+    note: "",
+    status: "未开始",
+    priority: "中",
+    submitter: "用户",
+    created_at: "",
+    updated_at: "",
+    finished_at: null,
+    position: 2,
+  };
+  vi.mocked(api.createTask).mockResolvedValue(task);
+  vi.mocked(api.uploadAttachment).mockResolvedValue({} as never);
+  vi.mocked(api.pageTasks).mockResolvedValue({
+    items: [task],
+    total: 1,
+    page: 1,
+    page_size: 100,
+    groups: [],
+    anchor_found: null,
+  });
+  const onCreated = vi.fn();
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp({ render: () => h(TaskCreateModal, { onCreated }) });
+  app.use(pinia);
+  app.mount(host);
+
+  const zone = document.querySelector<HTMLElement>(".upload-zone")!;
+  zone.click();
+  expect(document.activeElement).toBe(zone);
+  const file = new File(["png"], "剪贴板截图.png", { type: "image/png" });
+  const paste = filePasteEvent([file], asItems);
+  zone.dispatchEvent(paste);
+  await nextTick();
+
+  expect(paste.defaultPrevented).toBe(true);
+  expect(zone.getAttribute("aria-label")).toContain("粘贴文件");
+  expect(document.body.textContent).toContain("剪贴板截图.png");
+
+  const create = Array.from(
+    document.querySelectorAll<HTMLButtonElement>("button"),
+  ).find((button) => button.textContent?.trim() === "创建任务")!;
+  create.click();
+  await flush();
+
+  expect(api.createTask).toHaveBeenCalledTimes(1);
+  expect(api.uploadAttachment).toHaveBeenCalledWith(task.id, file);
   expect(onCreated).toHaveBeenCalledWith(task);
 });
 

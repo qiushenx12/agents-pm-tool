@@ -10,6 +10,7 @@ import DescriptionEditor from "./DescriptionEditor.vue";
 import AttachmentPreviewDialog from "./AttachmentPreviewDialog.vue";
 import { api } from "../api/client";
 import { attachmentKind } from "../attachmentKind";
+import { clipboardFiles } from "../clipboardFiles";
 import { buildAgentIdPrompt } from "../taskActions";
 import { useTaskStore } from "../stores/taskStore";
 import { useViewStore } from "../stores/viewStore";
@@ -288,16 +289,6 @@ function dropAttachments(event: DragEvent, task: Task) {
   attachmentDragTarget.value = "";
   const files = Array.from(event.dataTransfer?.files ?? []);
   if (files.length) void uploadAttachments(task, files);
-}
-function clipboardFiles(event: ClipboardEvent) {
-  const transfer = event.clipboardData;
-  if (!transfer) return [];
-  const files = Array.from(transfer.files);
-  if (files.length) return files;
-  return Array.from(transfer.items)
-    .filter((item) => item.kind === "file")
-    .map((item) => item.getAsFile())
-    .filter((file): file is File => file !== null);
 }
 function pasteAttachments(event: ClipboardEvent, task: Task) {
   const files = clipboardFiles(event);
