@@ -1743,23 +1743,6 @@ button.attachment-preview:focus-visible {
   color: var(--danger);
   font-size: 11px;
 }
-.group-strip {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 5px 24px 9px;
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-.group-strip > span:first-child {
-  display: flex;
-  gap: 5px;
-  align-items: center;
-}
-.group-strip > .subtle {
-  margin-left: auto;
-  font-size: 10px;
-}
 .task-grid .group-row > td {
   background: var(--sidebar-bg);
   height: 36px;
@@ -1874,8 +1857,7 @@ button.attachment-preview:focus-visible {
     padding: 7px 16px;
     gap: 5px;
   }
-  .bulk-count > .subtle,
-  .group-strip > .subtle {
+  .bulk-count > .subtle {
     display: none;
   }
   .table-search {

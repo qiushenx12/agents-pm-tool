@@ -135,6 +135,74 @@ it("clears the active cell when clicking outside the task cells", async () => {
   expect(document.activeElement).not.toBe(descriptionCell);
 });
 
+it("shows grouped rows without the group summary and global collapse action", async () => {
+  window.history.replaceState(null, "", "/?group_by=status");
+  localStorage.clear();
+  pinia = createPinia();
+  const fixtures: Task[] = [
+    {
+      id: "task-group-1",
+      seq: 1,
+      project: "测试项目",
+      type: "优化",
+      status: "未开始",
+      priority: "中",
+      description: "未开始任务",
+      note: "",
+      submitter: "用户",
+      created_at: "",
+      finished_at: null,
+      updated_at: "",
+      position: 1,
+    },
+    {
+      id: "task-group-2",
+      seq: 2,
+      project: "测试项目",
+      type: "BUG",
+      status: "进行中",
+      priority: "高",
+      description: "进行中任务",
+      note: "",
+      submitter: "Agent",
+      created_at: "",
+      finished_at: null,
+      updated_at: "",
+      position: 2,
+    },
+  ];
+  vi.mocked(api.pageTasks).mockResolvedValue({
+    items: fixtures,
+    total: 2,
+    page: 1,
+    page_size: 100,
+    groups: [
+      { value: "未开始", count: 1 },
+      { value: "进行中", count: 1 },
+    ],
+    anchor_found: null,
+  });
+  const tasks = useTaskStore(pinia);
+  await tasks.refresh();
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp({ render: () => h(TaskGrid) });
+  app.use(pinia);
+  app.mount(host);
+
+  expect(host.querySelector(".group-strip")).toBeNull();
+  expect(host.textContent).not.toContain("按当前状态分组");
+  expect(host.textContent).not.toContain("全部收起");
+  expect(host.querySelectorAll(".group-row")).toHaveLength(2);
+  expect(host.querySelectorAll(".task-row")).toHaveLength(2);
+
+  host
+    .querySelector<HTMLButtonElement>('[aria-label="分组：未开始"]')!
+    .click();
+  await nextTick();
+  expect(host.querySelectorAll(".task-row")).toHaveLength(1);
+});
+
 it("keeps actions fixed last while notes remain a resizable data column", async () => {
   window.history.replaceState(null, "", "/");
   localStorage.clear();

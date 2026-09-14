@@ -34,13 +34,6 @@ const editor = ref<InstanceType<typeof DescriptionEditor>>();
 const editorPosition = ref({ left: "0px", top: "0px" });
 const { page, pages } = storeToRefs(tasks);
 const collapsedGroups = ref(new Set<string>());
-const groupLabels: Record<GroupField, string> = {
-  project: "项目",
-  status: "当前状态",
-  type: "任务类型",
-  submitter: "提交人",
-  priority: "优先级",
-};
 const pageGroups = computed(() => {
   const field = tasks.filters.group_by;
   if (!field) return [{ value: "", count: tasks.total, items: tasks.tasks }];
@@ -79,19 +72,9 @@ const allSelected = computed(
 const someSelected = computed(() =>
   rows.value.some((task) => !!tasks.selection[task.id]),
 );
-const allCollapsed = computed(
-  () =>
-    pageGroups.value.length > 0 &&
-    pageGroups.value.every((group) => collapsedGroups.value.has(group.value)),
-);
 function toggleGroup(value: string) {
   if (collapsedGroups.value.has(value)) collapsedGroups.value.delete(value);
   else collapsedGroups.value.add(value);
-}
-function toggleGroups() {
-  collapsedGroups.value = allCollapsed.value
-    ? new Set()
-    : new Set(tasks.groups.map((group) => group.value));
 }
 function selectPage() {
   if (allSelected.value)
@@ -557,15 +540,6 @@ const sorts = ["created_at", "finished_at", "priority"] as const;
 defineExpose({ reveal });
 </script>
 <template>
-  <div v-if="tasks.filters.group_by" class="group-strip">
-    <span
-      ><UiIcon name="layers" :size="13" />按{{
-        groupLabels[tasks.filters.group_by]
-      }}分组 · 共 {{ tasks.groups.length }} 组</span
-    ><button class="text-button" @click="toggleGroups">
-      {{ allCollapsed ? "全部展开" : "全部收起" }}</button
-    ><span class="subtle">分组数量按完整筛选结果统计</span>
-  </div>
   <div
     ref="root"
     class="grid-wrap"
