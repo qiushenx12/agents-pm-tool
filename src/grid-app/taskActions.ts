@@ -9,10 +9,6 @@ export interface TaskRowAction {
   run: (task: Task) => void | Promise<void>;
 }
 
-function promptValue(value: string) {
-  return JSON.stringify(value);
-}
-
 /** 「复制 Prompt」所需的接入信息。只有服务地址会进入 Prompt。 */
 export interface AgentPromptAccess {
   /** 服务端动态计算：主机账号为 loopback，局域网账号为可达地址（见 api_agent_access.rs）。 */
@@ -40,14 +36,14 @@ export function buildAgentTaskPrompt(
   access: AgentPromptAccess = DEFAULT_ACCESS,
 ) {
   const serverUrl = access.server_url;
+  const helpUrl = serverUrl ? `${serverUrl}/api/agent/help` : undefined;
   return [
-    "请使用 Agents PM Tool（pm-cli-skill）完成以下任务：",
-    `- 任务 ID：${promptValue(task.id)}`,
-    `- 项目：${promptValue(task.project)}`,
-    `命令：pm-cli get ${task.id} --json`,
-    ...(serverUrl ? [`服务地址：${serverUrl}`] : []),
-    serverUrl
-      ? `完整用法见 pm-cli --help 或 ${serverUrl}/api/agent/help`
+    "请使用 Agents PM Tool（pm-cli-skill）完成以下任务。",
+    "先执行：pm-cli doctor --json",
+    `获取任务内容命令：pm-cli get ${task.id} --json`,
+    ...(serverUrl ? [`服务地址：[${serverUrl}](${serverUrl})`] : []),
+    helpUrl
+      ? `完整用法见 pm-cli --help 或 [${helpUrl}](${helpUrl})`
       : "完整用法见 pm-cli --help 或 GET /api/agent/help",
   ].join("\n");
 }

@@ -4,7 +4,7 @@
 **修改 `taskActions.ts` 后需重新导出并同步本文档。**
 
 - 生成入口：`src/grid-app/taskActions.ts::buildAgentTaskPrompt()`
-- 示例任务固定为 `id = 202609101412350000`、`project = agents-pm-tool`
+- 示例任务固定为 `id = 202609101412350000`
 
 > 模板只有 **一个**，变量只有服务地址。工具介绍、命令清单、权限边界都不在 Prompt 里展开——
 > 已装 pm-cli-skill 的 Agent 会读 `SKILL.md`，未装的按给出的地址请求免 token 的 `/api/agent/help`。
@@ -56,12 +56,11 @@
 ### 模板 A：取到接入信息（主机与远程共用，仅地址不同）
 
 ````text
-请使用 Agents PM Tool（pm-cli-skill）完成以下任务：
-- 任务 ID："202609101412350000"
-- 项目："agents-pm-tool"
-命令：pm-cli get 202609101412350000 --json
-服务地址：http://<服务地址>
-完整用法见 pm-cli --help 或 http://<服务地址>/api/agent/help
+请使用 Agents PM Tool（pm-cli-skill）完成以下任务。
+先执行：pm-cli doctor --json
+获取任务内容命令：pm-cli get 202609101412350000 --json
+服务地址：[http://<服务地址>](http://<服务地址>)
+完整用法见 pm-cli --help 或 [http://<服务地址>/api/agent/help](http://<服务地址>/api/agent/help)
 ````
 
 `<服务地址>` 为占位符，运行时由 `server_url` 逐字替换，取值规则见 §1.1。
@@ -69,10 +68,9 @@
 ### 模板 B：未取到接入信息（`DEFAULT_ACCESS` 兜底）
 
 ````text
-请使用 Agents PM Tool（pm-cli-skill）完成以下任务：
-- 任务 ID："202609101412350000"
-- 项目："agents-pm-tool"
-命令：pm-cli get 202609101412350000 --json
+请使用 Agents PM Tool（pm-cli-skill）完成以下任务。
+先执行：pm-cli doctor --json
+获取任务内容命令：pm-cli get 202609101412350000 --json
 完整用法见 pm-cli --help 或 GET /api/agent/help
 ````
 

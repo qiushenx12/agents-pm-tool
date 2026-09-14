@@ -33,11 +33,14 @@ describe("task row actions", () => {
   it("builds one concise prompt that does not enumerate commands or permissions", () => {
     const prompt = buildAgentTaskPrompt(task);
 
-    expect(prompt).toContain("请使用 Agents PM Tool（pm-cli-skill）完成以下任务：");
-    expect(prompt).toContain('任务 ID："202609091234560001"');
-    expect(prompt).toContain('项目："agents-pm-tool"');
-    expect(prompt).toContain("命令：pm-cli get 202609091234560001 --json");
-    expect(prompt).toContain("GET /api/agent/help");
+    expect(prompt).toBe(
+      [
+        "请使用 Agents PM Tool（pm-cli-skill）完成以下任务。",
+        "先执行：pm-cli doctor --json",
+        "获取任务内容命令：pm-cli get 202609091234560001 --json",
+        "完整用法见 pm-cli --help 或 GET /api/agent/help",
+      ].join("\n"),
+    );
     // 工具介绍、命令清单与权限边界已移到 /api/agent/help，Prompt 里不再展开
     expect(prompt).not.toContain("2. 可用命令");
     expect(prompt).not.toContain("pm-cli attachments");
@@ -48,9 +51,14 @@ describe("task row actions", () => {
     const prompt = buildAgentTaskPrompt(task, {
       server_url: "http://192.168.1.9:17890",
     });
-    expect(prompt).toContain("服务地址：http://192.168.1.9:17890");
-    expect(prompt).toContain(
-      "完整用法见 pm-cli --help 或 http://192.168.1.9:17890/api/agent/help",
+    expect(prompt).toBe(
+      [
+        "请使用 Agents PM Tool（pm-cli-skill）完成以下任务。",
+        "先执行：pm-cli doctor --json",
+        "获取任务内容命令：pm-cli get 202609091234560001 --json",
+        "服务地址：[http://192.168.1.9:17890](http://192.168.1.9:17890)",
+        "完整用法见 pm-cli --help 或 [http://192.168.1.9:17890/api/agent/help](http://192.168.1.9:17890/api/agent/help)",
+      ].join("\n"),
     );
   });
 
