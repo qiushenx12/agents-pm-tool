@@ -86,6 +86,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 `python build.py` 是 Windows 正式发布脚本，会同步多个版本文件、构建 NSIS 安装包，并询问是否将版本记录为已发布。它会改变发布状态，不是普通的只读构建命令，不要为了“验证一下”随意运行。
 
+`build.py` 与 `dev.py` 启动时都会核对 **package.json + package-lock.json 的内容指纹**（标记写在 `node_modules/.pm-deps-stamp`），指纹不一致才重装依赖，不一致时优先 `npm ci`、失败回退 `npm install`。**不要退回「node_modules 目录存在就跳过安装」**：依赖清单新增包时旧目录里没有它，检查会通过、跳过安装，随后 `vue-tsc` 在打包阶段抛出一堆 `Cannot find module 'node:...'`（加 `@types/node` 那次就这样在另一台机器上炸过）。自己手工删过 `node_modules` 里的东西后，直接重跑脚本即可自愈。
+
 ### 其他脚本
 
 ```powershell

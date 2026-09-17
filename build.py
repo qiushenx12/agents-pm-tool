@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -282,23 +283,59 @@ def check_npm() -> bool:
     return True
 
 
+DEPS_STAMP = PROJECT_DIR / "node_modules" / ".pm-deps-stamp"
+
+
+def deps_fingerprint() -> str:
+    """依赖清单的内容指纹（package.json + package-lock.json）。
+
+    用内容而不是修改时间：换机器、git 检出、CI 缓存都会打乱 mtime。
+    """
+    digest = hashlib.sha256()
+    for name in ("package.json", "package-lock.json"):
+        path = PROJECT_DIR / name
+        digest.update(name.encode("utf-8"))
+        digest.update(path.read_bytes() if path.exists() else b"-")
+    return digest.hexdigest()
+
+
 def install_deps() -> bool:
-    package_json = PROJECT_DIR / "package.json"
-    node_modules = PROJECT_DIR / "node_modules"
-    if not package_json.exists():
+    if not (PROJECT_DIR / "package.json").exists():
         print("未找到 package.json。")
         return False
-    if node_modules.exists():
-        print("npm 依赖已安装。")
-        return True
+    node_modules = PROJECT_DIR / "node_modules"
+    fingerprint = deps_fingerprint()
+    if node_modules.exists() and DEPS_STAMP.exists():
+        try:
+            if DEPS_STAMP.read_text(encoding="utf-8").strip() == fingerprint:
+                print("npm 依赖已安装。")
+                return True
+        except OSError:
+            pass
+    # 只看 node_modules 目录在不在，会漏掉「清单新增了包、旧目录里没有」的情况：
+    # 加 @types/node 那一次就是这样 —— 检查通过、跳过安装，vue-tsc 一路跑到打包阶段
+    # 才抛出一堆找不到 node: 模块的错。所以按依赖清单的指纹判断是否需要重装。
     npm = find_npm()
     if npm is None:
         return False
-    print("未找到 node_modules，正在安装 npm 依赖……")
-    result = subprocess.run([npm, "install"], cwd=PROJECT_DIR)
+    if node_modules.exists():
+        print("npm 依赖与依赖清单不一致，正在重新安装……")
+    else:
+        print("未找到 node_modules，正在安装 npm 依赖……")
+    result = subprocess.run([npm, "ci"], cwd=PROJECT_DIR)
     if result.returncode != 0:
-        print("npm install 失败。")
-        return False
+        # lock 与 package.json 不同步时 npm ci 会直接失败，退一步用 npm install 兜底，
+        # 免得打包机器因为锁文件的小问题整条流程走不下去。
+        print("npm ci 失败，改用 npm install 重试……")
+        result = subprocess.run([npm, "install"], cwd=PROJECT_DIR)
+        if result.returncode != 0:
+            print("npm 依赖安装失败。")
+            return False
+    try:
+        DEPS_STAMP.write_text(fingerprint + "\n", encoding="utf-8")
+    except OSError:
+        # 标记写不进去只是下次会重装一遍，不影响本次打包。
+        pass
     print("npm 依赖安装完成。")
     return True
 

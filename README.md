@@ -221,6 +221,8 @@ python build.py
 
 该脚本会同步项目版本、构建 NSIS 安装包，并在人工确认测试通过后记录发布。安装包位于 `src-tauri/target/release/bundle/nsis/`，确认发布后的归档位于 `src-tauri/release-bundle/nsis/`。
 
+`build.py` 和 `dev.py` 都会核对 `package.json` 与 `package-lock.json` 的内容指纹，**依赖清单变过就自动重装**（优先 `npm ci`），不需要你记着手动跑 `npm ci`。所以换机器、拉取到新增依赖的提交后，直接运行脚本即可。
+
 ## 技术栈
 
 - **桌面端**：Tauri 2
