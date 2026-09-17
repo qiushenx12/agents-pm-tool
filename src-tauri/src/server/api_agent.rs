@@ -348,9 +348,11 @@ pub async fn help(State(core): State<CoreState>, headers: HeaderMap) -> Json<ser
             ],
             "if_user_prefers_one_command": [
                 "在 Agent 所在电脑上执行一条命令即可：装好 pm-cli skill（检测到的前端全部安装）并写好上面的连接配置。",
-                "Windows PowerShell：irm <服务地址>/api/agent/skill/install.mjs | node --input-type=module - --all --server-url <服务地址> --token <token>",
+                "Windows PowerShell：$OutputEncoding=[Text.UTF8Encoding]::new($false); irm <服务地址>/api/agent/skill/install.mjs | node --input-type=module - --all --server-url <服务地址> --token <token>",
                 "macOS / Linux：curl -fsSL <服务地址>/api/agent/skill/install.mjs | node --input-type=module - --all --server-url <服务地址> --token <token>",
-                "需要 Node.js 18 或更高版本；命令里的 `-` 是「程序从标准输入读」，不能省。"
+                "需要 Node.js 18 或更高版本；命令里的 `-` 是「程序从标准输入读」，不能省。",
+                "Windows 上那串 $OutputEncoding 是给 PowerShell 5.1 补的：它往管道写非 ASCII 默认用 ASCII 编码，会把脚本里的中文变成问号；这一段必须是不带 BOM 的 UTF-8，否则 node 会因开头的 BOM 报语法错误。",
+                "服务地址若是 ngrok 这类隧道域名，PowerShell 自带的浏览器 UA 会被隧道挡成一张 HTML 提示页（node 报 `Unexpected identifier 'are'`），给 irm 补 -Headers @{\"ngrok-skip-browser-warning\"=\"1\"} 即可跳过；局域网与 Tailscale 地址不需要。网页端「我的 Agent 访问」里复制的命令已自动带上。"
             ],
             "if_pm_cli_missing": [
                 "先确认本机有 Node.js 18 或更高版本。",

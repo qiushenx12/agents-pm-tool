@@ -80,21 +80,52 @@ function pathHints(frontend: SkillPayloadFrontend) {
 }
 
 /**
+ * 服务地址是不是「域名」写法（隧道、反向代理，或用户自己配的公网域名）。
+ * ngrok 这类隧道的边缘按 User-Agent 判断访客是不是浏览器，而 PowerShell 的 `irm`
+ * 恰好带着 `Mozilla/5.0 … WindowsPowerShell/…`，于是拿回的是一张 HTML 提示页；
+ * node 会把这张页面当脚本执行，报 `SyntaxError: Unexpected identifier 'are'`。
+ * 局域网 / Tailscale / 回环都是 IP 字面量，不经过隧道边缘，不需要这个表头。
+ */
+function isTunnelHost(url: string) {
+  try {
+    const { hostname } = new URL(url);
+    // IPv4 是点分数字，IPv6 在 URL 里带方括号与冒号；两者都不是域名。
+    return (
+      hostname.length > 0 &&
+      !/^[0-9.]+$/.test(hostname) &&
+      !hostname.includes(":")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 一行命令：拉取安装脚本直接执行。
  * 装到检测到的全部前端，并把服务地址与 token 一并写进 pm-cli 的用户级配置，
  * 所以既不用下载文件、也不用选目录，跑完 Agent 就能直接连上。
  *
  * 中间那个 `-` 不能省：它告诉 node「程序从标准输入读」，后面的才是脚本参数。
  * 写成 `node --input-type=module -- --all` 会被 node 把 `--all` 当成脚本路径而报错。
+ *
+ * Windows 分支还有两处讲究，都是实测踩出来的：
+ * - 经隧道域名访问时要加 `-Headers`，否则拿回的是隧道的浏览器提示页。
+ * - PowerShell 5.1 把管道数据交给外部程序时默认用 ASCII 编码，脚本里的中文会被
+ *   整片换成 `?`（装出来的 pm-cli 帮助文本全成问号）；先固定成不带 BOM 的 UTF-8。
+ *   **必须是不带 BOM 的**：带 BOM 时 node 看到的第一个字符是 `\uFEFF`，直接语法报错。
  */
 const command = computed(() => {
   const base = access.value?.server_url ?? location.origin;
   const args = ["--all", "--server-url", base];
   if (access.value?.token) args.push("--token", access.value.token);
   const run = `node --input-type=module - ${args.join(" ")}`;
-  return targetOs.value === "macos"
-    ? `curl -fsSL ${base}${installerUrl} | ${run}`
-    : `irm ${base}${installerUrl} | ${run}`;
+  if (targetOs.value === "macos") {
+    return `curl -fsSL ${base}${installerUrl} | ${run}`;
+  }
+  const headers = isTunnelHost(base)
+    ? ' -Headers @{"ngrok-skip-browser-warning"="1"}'
+    : "";
+  return `$OutputEncoding=[Text.UTF8Encoding]::new($false); irm${headers} ${base}${installerUrl} | ${run}`;
 });
 
 function detectOs() {

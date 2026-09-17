@@ -344,9 +344,12 @@ function setPicker(picker: unknown) {
   });
 }
 
-function mountRemoteDialog(token: string | null = "remote-token") {
+function mountRemoteDialog(
+  token: string | null = "remote-token",
+  serverUrl = "http://192.168.1.9:17890",
+) {
   vi.mocked(api.getAgentAccess).mockResolvedValue({
-    server_url: "http://192.168.1.9:17890",
+    server_url: serverUrl,
     token,
     access_instructions: "远程主机：需要配置一次连接。",
   });
@@ -363,7 +366,8 @@ it("还没生成 token 时，命令里不带 token 并提示先生成", async ()
 
   await vi.waitFor(() =>
     expect(document.querySelector(".skill-command")?.textContent?.trim()).toBe(
-      "irm http://192.168.1.9:17890/api/agent/skill/install.mjs | " +
+      "$OutputEncoding=[Text.UTF8Encoding]::new($false); irm " +
+        "http://192.168.1.9:17890/api/agent/skill/install.mjs | " +
         "node --input-type=module - --all " +
         "--server-url http://192.168.1.9:17890",
     ),
@@ -382,7 +386,12 @@ it("shows per-frontend directory hints and the install-script fallback", async (
   const command = () =>
     document.querySelector(".skill-command")?.textContent?.trim();
   const windowsCommand =
-    "irm http://192.168.1.9:17890/api/agent/skill/install.mjs | " +
+    "$OutputEncoding=[Text.UTF8Encoding]::new($false); irm " +
+    "http://192.168.1.9:17890/api/agent/skill/install.mjs | " +
+    "node --input-type=module - --all " +
+    "--server-url http://192.168.1.9:17890 --token remote-token";
+  const macCommand =
+    "curl -fsSL http://192.168.1.9:17890/api/agent/skill/install.mjs | " +
     "node --input-type=module - --all " +
     "--server-url http://192.168.1.9:17890 --token remote-token";
 
@@ -423,8 +432,23 @@ it("shows per-frontend directory hints and the install-script fallback", async (
         ?.textContent,
     ).toContain("~/.claude/skills"),
   );
+  await vi.waitFor(() => expect(command()).toBe(macCommand));
+  delete (window as unknown as { showDirectoryPicker?: unknown })
+    .showDirectoryPicker;
+});
+
+it("经域名隧道访问时，命令带上跳过隧道提示页的表头", async () => {
+  setPicker(undefined);
+  mountRemoteDialog("remote-token", "https://a-b-c.ngrok-free.dev");
+
   await vi.waitFor(() =>
-    expect(command()).toBe(windowsCommand.replace("irm", "curl -fsSL")),
+    expect(document.querySelector(".skill-command")?.textContent?.trim()).toBe(
+      "$OutputEncoding=[Text.UTF8Encoding]::new($false); irm " +
+        '-Headers @{"ngrok-skip-browser-warning"="1"} ' +
+        "https://a-b-c.ngrok-free.dev/api/agent/skill/install.mjs | " +
+        "node --input-type=module - --all " +
+        "--server-url https://a-b-c.ngrok-free.dev --token remote-token",
+    ),
   );
   delete (window as unknown as { showDirectoryPicker?: unknown })
     .showDirectoryPicker;
