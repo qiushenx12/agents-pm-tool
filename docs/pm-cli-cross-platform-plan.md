@@ -184,3 +184,7 @@
 - **不再提供「下载安装脚本」按钮**：下载得到的是 `pm-cli-install.mjs`，普通用户拿到手里不知道怎么办；现在只留「复制命令」。面板上那块文案也相应精简（去掉解释脚本行为的长句）。
 
 `/api/agent/help` 的 `bootstrap` 同步改写：把「去哪个页面、哪张卡、哪一行、点哪个按钮拿 token」写成可照做的话术，并给出那条一步到位的命令，方便 Agent 直接转告用户。
+
+- **过渡期清理已删除**（存量机器都已升级）：`src-tauri/windows/nsis-hooks.nsh` 整个文件删除，`tauri.conf.json` 的 `bundle.windows.nsis.installerHooks` 一并移除。安装器从此不再碰用户 PATH，也不再删旧 `pm-cli.exe`。
+  - 删除是安全的：Tauri 的 NSIS 模板里那一段是 `{{#if installer_hooks}}!include "{{installer_hooks}}"{{/if}}`，没配就不会生成；四处 `!insertmacro NSIS_HOOK_*` 也都被 `!ifmacrodef` 包着，没有宏定义就跳过。
+  - 本文档第 4 节决策 4 与第 3.3 节记录的仍是当时「主动清理一次」的设计，已按上一条作废。
