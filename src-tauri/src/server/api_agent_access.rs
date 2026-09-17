@@ -180,10 +180,13 @@ pub async fn get_access(
     } else {
         format!(
             "Agents PM Tool 位于远程主机，Agent 通过受限客户端 pm-cli 读取和推进任务。\
-             pm-cli 是 pm-cli-skill 里的一个 Node 脚本（需要 Node.js 18 或更高版本）：\
-             在下面选择目标的前端 skill 目录直接写入，或下载安装脚本在 Agent 所在电脑上运行一次。\
-             远程环境不会自动读取端口与 token，需要手动配置一次：\
-             设置 PM_SERVER_URL={server_url} 与网页中签发的 PM_AGENT_TOKEN，\
+             pm-cli 是 pm-cli-skill 里的一个 Node 脚本（需要 Node.js 18 或更高版本）。\
+             在这台电脑上有两种装法：在下面的卡片里选目标前端、直接写入它的 skills 目录；\
+             或者把最下面那条命令复制到 Agent 所在电脑的终端执行一次，\
+             它会装好 skill（检测到的前端全部安装）并顺手写好连接配置。\
+             远程环境不会自动读取端口与 token，所以命令里已带上网页中签发的 token；\
+             若改用其它方式安装，需要手工配置一次：\
+             设置 PM_SERVER_URL={server_url} 与 PM_AGENT_TOKEN，\
              或运行 pm-cli config set server-url {server_url} 和 pm-cli config set token <token>，\
              再用 pm-cli doctor 确认连通。\
              （上面的服务地址按你当前的访问方式给出：走局域网就显示局域网地址，\

@@ -296,7 +296,7 @@ const skillPayload: SkillPayload = {
       id: "claude_code",
       label: "Claude Code",
       roots: [{ relative: ".claude/skills", label: "Claude Code" }],
-      windows_paths: ["%USERPROFILE%\.claude\skills"],
+      windows_paths: ["%USERPROFILE%\\.claude\\skills"],
       macos_paths: ["~/.claude/skills"],
     },
   ],
@@ -344,10 +344,10 @@ function setPicker(picker: unknown) {
   });
 }
 
-function mountRemoteDialog() {
+function mountRemoteDialog(token: string | null = "remote-token") {
   vi.mocked(api.getAgentAccess).mockResolvedValue({
     server_url: "http://192.168.1.9:17890",
-    token: "remote-token",
+    token,
     access_instructions: "远程主机：需要配置一次连接。",
   });
   vi.mocked(api.getSkillPayload).mockResolvedValue(skillPayload);
@@ -357,17 +357,63 @@ function mountRemoteDialog() {
   app.mount(root);
 }
 
+it("还没生成 token 时，命令里不带 token 并提示先生成", async () => {
+  setPicker(undefined);
+  mountRemoteDialog(null);
+
+  await vi.waitFor(() =>
+    expect(document.querySelector(".skill-command")?.textContent?.trim()).toBe(
+      "irm http://192.168.1.9:17890/api/agent/skill/install.mjs | " +
+        "node --input-type=module - --all " +
+        "--server-url http://192.168.1.9:17890",
+    ),
+  );
+  expect(
+    document.querySelector(".skill-fallback-copy")?.textContent,
+  ).toContain("还没有 Agent token");
+  delete (window as unknown as { showDirectoryPicker?: unknown })
+    .showDirectoryPicker;
+});
+
 it("shows per-frontend directory hints and the install-script fallback", async () => {
   setPicker(undefined);
   mountRemoteDialog();
+
+  const command = () =>
+    document.querySelector(".skill-command")?.textContent?.trim();
+  const windowsCommand =
+    "irm http://192.168.1.9:17890/api/agent/skill/install.mjs | " +
+    "node --input-type=module - --all " +
+    "--server-url http://192.168.1.9:17890 --token remote-token";
 
   await vi.waitFor(() =>
     expect(
       document.querySelector('[data-frontend="claude_code"] .skill-path')
         ?.textContent,
-    ).toContain("%USERPROFILE%\.claude\skills"),
+    ).toContain("%USERPROFILE%\\.claude\\skills"),
   );
-  // 另一套系统的写法在切换后展示
+  await vi.waitFor(() => expect(command()).toBe(windowsCommand));
+
+  const body = document.body.textContent ?? "";
+  expect(body).toContain("选择目录并写入");
+  // 浏览器不支持直接写目录时，按钮不可用并给出说明
+  expect(
+    document.querySelector<HTMLButtonElement>(
+      '[data-frontend="claude_code"] .skill-install-button',
+    )?.disabled,
+  ).toBe(true);
+
+  // 一行命令：装全部前端 + 直接把连接写好，用户只需复制粘贴
+  expect(body).toContain("在终端执行以下命令");
+  // 安装脚本只留「复制命令」，不再提供下载（下载下来的文件对用户没有意义）
+  expect(document.querySelector("a[download]")).toBeNull();
+  expect(
+    [...document.querySelectorAll(".skill-fallback button")].map((button) =>
+      button.textContent?.trim(),
+    ),
+  ).toEqual(["复制命令"]);
+
+  // 切到另一套系统后，目录写法与命令里的下载方式同步换掉
   document
     .querySelectorAll<HTMLButtonElement>(".skill-os-switch button")[1]!
     .click();
@@ -377,17 +423,9 @@ it("shows per-frontend directory hints and the install-script fallback", async (
         ?.textContent,
     ).toContain("~/.claude/skills"),
   );
-
-  const body = document.body.textContent ?? "";
-  expect(body).toContain("/api/agent/skill/install.mjs");
-  expect(body).toContain("选择目录并写入");
-  // 浏览器不支持直接写目录时，按钮不可用并给出说明
-  expect(
-    document.querySelector<HTMLButtonElement>(
-      '[data-frontend="claude_code"] .skill-install-button',
-    )?.disabled,
-  ).toBe(true);
-  expect(body).toContain("安装脚本");
+  await vi.waitFor(() =>
+    expect(command()).toBe(windowsCommand.replace("irm", "curl -fsSL")),
+  );
   delete (window as unknown as { showDirectoryPicker?: unknown })
     .showDirectoryPicker;
 });

@@ -550,4 +550,90 @@ describe("skill 安装脚本", () => {
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("claude_code");
   });
+
+  /** 连配置一起装的场景：给一个干净的 HOME，让 userConfigDir 落在里面。 */
+  function connectionEnv(home: string): NodeJS.ProcessEnv {
+    return {
+      HOME: home,
+      USERPROFILE: home,
+      APPDATA: home,
+      XDG_CONFIG_HOME: home,
+    };
+  }
+
+  /** 从脚本输出里取配置路径（跨平台，不重复实现那边的路径规则）。 */
+  function configFrom(result: { stdout: string }): string {
+    const matched = /连接配置已写入：(.+)/.exec(result.stdout);
+    expect(matched, `输出里没有配置路径：${result.stdout}`).toBeTruthy();
+    return matched![1]!.trim();
+  }
+
+  it("--server-url / --token 顺带写好连接配置，一条命令装完即可用", async () => {
+    const home = emptyDir("pm-cli-conn-");
+    mkdirSync(path.join(home, ".claude"), { recursive: true });
+    const result = await runInstaller(
+      ["--all", "--server-url", "http://127.0.0.1:17890/", "--token", "tok-123"],
+      connectionEnv(home),
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("连接配置已写入");
+    const config = JSON.parse(readFileSync(configFrom(result), "utf8"));
+    // 结尾斜杠与 config set 一样会被去掉
+    expect(config.server_url).toBe("http://127.0.0.1:17890");
+    expect(config.token).toBe("tok-123");
+  });
+
+  it("只给 --server-url 时合并已有 token，不整份覆盖", async () => {
+    const home = emptyDir("pm-cli-conn-");
+    mkdirSync(path.join(home, ".claude"), { recursive: true });
+    const env = connectionEnv(home);
+    const first = await runInstaller(
+      ["--all", "--server-url", "http://127.0.0.1:1", "--token", "old-token"],
+      env,
+    );
+    const second = await runInstaller(
+      ["--all", "--server-url", "http://127.0.0.1:2"],
+      env,
+    );
+    const config = JSON.parse(
+      readFileSync(configFrom(second), "utf8"),
+    );
+    expect(configFrom(second)).toBe(configFrom(first));
+    expect(config.server_url).toBe("http://127.0.0.1:2");
+    expect(config.token).toBe("old-token");
+  });
+
+  it("只给了地址、没有 token 时，提示去哪生成", async () => {
+    const home = emptyDir("pm-cli-conn-");
+    mkdirSync(path.join(home, ".claude"), { recursive: true });
+    const result = await runInstaller(
+      ["--all", "--server-url", "http://127.0.0.1:17890"],
+      connectionEnv(home),
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("还缺 Agent token");
+    expect(result.stdout).toContain("我的 Agent 访问");
+  });
+
+  it("--list 只做检测，不写连接配置", async () => {
+    const home = emptyDir("pm-cli-conn-");
+    mkdirSync(path.join(home, ".claude"), { recursive: true });
+    const result = await runInstaller(
+      ["--list", "--server-url", "http://127.0.0.1:17890", "--token", "t"],
+      connectionEnv(home),
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain("连接配置已写入");
+  });
+
+  it("非法 --server-url 直接拒绝，不落盘", async () => {
+    const home = emptyDir("pm-cli-conn-");
+    mkdirSync(path.join(home, ".claude"), { recursive: true });
+    const result = await runInstaller(
+      ["--all", "--server-url", "127.0.0.1:17890"],
+      connectionEnv(home),
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("server-url");
+  });
 });

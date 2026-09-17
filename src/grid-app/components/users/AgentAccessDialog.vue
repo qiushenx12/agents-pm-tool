@@ -79,12 +79,22 @@ function pathHints(frontend: SkillPayloadFrontend) {
   return { primary: paths[0] ?? "", others: paths.slice(1) };
 }
 
-/** 一行命令：拉取安装脚本并直接执行，不需要下载，也不需要选目录。 */
+/**
+ * 一行命令：拉取安装脚本直接执行。
+ * 装到检测到的全部前端，并把服务地址与 token 一并写进 pm-cli 的用户级配置，
+ * 所以既不用下载文件、也不用选目录，跑完 Agent 就能直接连上。
+ *
+ * 中间那个 `-` 不能省：它告诉 node「程序从标准输入读」，后面的才是脚本参数。
+ * 写成 `node --input-type=module -- --all` 会被 node 把 `--all` 当成脚本路径而报错。
+ */
 const command = computed(() => {
-  const url = `${access.value?.server_url ?? location.origin}${installerUrl}`;
+  const base = access.value?.server_url ?? location.origin;
+  const args = ["--all", "--server-url", base];
+  if (access.value?.token) args.push("--token", access.value.token);
+  const run = `node --input-type=module - ${args.join(" ")}`;
   return targetOs.value === "macos"
-    ? `curl -fsSL ${url} | node --input-type=module`
-    : `irm ${url} | node --input-type=module`;
+    ? `curl -fsSL ${base}${installerUrl} | ${run}`
+    : `irm ${base}${installerUrl} | ${run}`;
 });
 
 function detectOs() {
@@ -343,17 +353,11 @@ onMounted(() => {
             <p v-if="user.is_host">
               装到本机 Agent 前端的 skill 目录，之后 Agent 就能直接调用 pm-cli。需要 Node.js 18 或更高版本。
             </p>
-            <p v-else>
-              装到 Agent 所在电脑的 Agent 前端 skill 目录。需要 Node.js 18 或更高版本。
-            </p>
           </div>
           <div class="inline-actions">
             <button v-if="user.is_host" class="btn btn-sm" :disabled="busy" @click="refreshTargets">
               <UiIcon name="refresh" :size="13" />重新检测
             </button>
-            <a class="btn btn-sm" :href="installerUrl" download>
-              <UiIcon name="download" :size="13" />下载安装脚本
-            </a>
           </div>
         </header>
 
@@ -431,11 +435,7 @@ onMounted(() => {
           <div class="manual-skill-intro">
             <UiIcon name="folder" :size="18" />
             <div>
-              <strong>在 Agent 所在电脑上安装</strong>
-              <span>
-                在<strong>那台电脑</strong>的浏览器里点「选择目录并写入」，选中该前端的 skills 目录：
-                会在其中创建 pm-cli 目录；若选中的目录本身就叫 pm-cli，则直接写入，不会多套一层。
-              </span>
+              <strong>将 skill 下载到 Agent 所在的目录</strong>
             </div>
           </div>
 
@@ -513,19 +513,15 @@ onMounted(() => {
 
           <div class="skill-fallback">
             <div class="skill-fallback-copy">
-              <strong>用安装脚本安装</strong>
-              <span>
-                在上面那台电脑上运行一次即可：脚本会自动检测已安装的 Agent 前端并写入正确位置，
-                也可以用 <code>--dir &lt;目录&gt;</code> 指定，或先用 <code>--list</code> 看候选目录。
+              <strong>在终端执行以下命令</strong>
+              <span v-if="!access?.token">
+                还没有 Agent token —— 先在上面「Agent 连接凭据」里生成，命令里会自动带上。
               </span>
             </div>
             <code class="skill-command">{{ command }}</code>
             <div class="inline-actions">
-              <a class="btn btn-sm" :href="installerUrl" download>
-                <UiIcon name="download" :size="13" />下载安装脚本
-              </a>
               <button class="btn btn-sm" @click="copyText(command)">
-                <UiIcon name="copy" :size="13" />复制一行命令
+                <UiIcon name="copy" :size="13" />复制命令
               </button>
             </div>
           </div>

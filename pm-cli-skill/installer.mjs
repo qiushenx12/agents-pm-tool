@@ -2,7 +2,9 @@
 /**
  * pm-cli skill 安装脚本（跨平台、单文件、离线可用）。
  *
- * 用途：把 pm-cli skill 写到本机某个 Agent 前端目录下。
+ * 用途：把 pm-cli skill 写到本机某个 Agent 前端目录下，并可选地把连接信息
+ * （服务地址 + Agent token）写进 pm-cli 的用户级配置文件，做到一条命令装完就能用。
+ *
  * 之所以做成「一个脚本」而不是压缩包：浏览器既无法指定下载位置，局域网 HTTP 页面里
  * 也不能直接写本地目录；让用户拿到这个脚本跑一次，由它自己把文件放到位最省事。
  *
@@ -12,6 +14,8 @@
  *   node pm-cli-install.mjs --frontend codex
  *   node pm-cli-install.mjs --all           检测到的前端全部安装
  *   node pm-cli-install.mjs --dir <目录>    安装到指定目录
+ *   node pm-cli-install.mjs --all --server-url <地址> --token <token>
+ *                                          安装后顺带把连接配置写好（网页端给的就是这一条）
  *
  * --dir 给的是「前端的 skills 根目录」（会在此之下创建 pm-cli）；
  * 若该目录本身就叫 pm-cli，则直接写进去，避免多一层嵌套。
@@ -35,14 +39,19 @@ function usage() {
   return `pm-cli skill 安装脚本
 
 用法：
-  node pm-cli-install.mjs                 自动检测已安装的前端并安装
-  node pm-cli-install.mjs --list          只列出检测结果与候选目录
-  node pm-cli-install.mjs --frontend <id> 安装到指定前端
-  node pm-cli-install.mjs --all           检测到的前端全部安装
-  node pm-cli-install.mjs --dir <目录>    安装到指定目录
+  node pm-cli-install.mjs                       自动检测已安装的前端并安装
+  node pm-cli-install.mjs --list                只列出检测结果与候选目录
+  node pm-cli-install.mjs --frontend <id>       安装到指定前端
+  node pm-cli-install.mjs --all                 检测到的前端全部安装
+  node pm-cli-install.mjs --dir <目录>          安装到指定目录
+  node pm-cli-install.mjs --all --server-url <地址> --token <token>
+                                                安装后顺带写好连接配置
 
 --dir 请给「前端的 skills 根目录」，脚本会在其下创建 ${SKILL_NAME}；
 若该目录本身就叫 ${SKILL_NAME}，则直接写进去，不再多套一层。
+
+--server-url 与 --token 会写进 pm-cli 的用户级配置文件，之后 pm-cli 就能直接连接，
+不需要再手工 config set。两者一起给才是一套完整配置。
 
 可用前端：${frontends || "（载荷缺失）"}
 `;
@@ -51,7 +60,15 @@ function usage() {
 // ---------------------------------------------------------------- 参数与路径
 
 function parseArgs(argv) {
-  const options = { list: false, all: false, frontend: null, dir: null, help: false };
+  const options = {
+    list: false,
+    all: false,
+    frontend: null,
+    dir: null,
+    help: false,
+    serverUrl: null,
+    token: null,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (token === "--list") options.list = true;
@@ -59,6 +76,8 @@ function parseArgs(argv) {
     else if (token === "-h" || token === "--help") options.help = true;
     else if (token === "--frontend") options.frontend = argv[++index] ?? null;
     else if (token === "--dir") options.dir = argv[++index] ?? null;
+    else if (token === "--server-url") options.serverUrl = argv[++index] ?? null;
+    else if (token === "--token") options.token = argv[++index] ?? null;
     else throw new Error(`未知参数：${token}`);
   }
   return options;
@@ -96,6 +115,75 @@ function isInstalled(directory) {
 function resolveTarget(skillsRoot) {
   const normalized = path.resolve(expandHome(skillsRoot));
   return path.basename(normalized) === SKILL_NAME ? normalized : path.join(normalized, SKILL_NAME);
+}
+
+// -------------------------------------------------------------- 连接配置写入
+
+/**
+ * pm-cli 的用户级配置目录。**必须与 pm-cli.mjs 的 userConfigDir 保持一致**，
+ * 否则写了配置 CLI 也读不到（那边的 doctor 会说「尚未配置连接」）。
+ */
+function userConfigDir() {
+  if (process.platform === "win32") {
+    const base =
+      process.env.APPDATA ||
+      process.env.LOCALAPPDATA ||
+      path.join(os.homedir(), "AppData", "Roaming");
+    return path.join(base, "agents-pm-tool");
+  }
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Application Support", "agents-pm-tool");
+  }
+  const base =
+    process.env.XDG_CONFIG_HOME && process.env.XDG_CONFIG_HOME.trim()
+      ? process.env.XDG_CONFIG_HOME
+      : path.join(os.homedir(), ".config");
+  return path.join(base, "agents-pm-tool");
+}
+
+function configPath() {
+  return path.join(userConfigDir(), "cli.json");
+}
+
+/** 与 pm-cli 的 config set 同一套校验：必须是带主机名的 http/https URL。 */
+function validateServerUrl(raw) {
+  const trimmed = String(raw).trim().replace(/\/+$/, "");
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("--server-url 不是有效 URL");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname) {
+    throw new Error("--server-url 必须是包含主机名的 http/https URL");
+  }
+  return trimmed;
+}
+
+/**
+ * 把服务地址与 token 合并进用户级配置（保留原有键），供 pm-cli 直接读取。
+ * 返回配置路径；没给这两个参数时返回 null。
+ */
+function writeConnection(options) {
+  if (!options.serverUrl && !options.token) return null;
+  const file = configPath();
+  let config = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) config = parsed;
+  } catch (error) {
+    // 文件不存在是常态；存在但读不动/不是对象则直接覆盖，避免把坏内容带下去。
+    if (error?.code !== "ENOENT") config = {};
+  }
+  if (options.serverUrl) config.server_url = validateServerUrl(options.serverUrl);
+  if (options.token) {
+    const token = String(options.token).trim();
+    if (!token) throw new Error("--token 不能为空");
+    config.token = token;
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  return { file, serverUrl: config.server_url || "", hasToken: Boolean(config.token) };
 }
 
 // ---------------------------------------------------------------------- 写入
@@ -158,18 +246,36 @@ function candidateLines(items) {
     .join("\n")}\n`;
 }
 
-function report(targets, headline) {
+function report(targets, headline, connection) {
   const executable = process.platform === "win32" ? "pm-cli.cmd" : "pm-cli";
+  const verify = `node "${path.join(targets[0], "bin", "pm-cli.mjs")}" doctor`;
   const lines = [
     `${headline}：`,
     ...targets.map((target) => `  ${target}`),
     "",
+  ];
+  if (connection) {
+    lines.push(
+      `连接配置已写入：${connection.file}`,
+      `  服务地址：${connection.serverUrl || "（未设置）"}`,
+      `  token：${connection.hasToken ? "已写入" : "（未设置）"}`,
+      "",
+    );
+  }
+  lines.push(
     "下一步：",
     "  1. 重新打开终端或 Agent 前端，让它重新加载 skill。",
-    `  2. 验证：node "${path.join(targets[0], "bin", "pm-cli.mjs")}" doctor`,
+    `  2. 验证：${verify}`,
     `     （也可以直接运行同一目录下的 ${executable} doctor）`,
-    "  本机装有 Agents PM Tool 时不需要任何连接配置；远程使用按 SKILL.md 配置一次即可。",
-  ];
+  );
+  if (!connection) {
+    lines.push("  本机装有 Agents PM Tool 时不需要任何连接配置；远程使用按 SKILL.md 配置一次即可。");
+  } else if (!connection.hasToken) {
+    lines.push(
+      "  配置里还缺 Agent token：请在网页端「我的 Agent 访问」的「Agent 连接凭据」里生成并复制，",
+      `  再执行：${executable} config set token <token>`,
+    );
+  }
   process.stdout.write(`${lines.join("\n")}\n`);
 }
 
@@ -194,7 +300,7 @@ function main(argv) {
   try {
     if (options.dir) {
       const target = installTo(resolveTarget(options.dir));
-      report([target], "已按指定目录安装");
+      report([target], "已按指定目录安装", writeConnection(options));
       return 0;
     }
 
@@ -213,6 +319,9 @@ function main(argv) {
       }
       return 0;
     }
+
+    // 连接配置与安装目标无关，先写：这样下面每个安装分支都能把结果一并报出来。
+    const connection = writeConnection(options);
 
     if (options.frontend) {
       const matched = available.filter((item) => item.frontendId === options.frontend);
@@ -233,6 +342,7 @@ function main(argv) {
       report(
         targets,
         `已安装到 ${matched.map((item) => item.label).join("、")}`,
+        connection,
       );
       return 0;
     }
@@ -243,7 +353,7 @@ function main(argv) {
         return 2;
       }
       const targets = available.map((item) => installTo(resolveTarget(item.directory)));
-      report(targets, "已安装到检测到的全部前端");
+      report(targets, "已安装到检测到的全部前端", connection);
       return 0;
     }
 
@@ -265,7 +375,7 @@ function main(argv) {
     }
 
     const only = available[0];
-    report([installTo(resolveTarget(only.directory))], `已安装到 ${only.label}`);
+    report([installTo(resolveTarget(only.directory))], `已安装到 ${only.label}`, connection);
     return 0;
   } catch (error) {
     process.stderr.write(`错误：写入失败：${error?.message ?? String(error)}\n`);

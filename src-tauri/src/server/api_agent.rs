@@ -334,22 +334,28 @@ pub async fn help(State(core): State<CoreState>, headers: HeaderMap) -> Json<ser
         "requires_token": true,
         "runtime_requirement": "pm-cli 需要 Node.js 18 或更高版本；没有 Node.js 时可直接调用本接口里的 HTTP 端点。",
         "bootstrap": {
-            "summary": "本接口无需 token 即可访问；但读取或推进任务必须带 token。token 由已登录用户在网页端签发，Agent 无法自行获取，请把下列步骤转告用户。",
+            "summary": "本接口无需 token 即可访问；但读取或推进任务必须带 token。token 由用户在网页端签发，Agent 无法自行获取 —— 手上没有 token 时，请把下面这几步转告用户，拿到之后再继续。",
             "ask_the_user": [
-                "打开 Agents PM Tool 网页端，进入「我的 Agent 访问」。",
-                "复制面板上的「服务地址」，并生成（或复制）Agent token。",
-                "在本机安装 pm-cli skill：主机账号可在面板上一键安装到已检测到的 Agent 前端；其他情况在面板里选择目标目录直接写入，或下载安装脚本运行一次。",
-                "把服务地址与 token 提供给 Agent；或由用户在本机执行下面的配置命令。"
+                "打开 Agents PM Tool 网页端（你会看到一个任务工作台）。",
+                "点左侧的「我的 Agent 访问」，在弹出的「我的账号与 Agent 访问」里找到「Agent 连接凭据」卡片。",
+                "卡片里有一行「Agent token」：如果显示「尚未签发或已吊销」，先点下面的「生成 token」；然后点这一行右侧的复制按钮。",
+                "把复制到的 token（以及卡片里的「服务地址」）发给我，我就用它们连接。也可以你自己在本机终端执行下面 configuration 里的三条命令。"
             ],
             "configure": [
                 "pm-cli config set server-url <服务地址>",
                 "pm-cli config set token <token>",
                 "pm-cli doctor"
             ],
+            "if_user_prefers_one_command": [
+                "在 Agent 所在电脑上执行一条命令即可：装好 pm-cli skill（检测到的前端全部安装）并写好上面的连接配置。",
+                "Windows PowerShell：irm <服务地址>/api/agent/skill/install.mjs | node --input-type=module - --all --server-url <服务地址> --token <token>",
+                "macOS / Linux：curl -fsSL <服务地址>/api/agent/skill/install.mjs | node --input-type=module - --all --server-url <服务地址> --token <token>",
+                "需要 Node.js 18 或更高版本；命令里的 `-` 是「程序从标准输入读」，不能省。"
+            ],
             "if_pm_cli_missing": [
                 "先确认本机有 Node.js 18 或更高版本。",
-                "在目标机器上获取安装脚本并运行一次：curl -fsSL <服务地址>/api/agent/skill/install.mjs | node --input-type=module（Windows PowerShell 用 irm 代替 curl）。",
-                "脚本会自动检测已安装的 Agent 前端并写入 skill；也可用 --list 先看候选目录，或用 --dir <目录> 指定。",
+                "按上面的 if_user_prefers_one_command 执行一条命令即可装好 skill 与连接；不带 --token 时只会装 skill，连接需要另配。",
+                "要先看看会装到哪里：把该命令末尾的 --all 换成 --list 只做检测，换成 --dir <目录> 可指定目录。",
                 "或直接用 HTTP：curl -H \"Authorization: Bearer <token>\" <服务地址>/api/agent/tasks"
             ]
         },
@@ -372,7 +378,7 @@ pub async fn help(State(core): State<CoreState>, headers: HeaderMap) -> Json<ser
         "skill": {
             "payload": "/api/agent/skill/payload",
             "installer": "/api/agent/skill/install.mjs",
-            "installer_example": format!("curl -fsSL {server_url}/api/agent/skill/install.mjs | node --input-type=module")
+            "installer_example": format!("curl -fsSL {server_url}/api/agent/skill/install.mjs | node --input-type=module - --all")
         },
         "unauthenticated_access": [
             "/api/agent/help",
