@@ -1,1 +1,7 @@
 * text=auto eol=lf
+
+# Windows 批处理用 CRLF：个别 cmd 版本对只有 LF 的批处理解析不稳。
+*.cmd text eol=crlf
+
+# POSIX 包装脚本必须保持 LF，否则 shebang 会带上 \r 而无法执行。
+pm-cli-skill/bin/pm-cli text eol=lf

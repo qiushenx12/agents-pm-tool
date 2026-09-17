@@ -1,0 +1,11 @@
+#!/bin/sh
+# pm-cli 便捷入口（macOS / Linux）：转发给同目录的 pm-cli.mjs。
+# 安装时会为本文件设置可执行位；若在 Windows 上安装则该文件用不到。
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "pm-cli 需要 Node.js 18 或更高版本。请先安装 Node.js 后重试。" 1>&2
+  exit 3
+fi
+
+exec node "$dir/pm-cli.mjs" "$@"

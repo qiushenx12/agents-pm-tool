@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::SocketAddr;
 
 use axum::{
     extract::{ConnectInfo, Extension, State},
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     domain::user::{User, HOST_USER_ID},
     error::{ApiError, ApiResult},
-    paths,
+    netinfo, paths,
     settings::Settings,
 };
 
@@ -21,6 +21,7 @@ pub struct ServerStatus {
     pub port: u16,
     pub url: String,
     pub lan_url: String,
+    pub tailscale_url: String,
     pub data_dir: String,
 }
 
@@ -56,32 +57,29 @@ fn ensure_local_host(user: &User, peer: SocketAddr) -> ApiResult<()> {
     Ok(())
 }
 
-fn lan_ipv4() -> Option<Ipv4Addr> {
-    let socket = UdpSocket::bind(("0.0.0.0", 0)).ok()?;
-    socket.connect(("8.8.8.8", 80)).ok()?;
-    match socket.local_addr().ok()?.ip() {
-        IpAddr::V4(ip) if !ip.is_loopback() => Some(ip),
-        _ => None,
-    }
-}
-
 fn server_status(core: &CoreState) -> ServerStatus {
     let port = *core.actual_port.read().unwrap();
     let running = port != 0;
     let is_lan = core.settings.read().unwrap().bind_host() == [0, 0, 0, 0];
+    let mut lan_url = String::new();
+    let mut tailscale_url = String::new();
+    if running && is_lan {
+        if let Some(ip) = netinfo::lan_ipv4() {
+            lan_url = format!("http://{ip}:{port}");
+        }
+        // 装了 Tailscale 才能多出这一行；没装就维持本机 + 局域网两条。
+        if let Some(ip) = netinfo::tailscale_ipv4() {
+            tailscale_url = format!("http://{ip}:{port}");
+        }
+    }
     ServerStatus {
         running,
         port,
         url: running
             .then(|| format!("http://127.0.0.1:{port}"))
             .unwrap_or_default(),
-        lan_url: if running && is_lan {
-            lan_ipv4()
-                .map(|ip| format!("http://{ip}:{port}"))
-                .unwrap_or_default()
-        } else {
-            String::new()
-        },
+        lan_url,
+        tailscale_url,
         data_dir: core.data_dir.display().to_string(),
     }
 }

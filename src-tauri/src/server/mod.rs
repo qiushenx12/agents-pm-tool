@@ -39,6 +39,9 @@ pub struct CoreStateInner {
     pub theme_events: watch::Sender<Option<String>>,
     /// 网页主机设置修改端口/监听范围后，通知 Tauri 外壳重启 HTTP 服务。
     pub settings_restart_events: watch::Sender<u64>,
+    /// 是否把运行信息写到你电脑上固定的用户级位置（pm-cli 零配置发现本机服务的依据）。
+    /// 只有真正的桌面应用实例该打开；测试与无头脚本绝不能覆盖用户真实的连接信息。
+    publish_runtime_pointer: bool,
 }
 
 pub type CoreState = Arc<CoreStateInner>;
@@ -70,7 +73,19 @@ impl CoreStateInner {
             actual_port: RwLock::new(0),
             theme_events: watch::channel(theme).0,
             settings_restart_events: watch::channel(0).0,
+            publish_runtime_pointer: false,
         }
+    }
+
+    /// 打开「把运行信息写到你电脑上固定的用户级位置」。桌面应用启动时调用。
+    pub fn publish_runtime_pointer(mut self, publish: bool) -> Self {
+        self.publish_runtime_pointer = publish;
+        self
+    }
+
+    /// 是否会把运行信息写到你电脑上固定的用户级位置（测试用来确认自己没越界）。
+    pub fn publishes_runtime_pointer(&self) -> bool {
+        self.publish_runtime_pointer
     }
 }
 
@@ -158,7 +173,6 @@ fn build_router(core: CoreState) -> Router {
             get(api_web::download_attachment).delete(api_web::delete_attachment),
         )
         .route("/events", get(api_web::events))
-        .route("/skill/download", get(api_skill::web_download))
         .route("/local-skills", get(api_skill::local_targets))
         .route(
             "/local-skills/install",
@@ -241,14 +255,19 @@ fn build_router(core: CoreState) -> Router {
             axum::routing::patch(api_agent::patch_description),
         )
         .route("/projects", get(api_agent::list_projects))
-        .route("/skill/download", get(api_skill::agent_download))
         .route_layer(middleware::from_fn_with_state(
             core.clone(),
             auth::require_agent_token,
         ))
         // route_layer 之后 merge 的路由不受鉴权中间件约束（axum 0.8 语义）：
-        // /help 必须免 token，否则没有 pm-cli、没有 skill 的 Agent 无从得知接入方式。
-        .merge(Router::new().route("/help", get(api_agent::help)));
+        // 这三个接口必须免 token，否则没有 pm-cli、没有 skill 的 Agent 无从得知接入方式、
+        // 也拿不到 skill 本身（skill 内容不含任何机密，与 /help 同级公开即可）。
+        .merge(
+            Router::new()
+                .route("/help", get(api_agent::help))
+                .route("/skill/payload", get(api_skill::payload))
+                .route("/skill/install.mjs", get(api_skill::installer)),
+        );
 
     Router::new()
         .nest("/api/web", web)
@@ -291,7 +310,16 @@ struct RuntimeInfo {
     pid: u32,
 }
 
-/// 写 data/runtime.json 供 pm-cli 服务发现（规划 §5.5）
+/// 写运行信息供 pm-cli 服务发现（规划 §5.5）。
+///
+/// 写两个位置：
+/// 1. `data/runtime.json` —— 应用自己的数据目录，保持既有语义；
+/// 2. 用户级 `agents-pm-tool/runtime.json` —— pm-cli 装在任意前端 skill 目录里都能
+///    零配置找到本机服务，不再需要「让 skill 目录旁出现 data/」这类变通做法。
+///
+/// 两处都可能写不成，但用户级位置只有桌面应用实例才写：测试与无头脚本用的是临时数据目录，
+/// 去覆盖它只会把用户真实的连接信息带偏。另外 `PM_DATA_DIR` 是把数据目录指向别处的
+/// 显式覆盖，同样视为「不是正式实例」。
 pub(crate) async fn write_runtime_json(core: &CoreState, port: u16) -> ApiResult<()> {
     let info = RuntimeInfo {
         port,
@@ -299,8 +327,43 @@ pub(crate) async fn write_runtime_json(core: &CoreState, port: u16) -> ApiResult
         pid: std::process::id(),
     };
     let s = serde_json::to_string_pretty(&info).map_err(ApiError::internal)?;
-    std::fs::write(paths::runtime_path(&core.data_dir), s)?;
+    std::fs::write(paths::runtime_path(&core.data_dir), &s)?;
+
+    if core.publish_runtime_pointer && std::env::var("PM_DATA_DIR").is_err() {
+        if let Some(path) = paths::user_runtime_path() {
+            write_user_runtime(&path, &s);
+        }
+    }
     Ok(())
+}
+
+/// 写用户级运行信息。这里失败不影响服务启动：pm-cli 还能靠用户配置或环境变量工作，
+/// 但要在日志里说清楚，否则「本机零配置连不上」会变成无线索的疑难问题。
+fn write_user_runtime(path: &std::path::Path, content: &str) {
+    let write = || -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, content)
+    };
+    if let Err(error) = write() {
+        eprintln!("写入 pm-cli 运行信息失败（{}）：{error}", path.display());
+    }
+}
+
+/// 服务停止时清理用户级运行信息：留着只会把 pm-cli 指向一个已经没人监听的端口。
+/// 与写入对称——只有正式实例才动这个文件。
+pub(crate) fn clear_user_runtime(core: &CoreState) {
+    if !core.publish_runtime_pointer {
+        return;
+    }
+    if let Some(path) = paths::user_runtime_path() {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => eprintln!("清理 pm-cli 运行信息失败（{}）：{error}", path.display()),
+        }
+    }
 }
 
 /// 启动 axum 服务；端口占用时自动顺延（最多 +20，规划 §7）
@@ -359,4 +422,33 @@ pub async fn start_server(
         shutdown: shutdown_tx,
         join,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_runtime_write_creates_missing_directories() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary
+            .path()
+            .join("agents-pm-tool")
+            .join("runtime.json");
+        write_user_runtime(&path, "{\n  \"port\": 1\n}\n");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{\n  \"port\": 1\n}\n"
+        );
+    }
+
+    #[test]
+    fn user_runtime_write_failure_is_not_fatal() {
+        // 写不进去也只是日志：pm-cli 还能靠用户配置或环境变量工作，
+        // 这里确认调用方不会因为拿不到目录而 panic。
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary.path().join("occupied");
+        std::fs::create_dir_all(&directory).unwrap();
+        write_user_runtime(&directory, "{}");
+    }
 }

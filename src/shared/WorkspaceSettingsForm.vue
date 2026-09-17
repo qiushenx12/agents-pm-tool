@@ -137,6 +137,25 @@ const closeOptions = [
             <UiIcon name="copy" :size="13" />
           </button>
         </div>
+        <div
+          v-if="status.tailscale_url"
+          class="service-address-row"
+          :class="{ 'has-copy': showAddressCopy }"
+        >
+          <span title="同一 Tailscale 网络中的设备通过这个地址访问"
+            >Tailscale 地址</span
+          ><code>{{ status.tailscale_url }}</code
+          ><button
+            v-if="showAddressCopy"
+            type="button"
+            class="icon-btn address-copy"
+            aria-label="复制 Tailscale 地址"
+            title="复制 Tailscale 地址"
+            @click="$emit('copyAddress', status.tailscale_url)"
+          >
+            <UiIcon name="copy" :size="13" />
+          </button>
+        </div>
       </div>
     </section>
 
@@ -204,7 +223,11 @@ const closeOptions = [
         </div>
         <div class="settings-row vertical">
           <label for="workspace-agent-server-url">远程 Agent 服务地址（可选）</label>
-          <p>多网卡时可手工指定给远程用户的地址；留空会自动探测。</p>
+          <p>
+            留空即按访问方式自动识别：局域网访问给局域网地址、Tailscale
+            访问给 Tailscale 地址、经域名或隧道访问给那个域名（含
+            https）。填了则以这里为准，适合 Agent 不在浏览页面那台机器上的情况。
+          </p>
           <input
             id="workspace-agent-server-url"
             v-model="settings.agent_server_url"
@@ -294,12 +317,12 @@ const closeOptions = [
 }
 .service-address-row {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: 88px minmax(0, 1fr);
   align-items: center;
   gap: 5px;
 }
 .service-address-row.has-copy {
-  grid-template-columns: 72px minmax(0, 1fr) 24px;
+  grid-template-columns: 88px minmax(0, 1fr) 24px;
 }
 .service-address code {
   overflow-wrap: anywhere;

@@ -29,6 +29,7 @@ export function setAgentPromptAccess(access?: AgentPromptAccess) {
  *
  * 模板对所有场景一致：工具介绍、命令清单与权限边界不在这里展开——装了 pm-cli-skill 的
  * Agent 会读 SKILL.md，没装的则按给出的地址请求免 token 的 /api/agent/help。
+ * pm-cli 不注册到 PATH，所以先提醒它按 skill 目录定位，再给命令示例。
  * 模板全集见 docs/agent-prompt-templates.md。
  */
 export function buildAgentTaskPrompt(
@@ -39,12 +40,13 @@ export function buildAgentTaskPrompt(
   const helpUrl = serverUrl ? `${serverUrl}/api/agent/help` : undefined;
   return [
     "请使用 Agents PM Tool（pm-cli-skill）完成以下任务。",
+    "pm-cli 在 pm-cli-skill 的 bin 目录下，先定位到它再执行（需要 Node.js 18 或更高版本）。",
     "先执行：pm-cli doctor --json",
     `获取任务内容命令：pm-cli get ${task.id} --json`,
     ...(serverUrl ? [`服务地址：[${serverUrl}](${serverUrl})`] : []),
     helpUrl
-      ? `完整用法见 pm-cli --help 或 [${helpUrl}](${helpUrl})`
-      : "完整用法见 pm-cli --help 或 GET /api/agent/help",
+      ? `完整用法见 skill 目录里的 SKILL.md、pm-cli --help 或 [${helpUrl}](${helpUrl})`
+      : "完整用法见 skill 目录里的 SKILL.md、pm-cli --help 或 GET /api/agent/help",
   ].join("\n");
 }
 

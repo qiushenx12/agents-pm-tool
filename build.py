@@ -2,8 +2,8 @@
 
 功能与 cc-launcher/build.py 对齐：
 - version.json 驱动的版本管理（发布后自动递增 patch，0.0.9 → 0.1.0）
-- 版本号同步 package.json / package-lock.json / tauri.conf.json / Cargo.toml / Cargo.lock
-- npm run tauri build（beforeBuildCommand = build:all，会连带编译前端 + pm-cli）
+- 版本号同步 package.json / package-lock.json / tauri.conf.json / Cargo.toml / Cargo.lock / pm-cli-skill/VERSION
+- npm run tauri build（beforeBuildCommand = npm run build，只构建前端；pm-cli 是内嵌的 Node 脚本，无需单独编译）
 - 产物归档到 src-tauri/release-bundle/nsis/，bundle 目录里保留历史安装包
 - 打包完成后交互确认测试是否通过，通过则记录为已发布
 
@@ -222,6 +222,14 @@ def sync_project_versions(version: str) -> None:
         write_json_if_changed(tauri_config_path, tauri_config, original)
 
     replace_cargo_package_version(PROJECT_DIR / "src-tauri" / "Cargo.toml", version)
+
+    # pm-cli skill 的版本号：pm-cli 是内嵌的 Node 脚本，安装时按这个版本号写在 skill 目录里
+    skill_version_path = PROJECT_DIR / "pm-cli-skill" / "VERSION"
+    if (
+        not skill_version_path.exists()
+        or skill_version_path.read_text(encoding="utf-8").strip() != version
+    ):
+        atomic_write_text(skill_version_path, f"{version}\n")
     cargo_lock = PROJECT_DIR / "src-tauri" / "Cargo.lock"
     if cargo_lock.exists():
         replace_cargo_package_version(cargo_lock, version)
@@ -368,7 +376,7 @@ def run_build(version: str, product_name: str) -> bool:
         for artifact in existing:
             shutil.copy2(artifact, backup_path / artifact.name)
 
-        # tauri build 的 beforeBuildCommand 是 build:all（前端 + pm-cli）
+        # tauri build 的 beforeBuildCommand 是 npm run build（只构建前端）
         started_at = perf_counter()
         result = subprocess.run([npm, "run", "tauri", "build"], cwd=PROJECT_DIR)
         print(f"Tauri 构建耗时：{perf_counter() - started_at:.2f} 秒。")

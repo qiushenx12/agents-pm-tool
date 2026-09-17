@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:5173/config.html",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build:all"
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
     "windows": [
@@ -32,7 +32,6 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "externalBin": ["binaries/pm-cli"],
     "icon": ["icons/icon.ico"],
     "windows": {
       "certificateThumbprint": null,

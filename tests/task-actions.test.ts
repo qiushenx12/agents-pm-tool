@@ -36,15 +36,18 @@ describe("task row actions", () => {
     expect(prompt).toBe(
       [
         "请使用 Agents PM Tool（pm-cli-skill）完成以下任务。",
+        "pm-cli 在 pm-cli-skill 的 bin 目录下，先定位到它再执行（需要 Node.js 18 或更高版本）。",
         "先执行：pm-cli doctor --json",
         "获取任务内容命令：pm-cli get 202609091234560001 --json",
-        "完整用法见 pm-cli --help 或 GET /api/agent/help",
+        "完整用法见 skill 目录里的 SKILL.md、pm-cli --help 或 GET /api/agent/help",
       ].join("\n"),
     );
     // 工具介绍、命令清单与权限边界已移到 /api/agent/help，Prompt 里不再展开
     expect(prompt).not.toContain("2. 可用命令");
     expect(prompt).not.toContain("pm-cli attachments");
     expect(prompt).not.toContain("3. Agent 权限");
+    // pm-cli 不写进系统 PATH，所以必须先提示怎么找到它
+    expect(prompt).toContain("先定位到它");
   });
 
   it("includes the service address when the backend provides one", () => {
@@ -54,10 +57,11 @@ describe("task row actions", () => {
     expect(prompt).toBe(
       [
         "请使用 Agents PM Tool（pm-cli-skill）完成以下任务。",
+        "pm-cli 在 pm-cli-skill 的 bin 目录下，先定位到它再执行（需要 Node.js 18 或更高版本）。",
         "先执行：pm-cli doctor --json",
         "获取任务内容命令：pm-cli get 202609091234560001 --json",
         "服务地址：[http://192.168.1.9:17890](http://192.168.1.9:17890)",
-        "完整用法见 pm-cli --help 或 [http://192.168.1.9:17890/api/agent/help](http://192.168.1.9:17890/api/agent/help)",
+        "完整用法见 skill 目录里的 SKILL.md、pm-cli --help 或 [http://192.168.1.9:17890/api/agent/help](http://192.168.1.9:17890/api/agent/help)",
       ].join("\n"),
     );
   });

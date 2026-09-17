@@ -41,10 +41,27 @@ fn serve_asset(path: &str) -> Response {
 }
 
 /// SPA：/assets 等真实文件直接返回，其余路径回退 index.html
+///
+/// `/api/*` 是例外：这类路径要么由具体 handler 接住，要么就是**已删除或拼错的接口**。
+/// 回退成 index.html 会让调用方拿到 200 + HTML（旧版 Agent 会以为调用成功，然后解析 JSON 失败），
+/// 所以这里明确给一个 JSON 404。
 pub async fn index(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     if !path.is_empty() && DistAssets::get(path).is_some() {
         return serve_asset(path);
+    }
+    if path == "api" || path.starts_with("api/") {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({
+                "error": {
+                    "code": "not_found",
+                    "message": "接口不存在",
+                    "details": {},
+                }
+            })),
+        )
+            .into_response();
     }
     serve_asset("index.html")
 }
@@ -73,6 +90,29 @@ mod tests {
         );
         // 兜底：整段缓存策略里必须有一条禁止缓存 HTML 壳子的分支。
         assert!(!cache_control_for("index.html").contains("max-age"));
+    }
+
+    #[tokio::test]
+    async fn unknown_api_paths_are_json_404_instead_of_the_spa_shell() {
+        // 已删除/拼错的接口必须明确报错：回退成 index.html 会让旧版调用方
+        // 拿到 200 + HTML，误以为成功。
+        let response = index("/api/agent/skill/download".parse().unwrap()).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default(),
+            "application/json"
+        );
+
+        let response = index("/api".parse().unwrap()).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        // 非接口路径仍然是 SPA 回退
+        let response = index("/tasks/202609171230110000".parse().unwrap()).await;
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]

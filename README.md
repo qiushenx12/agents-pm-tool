@@ -19,8 +19,8 @@ Agents PM Tool 是一个面向人类与 AI Agent 协作的本地项目管理工�
 - **实时刷新**：任务变化通过 SSE 推送到网页，连接中断时自动使用轮询兜底。
 - **完成提醒**：任务状态切换为「待验证」或「已完成」时（网页端、批量操作或 Agent 通过 pm-cli 推进都会触发），桌面应用会弹出系统通知，包含项目与任务摘要；仅状态真正跨入这两个状态时提醒一次，系统通知发送失败不影响任务状态本身。
 - **多用户与权限**：支持注册、登录、管理员和多个超级管理员；普通用户按项目、字段及状态/类型选项授权，所有边界由服务端强制。
-- **远程 Agent**：每个用户独立签发、吊销 Agent token；`pm-cli` 支持环境变量或用户配置连接局域网服务，可只读获取授权项目中的任务附件，并可下载配套的 pm-cli-skill。
-- **本机服务设置**：可配置端口、仅本机或局域网访问、启动行为和关闭窗口后的服务行为；桌面设置页可手动启动/停止服务，并可分别复制当前本机地址和局域网地址。主机账号可从任务工作台侧栏打开与桌面端共用内容的“工作区设置”弹窗，相关接口同时校验主机身份与本机回环来源。任务工作区既可用系统浏览器打开（“打开网页”），也可在应用内以独立窗口打开（“进入应用”），并可从系统托盘重新打开应用；“进入应用”会隐藏设置窗口，应用内点击“工作区设置”则关闭工作台窗口并切回设置窗口。关闭设置窗口或应用内工作台时都会执行当前的“关闭窗口时”选项；保留服务时再次单击托盘图标会恢复关闭前所在的设置页或应用工作区，退出后重新启动也会恢复最后停留的界面。应用内窗口会记住关闭时的位置与大小（最大化、贴边半屏或四分之一也照原样还原），换过显示器则自动落回可见区域。
+- **远程 Agent**：每个用户独立签发、吊销 Agent token；`pm-cli` 支持环境变量或用户配置连接局域网服务，可只读获取授权项目中的任务附件。skill 按前端目录安装：主机在面板上一键装，远程用户选目录直接写入或跑一次安装脚本。
+- **本机服务设置**：可配置端口、仅本机或局域网访问、启动行为和关闭窗口后的服务行为；桌面设置页可手动启动/停止服务，并可分别复制当前本机地址和局域网地址。选择局域网访问后，还会在局域网地址下方显示本机的 Tailscale 地址（本机装了 Tailscale 且在线时才显示，供同一 Tailscale 网络中的设备访问；没装则只显示本机与局域网两条地址）。主机账号可从任务工作台侧栏打开与桌面端共用内容的“工作区设置”弹窗，相关接口同时校验主机身份与本机回环来源。任务工作区既可用系统浏览器打开（“打开网页”），也可在应用内以独立窗口打开（“进入应用”），并可从系统托盘重新打开应用；“进入应用”会隐藏设置窗口，应用内点击“工作区设置”则关闭工作台窗口并切回设置窗口。关闭设置窗口或应用内工作台时都会执行当前的“关闭窗口时”选项；保留服务时再次单击托盘图标会恢复关闭前所在的设置页或应用工作区，退出后重新启动也会恢复最后停留的界面。应用内窗口会记住关闭时的位置与大小（最大化、贴边半屏或四分之一也照原样还原），换过显示器则自动落回可见区域。
 - **明暗主题**：桌面设置页和任务工作台均支持浅色、深色主题；主题全局共用一份（存于 settings.json），任一端切换另一端实时跟随，未设置时跟随系统偏好。「进入应用」窗口的原生顶栏也随之切换明暗。
 
 ## 工作方式
@@ -83,9 +83,43 @@ cargo run --manifest-path src-tauri/Cargo.toml --example serve
 
 ## Agent CLI
 
-`pm-cli` 是 Agent 使用的 HTTP 客户端。它不会直接访问 SQLite，而是调用服务端的受限 API。本机默认从主程序生成的 `data/runtime.json` 读取当前端口和主机 token；主机 token 固定不变，应用重启不会失效，只有在设置窗口或“我的 Agent 访问”面板手动重新生成时才会更换。远程用户使用自己在“我的 Agent 访问”中签发的 token。
+`pm-cli` 是 Agent 使用的 HTTP 客户端，实现是 skill 目录里的一个 Node 脚本（`bin/pm-cli.mjs`，零第三方依赖，Windows / macOS / Linux 通用，需要 **Node.js 18 或更高版本**）。它不会直接访问 SQLite，而是调用服务端的受限 API。
 
-安装版会将 `pm-cli.exe` 随主程序安装，并把安装目录加入当前用户的 `PATH`。安装或升级后需重新打开终端或 Agent 前端，之后可在任意目录直接执行 `pm-cli`；卸载时会移除由安装器添加的 PATH 项。
+**它不在系统 PATH 上**，调用前先定位到 skill 目录：脚本在 `<前端 skills 根目录>/pm-cli/bin/` 下，可以直接运行同目录的 `pm-cli.cmd`（Windows）或 `pm-cli`（macOS / Linux），也可以写成 `node "<skill>/bin/pm-cli.mjs" <命令>`。`pm-cli --help` 会打印出当前脚本的实际路径。
+
+### 安装位置
+
+在主机的「我的 Agent 访问」面板上一键安装到本机已检测到的前端；远程用户在那台电脑上选择目标目录直接写入，或下载安装脚本运行一次。各前端的 skills 根目录：
+
+| 前端 | Windows | macOS |
+| --- | --- | --- |
+| Codex | `%USERPROFILE%\.agents\skills`（旧版 `~/.codex/skills`） | `~/.agents/skills`（旧版 `~/.codex/skills`） |
+| Claude Code | `%USERPROFILE%\.claude\skills` | `~/.claude/skills` |
+| WorkBuddy | `%USERPROFILE%\.workbuddy\skills` | `~/.workbuddy/skills` |
+| OpenCode | `%USERPROFILE%\.config\opencode\skills` | `~/.config/opencode/skills` |
+| Cursor | `%USERPROFILE%\.cursor\skills` | `~/.cursor/skills` |
+| Pi | `%USERPROFILE%\.pi\agent\skills` | `~/.pi/agent/skills` |
+| DeepSeek Harness | `%USERPROFILE%\.dsh\skills` | `~/.dsh/skills` |
+
+DeepSeek Harness 设置了 `DSH_HOME` 时改用 `$DSH_HOME/skills`。判断某前端是否装在本机只要求它的配置目录存在，skill 目录会在安装时按需创建，因此刚装好、还没放过任何 skill 的前端也能直接安装。装好后重新打开终端或 Agent 前端，让它重新加载 skill。
+
+### 连接
+
+**Agent 跑在装了 Agents PM Tool 的那台电脑上**：不需要任何配置。应用会把当前端口与主机 token 写到你电脑上固定的用户级位置，`pm-cli` 自动读取（这就是本机零配置能连上的原因，skill 装在哪里都无所谓）。主机 token 固定不变，应用重启不会失效，只有在设置窗口或「我的 Agent 访问」面板手动重新生成时才会更换。
+
+**远程 Agent** 在那台电脑上配置一次：
+
+```powershell
+pm-cli config set server-url http://192.168.1.10:17890
+pm-cli config set token <我的AgentToken>
+pm-cli config show
+```
+
+服务地址直接抄「我的 Agent 访问」面板上显示的那个即可：面板按**你当前的访问方式**给出地址——从局域网打开就给局域网地址，从 Tailscale 打开就给 Tailscale 地址，经域名或隧道（ngrok、Cloudflare Tunnel 等）打开就给那个域名并带上 `https`。所以并不需要自己判断该填哪个，换一种方式打开本页就是另一个。若 Agent 不在浏览页面那台机器上，可以在设置的「远程 Agent 服务地址」里显式指定一个，填了就以它为准；留空即按上面的规则自动识别。
+
+配置保存在用户级配置文件里：Windows 是 `%APPDATA%\agents-pm-tool\cli.json`，macOS 是 `~/Library/Application Support/agents-pm-tool/cli.json`。临时环境变量 `PM_SERVER_URL` 与 `PM_AGENT_TOKEN` 优先级更高，适合 CI 或不希望落盘的场景；两者必须成对设置——只设其中一个（或其一为空）会直接报错，不会回落到用户配置，需补齐另一个或清掉已设的那个（Windows：`Remove-Item Env:PM_SERVER_URL`，macOS / Linux：`unset PM_SERVER_URL`）。
+
+优先级是「环境变量 > 用户配置 > 本机应用写出的运行信息」：手工配置过一次之后，这份配置会一直优先于本机自动发现。如果应用换了端口而旧配置还指向老端口，`pm-cli doctor` 会明确点出这个不一致并给出修正命令。
 
 常用命令：
 
@@ -110,31 +144,19 @@ pm-cli status <任务ID> --to 待验证
 pm-cli describe <任务ID> --description "已修复并补充测试"
 ```
 
-远程 Agent 可在用户自己的电脑上配置一次服务地址和 token：
-
-```powershell
-pm-cli config set server-url http://192.168.1.10:17890
-pm-cli config set token <我的AgentToken>
-pm-cli config show
-```
-
-配置保存在 `%APPDATA%\agents-pm-tool\cli.json`。临时环境变量 `PM_SERVER_URL` 与 `PM_AGENT_TOKEN` 的优先级更高，适合 CI 或不希望落盘的场景；两者必须成对设置——只设其中一个（或其一为空）会直接报错，不会回落到用户配置，需补齐另一个或 `unset` 已设的那个（Windows：`Remove-Item Env:PM_SERVER_URL`）。网页的“我的 Agent 访问”面板会给出当前用户可直接复制的配置，并提供 pm-cli-skill 下载。本机还可把 skill 一键安装到 Codex（`~/.agents/skills`、旧版 `~/.codex/skills`）、Claude Code（`~/.claude/skills`）、WorkBuddy（`~/.workbuddy/skills`）、OpenCode（`~/.config/opencode/skills`）、Cursor（`~/.cursor/skills`）、Pi（`~/.pi/agent/skills`）和 DeepSeek Harness（`~/.dsh/skills`，设置 `DSH_HOME` 时改用 `$DSH_HOME/skills`）。只要求对应前端的配置目录已存在，skill 目录会在安装时按需创建，因此刚装好、还没放过 skill 的前端也能直接安装。面板为每个前端显示一张卡片，包含状态、安装目录和「安装 / 更新」与「打开目录」操作；前端未安装时卡片显示“未检测到”并提示先安装该前端。
-
-**未安装桌面应用时如何使用 pm-cli**：从面板下载 skill ZIP 解压后即可使用，但必须先用上面的方式配置服务地址与 token —— 这类环境下没有、也不需要 `data/runtime.json`（该文件由桌面应用启动时写入，记录实际端口与 token，只存在于应用目录）。未配置时 pm-cli 会提示具体的配置命令。
-
-**连接排障**：运行 `pm-cli doctor`（加 `--json` 便于 Agent 解析）。它会报告实际生效的连接来源（环境变量 / 用户配置 / 本机 `data/runtime.json`）、脱敏后的 token、连通性与可见项目数、skill 版本是否与 exe 一致，并给出下一步命令。退出码与其它命令一致：`0` 正常，`2` 鉴权失败，`3` 未配置或连不上。
+**连接排障**：运行 `pm-cli doctor`（加 `--json` 便于 Agent 解析）。它会报告实际生效的连接来源（环境变量 / 用户配置 / 本机应用写出的运行信息）、脱敏后的 token、连通性与可见项目数、脚本路径与 Node 版本，并给出下一步命令。退出码与其它命令一致：`0` 正常，`2` 参数或鉴权失败，`3` 未配置或连不上。
 
 **token 等同身份**：pm-cli 完全以 token 所属账号的身份操作，权限也按该账号的授权。不要转给他人使用；重新生成 token 会让旧 token 立即失效。
 
-从源码运行 CLI 时，在命令前使用：
+从源码运行时，可以直接跑仓库里的脚本：
 
 ```powershell
-cargo run --manifest-path src-tauri/Cargo.toml --bin pm-cli -- projects
+node pm-cli-skill/bin/pm-cli.mjs projects
 ```
 
 所有子命令均可通过 `--json` 输出结构化结果。完整帮助可通过 `pm-cli --help` 或 `pm-cli <子命令> --help` 查看。
 
-`GET /api/agent/help` **无需 token**，返回接口自述与 `bootstrap` 接入步骤（要让用户做什么、拿到 token 后执行什么命令、没有 pm-cli 时怎么办），供尚未安装 pm-cli 与 skill 的 Agent 自助定位；其余 `/api/agent/*` 接口仍需 Bearer token。
+`GET /api/agent/help` **无需 token**，返回接口自述与 `bootstrap` 接入步骤（要让用户做什么、拿到 token 后执行什么命令、没有 pm-cli 时怎么办），供尚未安装 pm-cli 与 skill 的 Agent 自助定位。`GET /api/agent/skill/payload`（文件清单）与 `GET /api/agent/skill/install.mjs`（自包含安装脚本）同样免 token——skill 内容不含机密，而「还没有 skill 的机器」本身就需要先拿到它。其余 `/api/agent/*` 接口仍需 Bearer token。
 
 ### 权限边界
 
@@ -174,7 +196,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --bin pm-cli -- projects
 | `pm.db` | 用户、会话、授权、项目、任务与附件元数据 |
 | `attachments/` | 上传的附件文件 |
 | `settings.json` | 服务端口、访问范围和关闭行为等设置 |
-| `runtime.json` | 当前服务端口、进程 ID 和本机主机 Agent token |
+| `runtime.json` | 当前服务端口、进程 ID 和本机主机 Agent token（同时在用户级配置目录留一份给 pm-cli 自动发现） |
 
 备份时建议先彻底退出应用，再复制整个 `data/` 目录。旧版单用户数据库会自动升级：创建固定主机账号，并把原全局 Agent 接入迁移为主机账号 token，本机 `pm-cli` 使用方式不变。不要提交或分享 `runtime.json`、远程用户 token 或 CLI 配置文件；泄露后应立即在对应用户的 Agent 访问面板重新生成或吊销 token。
 
@@ -187,9 +209,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --bin pm-cli -- projects
 ```powershell
 npm run dev                       # 仅启动 Vite 前端开发服务器
 npm run build                     # 类型检查并构建前端
-npm run build:cli                 # 构建 pm-cli sidecar 与 pm-cli-skill.zip
-npm run build:all                 # 构建前端和 pm-cli
-npm test                          # 运行 Vitest 测试
+npm test                          # 运行 Vitest 测试（含 pm-cli 与安装脚本的行为测试）
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
@@ -221,12 +241,11 @@ agents-pm-tool/
 ├─ src-tauri/
 │  ├─ src/server/        # Axum 路由、鉴权、SSE 与静态资源服务
 │  ├─ src/db/            # SQLite Schema、迁移和查询
-│  ├─ src/domain/        # 任务、ID 与附件规则
-│  └─ src/cli/           # pm-cli
-├─ tests/                # 前端单元测试
-├─ pm-cli-skill/         # Agent skill 文档；构建时与 pm-cli 一起打包
+│  └─ src/domain/        # 任务、ID 与附件规则
+├─ tests/                # 前端与 pm-cli 单元测试
+├─ pm-cli-skill/         # Agent skill 载荷：SKILL.md、bin/ 下的 pm-cli 脚本、安装脚本
 ├─ docs/                 # 开发规划、验收与评审记录
-├─ scripts/              # 前端与 CLI 构建脚本
+├─ scripts/              # 前端构建脚本
 ├─ dev.py                # 开发环境检查与启动入口
 └─ build.py              # Windows 正式打包脚本
 ```

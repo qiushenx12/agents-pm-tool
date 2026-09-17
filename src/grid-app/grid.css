@@ -2414,6 +2414,15 @@ button.attachment-preview:focus-visible {
   color: var(--tag-green-fg);
   font-style: normal;
 }
+/* 远程用户的目录提示没有版本徽标，允许换行，保证路径能完整看到 */
+.skill-path.wrap {
+  align-items: flex-start;
+}
+.skill-path.wrap > span {
+  overflow: visible;
+  white-space: normal;
+  word-break: break-all;
+}
 .skill-path.empty {
   display: grid;
   place-items: center;
@@ -2440,22 +2449,98 @@ button.attachment-preview:focus-visible {
   font-size: 11px;
   white-space: nowrap;
 }
-.remote-skill-hint {
+/* 远程用户：网页把 skill 写进用户选中的目录；写不了时退回到安装脚本 */
+.manual-skill {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 12px;
+}
+.manual-skill-intro {
+  display: flex;
+  align-items: flex-start;
   gap: 11px;
-  padding: 15px;
+  padding: 13px 15px;
   border-radius: 9px;
   color: var(--primary);
   background: var(--active-bg);
 }
-.remote-skill-hint > div {
+.manual-skill-intro > div {
   display: flex;
   flex-direction: column;
+  gap: 3px;
 }
-.remote-skill-hint span {
+.manual-skill-intro span {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.skill-os-switch {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--input-bg);
+  align-self: flex-start;
+}
+.skill-os-switch button {
+  border: 0;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+.skill-os-switch button.active {
+  color: var(--text-primary);
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+.skill-path-extra {
   color: var(--text-secondary);
   font-size: 11px;
+  line-height: 1.5;
+}
+.skill-path-extra.dim {
+  opacity: 0.75;
+}
+.skill-written-path {
+  color: var(--success);
+  font-size: 11px;
+  word-break: break-all;
+}
+.skill-fallback {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 14px 15px;
+  border-radius: 9px;
+  border: 1px dashed var(--separator);
+}
+.skill-fallback-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.skill-fallback-copy span {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.skill-fallback-copy code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.skill-command {
+  display: block;
+  padding: 9px 11px;
+  border-radius: 7px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--input-bg);
+  word-break: break-all;
 }
 @media (max-width: 760px) {
   .auth-screen {

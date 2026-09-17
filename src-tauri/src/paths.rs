@@ -42,30 +42,6 @@ pub fn data_dir() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// data_dir 的宽松版本（供 pm-cli：目录不存在时照样返回路径，由读取方报错）。
-///
-/// 只读语义：**不创建目录、不写探测文件**。pm-cli 只读取连接信息，不应在
-/// 自身所在目录（例如用户 skill 目录下的 `bin/`）留下空的 `data/` 痕迹。
-pub fn data_dir_lossy() -> PathBuf {
-    if let Ok(custom) = std::env::var("PM_DATA_DIR") {
-        return PathBuf::from(custom);
-    }
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-    if cfg!(debug_assertions) {
-        // dev：exe 位于 src-tauri/target/debug/，上溯 4 级 = 项目根
-        exe.parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .map(|p| p.join("data"))
-            .unwrap_or_else(|| PathBuf::from("data"))
-    } else {
-        exe.parent()
-            .map(|p| p.join("data"))
-            .unwrap_or_else(|| PathBuf::from("data"))
-    }
-}
-
 pub fn db_path(data: &std::path::Path) -> PathBuf {
     data.join("pm.db")
 }
@@ -76,6 +52,22 @@ pub fn settings_path(data: &std::path::Path) -> PathBuf {
 
 pub fn runtime_path(data: &std::path::Path) -> PathBuf {
     data.join("runtime.json")
+}
+
+/// 用户级配置目录：Windows `%APPDATA%\agents-pm-tool`、macOS
+/// `~/Library/Application Support/agents-pm-tool`、其它 `$XDG_CONFIG_HOME|~/.config/agents-pm-tool`。
+///
+/// pm-cli 侧用完全相同的规则解析（见 `pm-cli-skill/bin/pm-cli.mjs` 的 `userConfigDir`），
+/// 改动这里必须同步过去，否则两端会指向不同目录。
+pub fn user_config_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|base| base.join("agents-pm-tool"))
+}
+
+/// 用户级运行信息：应用额外把「当前端口 + 主机 token」写到这里，
+/// 让装在任意位置（各前端 skill 目录）的 pm-cli 都能零配置发现本机服务 ——
+/// 不再依赖「pm-cli 与应用同目录」这一前提。
+pub fn user_runtime_path() -> Option<PathBuf> {
+    user_config_dir().map(|dir| dir.join("runtime.json"))
 }
 
 /// 应用内网页窗口的位置与大小（见 window_state 模块）
@@ -92,18 +84,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn data_dir_lossy_does_not_create_directories() {
-        // 本测试独占 PM_DATA_DIR，用唯一子路径避免与其他用例相互干扰。
-        let temporary = tempfile::tempdir().unwrap();
-        let target = temporary.path().join("never-created");
-        std::env::set_var("PM_DATA_DIR", &target);
-        let resolved = data_dir_lossy();
-        std::env::remove_var("PM_DATA_DIR");
-
-        assert_eq!(resolved, target);
-        assert!(
-            !target.exists(),
-            "data_dir_lossy 是只读解析，不应创建目录或写入探测文件"
+    fn user_runtime_path_sits_next_to_cli_config() {
+        let Some(directory) = user_config_dir() else {
+            return; // 极端环境取不到用户目录时不强求
+        };
+        assert!(directory.ends_with("agents-pm-tool"));
+        assert_eq!(
+            user_runtime_path(),
+            Some(directory.join("runtime.json")),
+            "运行信息与 pm-cli 的用户配置必须落在同一个目录"
         );
     }
 }

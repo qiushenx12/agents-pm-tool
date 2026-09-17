@@ -19,6 +19,27 @@ async fn spawn_app() -> TestApp {
     spawn_app_with_host([127, 0, 0, 1]).await
 }
 
+/// pm-cli 现在随 skill 分发，是一个零依赖的 Node 脚本；测试直接跑它，与用户实际用法一致。
+/// 需要用特定解释器时（例如 nvm 环境）可以通过 PM_NODE 指定。
+fn run_pm_cli(args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("仓库根目录")
+        .join("pm-cli-skill")
+        .join("bin")
+        .join("pm-cli.mjs");
+    assert!(script.is_file(), "未找到 pm-cli 脚本：{}", script.display());
+    let node = std::env::var("PM_NODE").unwrap_or_else(|_| "node".to_string());
+    let mut command = std::process::Command::new(node);
+    command.arg(&script).args(args);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command.output().unwrap_or_else(|error| {
+        panic!("运行 pm-cli 失败（集成测试需要 Node.js 18 或更高版本）：{error}")
+    })
+}
+
 async fn spawn_app_with_host(bind_host: [u8; 4]) -> TestApp {
     let tmp = tempfile::tempdir().unwrap();
     let data_dir = tmp.path().to_path_buf();
@@ -167,6 +188,9 @@ impl TestApp {
         self.http
             .request(method, format!("{}/api/web{}", self.base, path))
     }
+    fn port(&self) -> u16 {
+        self.base.rsplit(':').next().unwrap().parse().unwrap()
+    }
 }
 
 async fn register_user(app: &TestApp, username: &str) -> (Value, reqwest::Client) {
@@ -292,7 +316,7 @@ async fn host_settings_are_local_host_only_and_persist_valid_changes() {
 }
 
 #[tokio::test]
-async fn agent_help_and_skill_download_are_versioned() {
+async fn agent_help_and_skill_distribution_are_versioned() {
     let app = spawn_app().await;
     let help = app
         .agent(reqwest::Method::GET, "/help")
@@ -301,7 +325,8 @@ async fn agent_help_and_skill_download_are_versioned() {
         .unwrap();
     assert_eq!(help.status(), 200);
     let help = help.json::<Value>().await.unwrap();
-    assert_eq!(help["skill_download"], "/api/agent/skill/download");
+    assert_eq!(help["skill"]["payload"], "/api/agent/skill/payload");
+    assert_eq!(help["skill"]["installer"], "/api/agent/skill/install.mjs");
     assert!(help["commands"]
         .as_array()
         .unwrap()
@@ -313,8 +338,50 @@ async fn agent_help_and_skill_download_are_versioned() {
         .iter()
         .any(|command| command["path"] == "/api/agent/attachments/{id}"));
 
+    // 文件清单：网页端「选择目录」与安装脚本共用这一份，必须包含全部 skill 文件。
+    let payload = app
+        .agent(reqwest::Method::GET, "/skill/payload")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(payload.status(), 200);
+    let payload = payload.json::<Value>().await.unwrap();
+    assert_eq!(payload["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(payload["directory"], "pm-cli");
+    let paths: Vec<&str> = payload["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["path"].as_str().unwrap())
+        .collect();
+    for expected in [
+        "SKILL.md",
+        "VERSION",
+        "bin/pm-cli.mjs",
+        "bin/pm-cli.cmd",
+        "bin/pm-cli",
+    ] {
+        assert!(paths.contains(&expected), "清单缺少 {expected}");
+    }
+    // 各前端的目录提示要有 Windows 与 macOS 两种写法，供用户照着选目录。
+    let codex = payload["frontends"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == "codex")
+        .unwrap();
+    assert!(codex["macos_paths"][0]
+        .as_str()
+        .unwrap()
+        .ends_with(".agents/skills"));
+    assert!(codex["windows_paths"][0]
+        .as_str()
+        .unwrap()
+        .contains("USERPROFILE"));
+
+    // 安装脚本：把清单内嵌成自包含文件，用户下载后跑一次即可。
     let response = app
-        .agent(reqwest::Method::GET, "/skill/download")
+        .agent(reqwest::Method::GET, "/skill/install.mjs")
         .send()
         .await
         .unwrap();
@@ -328,11 +395,21 @@ async fn agent_help_and_skill_download_are_versioned() {
             .unwrap(),
         env!("CARGO_PKG_VERSION")
     );
-    let bytes = response.bytes().await.unwrap();
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-    assert!(archive.by_name("pm-cli-skill/SKILL.md").is_ok());
-    assert!(archive.by_name("pm-cli-skill/bin/pm-cli.exe").is_ok());
-    assert!(archive.by_name("pm-cli-skill/VERSION").is_ok());
+    assert!(response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("javascript"));
+    let script = response.text().await.unwrap();
+    assert!(
+        !script.contains("const PAYLOAD = [];"),
+        "安装脚本不能带着空载荷发出去"
+    );
+    assert!(script.contains("const PAYLOAD = {"));
+    assert!(script.contains("bin/pm-cli.mjs"));
+    assert!(script.contains("pm-cli-install"));
 }
 
 #[tokio::test]
@@ -360,8 +437,18 @@ async fn agent_help_is_public_but_other_agent_routes_are_not() {
     assert!(!help["permissions"].as_array().unwrap().is_empty());
     assert!(help["server_url"].as_str().unwrap().starts_with("http://"));
 
-    // 除 /help 外的 Agent 路由仍必须鉴权，避免公开 /help 时顺手放宽了边界。
-    for path in ["/tasks", "/projects", "/skill/download"] {
+    // skill 分发入口与 /help 同级公开：否则「还没有 skill 的 Agent」无从获取它。
+    for path in ["/skill/payload", "/skill/install.mjs"] {
+        let response = anonymous
+            .get(format!("{}/api/agent{path}", app.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{path} 应免 token 可读");
+    }
+
+    // 其余 Agent 路由仍必须鉴权，避免公开分发入口时顺手放宽了边界。
+    for path in ["/tasks", "/projects"] {
         let response = anonymous
             .get(format!("{}/api/agent{path}", app.base))
             .send()
@@ -378,8 +465,8 @@ async fn agent_help_is_public_but_other_agent_routes_are_not() {
         .unwrap();
     assert_eq!(authenticated.status(), 200);
     assert_eq!(
-        authenticated.json::<Value>().await.unwrap()["skill_download"],
-        "/api/agent/skill/download"
+        authenticated.json::<Value>().await.unwrap()["skill"]["installer"],
+        "/api/agent/skill/install.mjs"
     );
 }
 
@@ -388,12 +475,11 @@ async fn remote_cli_uses_environment_connection() {
     let app = spawn_app().await;
     let task = create_task(&app, true, "CLI 提交人展示").await;
     let task_id = task["id"].as_str().unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pm-cli"))
-        .args(["projects", "--json"])
-        .env("PM_SERVER_URL", &app.base)
-        .env("PM_AGENT_TOKEN", &app.token)
-        .output()
-        .unwrap();
+    let env = [
+        ("PM_SERVER_URL", app.base.as_str()),
+        ("PM_AGENT_TOKEN", app.token.as_str()),
+    ];
+    let output = run_pm_cli(&["projects", "--json"], &env);
     assert!(
         output.status.success(),
         "pm-cli failed: {}",
@@ -402,13 +488,12 @@ async fn remote_cli_uses_environment_connection() {
     let projects: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(projects[0]["name"], "default-project");
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pm-cli"))
-        .args(["get", task_id])
-        .env("PM_SERVER_URL", &app.base)
-        .env("PM_AGENT_TOKEN", &app.token)
-        .output()
-        .unwrap();
-    assert!(output.status.success());
+    let output = run_pm_cli(&["get", task_id], &env);
+    assert!(
+        output.status.success(),
+        "pm-cli failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(String::from_utf8_lossy(&output.stdout).contains("提交人：   Agent（主机）"));
 }
 
@@ -485,12 +570,11 @@ async fn agent_can_list_and_download_authorized_attachments_read_only() {
 
     let output_dir = tempfile::tempdir().unwrap();
     let target = output_dir.path().join("cli-downloaded.txt");
-    let list_output = std::process::Command::new(env!("CARGO_BIN_EXE_pm-cli"))
-        .args(["attachments", task_id, "--json"])
-        .env("PM_SERVER_URL", &app.base)
-        .env("PM_AGENT_TOKEN", &app.token)
-        .output()
-        .unwrap();
+    let env = [
+        ("PM_SERVER_URL", app.base.as_str()),
+        ("PM_AGENT_TOKEN", app.token.as_str()),
+    ];
+    let list_output = run_pm_cli(&["attachments", task_id, "--json"], &env);
     assert!(
         list_output.status.success(),
         "pm-cli attachments failed: {}",
@@ -499,18 +583,16 @@ async fn agent_can_list_and_download_authorized_attachments_read_only() {
     let cli_attachments: Value = serde_json::from_slice(&list_output.stdout).unwrap();
     assert_eq!(cli_attachments[0]["id"], attachment_id);
 
-    let download_output = std::process::Command::new(env!("CARGO_BIN_EXE_pm-cli"))
-        .args([
+    let download_output = run_pm_cli(
+        &[
             "download",
             attachment_id,
             "--output",
             target.to_str().unwrap(),
             "--json",
-        ])
-        .env("PM_SERVER_URL", &app.base)
-        .env("PM_AGENT_TOKEN", &app.token)
-        .output()
-        .unwrap();
+        ],
+        &env,
+    );
     assert!(
         download_output.status.success(),
         "pm-cli download failed: {}",
@@ -2322,4 +2404,137 @@ async fn stopping_server_is_bounded_even_with_an_open_sse_stream() {
     tokio::time::timeout(std::time::Duration::from_secs(2), handle.stop())
         .await
         .expect("SSE 长连接不应无限阻塞服务重启");
+}
+
+#[tokio::test]
+async fn test_instances_never_publish_the_user_level_runtime_pointer() {
+    // 用户级运行信息是 pm-cli「零配置发现本机服务」的依据，只有真正的桌面应用实例该写它。
+    // 测试用的是临时数据目录，一旦也去写，就会把开发机上真实的连接信息换成测试实例的端口和 token。
+    let app = spawn_app().await;
+    assert!(
+        !app.core.publishes_runtime_pointer(),
+        "测试实例不得发布用户级运行信息"
+    );
+}
+
+/// 直接写 HTTP/1.1 请求，用于精确构造 Host 与转发头。
+/// （reqwest 会按 URL 自己填 Host，测不了「客户端实际用哪个地址访问」这件事。）
+async fn raw_get(base: &str, path: &str, headers: &[(&str, &str)]) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(base.trim_start_matches("http://"))
+        .await
+        .unwrap();
+    let mut request = format!("GET {path} HTTP/1.1\r\nConnection: close\r\n");
+    for (name, value) in headers {
+        request.push_str(&format!("{name}: {value}\r\n"));
+    }
+    request.push_str("\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    response
+        .split_once("\r\n\r\n")
+        .expect("响应缺少头部与正文的分隔")
+        .1
+        .to_string()
+}
+
+async fn help_server_url(app: &TestApp, headers: &[(&str, &str)]) -> String {
+    let body = raw_get(&app.base, "/api/agent/help", headers).await;
+    let help: Value = serde_json::from_str(&body).unwrap();
+    help["server_url"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn suggested_address_follows_the_route_the_caller_used() {
+    // 局域网访问的用户该看到局域网地址，走 Tailscale 的用户该看到 Tailscale 地址，
+    // 经域名或隧道访问的用户该看到那个域名。
+    let app = spawn_app().await;
+    *app.core.settings.write().unwrap() = Settings {
+        listen_scope: "lan".into(),
+        ..Settings::default()
+    };
+
+    assert_eq!(
+        help_server_url(&app, &[("host", "192.168.1.20:17890")]).await,
+        "http://192.168.1.20:17890"
+    );
+    assert_eq!(
+        help_server_url(&app, &[("host", "100.101.102.103:17890")]).await,
+        "http://100.101.102.103:17890"
+    );
+    assert_eq!(
+        help_server_url(&app, &[("host", "a-b-c.ngrok-free.dev:17890")]).await,
+        "http://a-b-c.ngrok-free.dev:17890"
+    );
+}
+
+#[tokio::test]
+async fn suggested_address_restores_the_forwarded_scheme_and_host() {
+    // 隧道对外是 https、转发到本机是 http：只有按转发头还原，Agent 才连得上。
+    let app = spawn_app().await;
+    *app.core.settings.write().unwrap() = Settings {
+        listen_scope: "lan".into(),
+        ..Settings::default()
+    };
+
+    assert_eq!(
+        help_server_url(
+            &app,
+            &[
+                ("host", "a-b-c.ngrok-free.dev"),
+                ("x-forwarded-proto", "https"),
+            ]
+        )
+        .await,
+        "https://a-b-c.ngrok-free.dev"
+    );
+
+    // 有些反代会把 Host 改写成 localhost，原始域名只在 X-Forwarded-Host 里
+    assert_eq!(
+        help_server_url(
+            &app,
+            &[
+                ("host", "localhost:3010"),
+                ("x-forwarded-host", "a-b-c.ngrok-free.dev"),
+                ("x-forwarded-proto", "https"),
+            ]
+        )
+        .await,
+        "https://a-b-c.ngrok-free.dev"
+    );
+
+    // 请求里没有可用地址时（公网 IP 之外，例如畸形 Host 或干脆没带），才轮到自动探测
+    let detected = help_server_url(&app, &[("host", "0.0.0.0:17890")]).await;
+    assert_ne!(detected, "http://0.0.0.0:17890");
+    assert!(detected.starts_with("http://"), "{detected}");
+}
+
+#[tokio::test]
+async fn configured_address_wins_over_the_request_route() {
+    // 手工配置是显式覆盖：留给「Agent 不在浏览页面这台机器上」这类自动识别猜不到的情况。
+    let app = spawn_app().await;
+    *app.core.settings.write().unwrap() = Settings {
+        listen_scope: "lan".into(),
+        agent_server_url: "https://pm.example.com".into(),
+        ..Settings::default()
+    };
+    assert_eq!(
+        help_server_url(&app, &[("host", "192.168.1.20:17890")]).await,
+        "https://pm.example.com"
+    );
+}
+
+#[tokio::test]
+async fn loopback_only_listener_never_advertises_another_interface() {
+    // 只监听回环时，即便客户端硬塞一个局域网 Host，也不该把它当成建议地址发出去。
+    let app = spawn_app().await; // 默认 listen_scope = local
+    assert_eq!(
+        help_server_url(&app, &[("host", "192.168.1.20:17890")]).await,
+        format!("http://127.0.0.1:{}", app.port())
+    );
+    assert_eq!(
+        help_server_url(&app, &[("host", "pm.example.com:17890")]).await,
+        format!("http://127.0.0.1:{}", app.port())
+    );
 }

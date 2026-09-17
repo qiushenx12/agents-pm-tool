@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createApp, type App } from "vue";
 import AgentAccessDialog from "@/grid-app/components/users/AgentAccessDialog.vue";
 import { api } from "@/grid-app/api/client";
-import type { LocalSkillTarget, User } from "@/shared/types";
+import type { LocalSkillTarget, SkillPayload, User } from "@/shared/types";
 
 vi.mock("@/grid-app/api/client", () => ({
   api: {
@@ -11,6 +11,7 @@ vi.mock("@/grid-app/api/client", () => ({
     listLocalSkills: vi.fn(),
     installLocalSkills: vi.fn(),
     openLocalSkillDirectory: vi.fn(),
+    getSkillPayload: vi.fn(),
     regenerateAgentToken: vi.fn(),
     revokeAgentToken: vi.fn(),
     patchUser: vi.fn(),
@@ -274,4 +275,174 @@ it("renders each Agent frontend with its official logo mark", async () => {
     ).toBeGreaterThan(20);
     expect(svg.getAttribute("fill")).toBe("currentColor");
   }
+});
+
+// 非主机用户：服务端碰不到对方电脑，网页直接把 skill 写进用户选中的目录。
+const remoteUser: User = {
+  id: "u-1",
+  username: "小明",
+  role: "user",
+  created_at: "2026-09-10 10:00:00",
+  disabled: false,
+  is_host: false,
+};
+
+const skillPayload: SkillPayload = {
+  name: "pm-cli",
+  version: "1.0.0",
+  directory: "pm-cli",
+  frontends: [
+    {
+      id: "claude_code",
+      label: "Claude Code",
+      roots: [{ relative: ".claude/skills", label: "Claude Code" }],
+      windows_paths: ["%USERPROFILE%\.claude\skills"],
+      macos_paths: ["~/.claude/skills"],
+    },
+  ],
+  files: [
+    { path: "SKILL.md", content: "# doc\n", executable: false },
+    { path: "bin/pm-cli.mjs", content: "// cli\n", executable: false },
+  ],
+};
+
+interface FakeDirectory {
+  name: string;
+  files: Map<string, string>;
+  dirs: Map<string, FakeDirectory>;
+}
+
+function makeDirectory(name: string): FakeDirectory {
+  return { name, files: new Map(), dirs: new Map() };
+}
+
+function directoryHandle(directory: FakeDirectory) {
+  return {
+    name: directory.name,
+    getDirectoryHandle: async (child: string) => {
+      if (!directory.dirs.has(child)) {
+        directory.dirs.set(child, makeDirectory(child));
+      }
+      return directoryHandle(directory.dirs.get(child)!);
+    },
+    getFileHandle: async (filename: string) => ({
+      createWritable: async () => ({
+        write: async (data: string) => {
+          directory.files.set(filename, data);
+        },
+        close: async () => {},
+      }),
+    }),
+  };
+}
+
+function setPicker(picker: unknown) {
+  Object.defineProperty(window, "showDirectoryPicker", {
+    configurable: true,
+    writable: true,
+    value: picker,
+  });
+}
+
+function mountRemoteDialog() {
+  vi.mocked(api.getAgentAccess).mockResolvedValue({
+    server_url: "http://192.168.1.9:17890",
+    token: "remote-token",
+    access_instructions: "远程主机：需要配置一次连接。",
+  });
+  vi.mocked(api.getSkillPayload).mockResolvedValue(skillPayload);
+  root = document.createElement("div");
+  document.body.append(root);
+  app = createApp(AgentAccessDialog, { user: remoteUser });
+  app.mount(root);
+}
+
+it("shows per-frontend directory hints and the install-script fallback", async () => {
+  setPicker(undefined);
+  mountRemoteDialog();
+
+  await vi.waitFor(() =>
+    expect(
+      document.querySelector('[data-frontend="claude_code"] .skill-path')
+        ?.textContent,
+    ).toContain("%USERPROFILE%\.claude\skills"),
+  );
+  // 另一套系统的写法在切换后展示
+  document
+    .querySelectorAll<HTMLButtonElement>(".skill-os-switch button")[1]!
+    .click();
+  await vi.waitFor(() =>
+    expect(
+      document.querySelector('[data-frontend="claude_code"] .skill-path')
+        ?.textContent,
+    ).toContain("~/.claude/skills"),
+  );
+
+  const body = document.body.textContent ?? "";
+  expect(body).toContain("/api/agent/skill/install.mjs");
+  expect(body).toContain("选择目录并写入");
+  // 浏览器不支持直接写目录时，按钮不可用并给出说明
+  expect(
+    document.querySelector<HTMLButtonElement>(
+      '[data-frontend="claude_code"] .skill-install-button',
+    )?.disabled,
+  ).toBe(true);
+  expect(body).toContain("安装脚本");
+  delete (window as unknown as { showDirectoryPicker?: unknown })
+    .showDirectoryPicker;
+});
+
+it("writes the whole skill into the directory the user picks", async () => {
+  const picked = makeDirectory("skills");
+  setPicker(async () => directoryHandle(picked));
+  mountRemoteDialog();
+
+  await vi.waitFor(() =>
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        '[data-frontend="claude_code"] .skill-install-button',
+      )?.disabled,
+    ).toBe(false),
+  );
+  document
+    .querySelector<HTMLButtonElement>(
+      '[data-frontend="claude_code"] .skill-install-button',
+    )!
+    .click();
+
+  await vi.waitFor(() =>
+    expect(
+      document.querySelector('[data-frontend="claude_code"]')?.textContent,
+    ).toContain("已写入"),
+  );
+  const installed = picked.dirs.get("pm-cli")!;
+  expect(installed.files.get("SKILL.md")).toBe("# doc\n");
+  expect(installed.dirs.get("bin")?.files.get("pm-cli.mjs")).toBe("// cli\n");
+  delete (window as unknown as { showDirectoryPicker?: unknown })
+    .showDirectoryPicker;
+});
+
+it("writes directly when the picked directory is already named pm-cli", async () => {
+  const picked = makeDirectory("pm-cli");
+  setPicker(async () => directoryHandle(picked));
+  mountRemoteDialog();
+
+  await vi.waitFor(() =>
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        '[data-frontend="claude_code"] .skill-install-button',
+      )?.disabled,
+    ).toBe(false),
+  );
+  document
+    .querySelector<HTMLButtonElement>(
+      '[data-frontend="claude_code"] .skill-install-button',
+    )!
+    .click();
+
+  await vi.waitFor(() => expect(picked.files.get("SKILL.md")).toBe("# doc\n"));
+  // 不再多套一层 pm-cli/pm-cli
+  expect(picked.dirs.has("pm-cli")).toBe(false);
+  delete (window as unknown as { showDirectoryPicker?: unknown })
+    .showDirectoryPicker;
 });

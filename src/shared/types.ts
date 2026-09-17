@@ -54,6 +54,8 @@ export interface WorkspaceServerStatus {
   port: number;
   url: string;
   lan_url: string;
+  /** 本机装了 Tailscale 且在线时的组网地址；没有则为空串，界面据此决定是否多显示一行 */
+  tailscale_url: string;
   data_dir: string;
 }
 
@@ -99,6 +101,42 @@ export interface LocalSkillTarget {
   path: string;
   installed: boolean;
   version: string | null;
+}
+
+/** skill 载荷里的一个文件；path 是 skill 目录内的相对路径。 */
+export interface SkillPayloadFile {
+  path: string;
+  content: string;
+  executable: boolean;
+}
+
+export interface SkillPayloadRoot {
+  relative: string;
+  label: string;
+}
+
+/** skill 载荷里的前端定义：目录结构给安装用，路径提示给用户照着选目录。 */
+export interface SkillPayloadFrontend {
+  id: LocalSkillFrontendId;
+  label: string;
+  roots: SkillPayloadRoot[];
+  env_home?: string;
+  env_home_subpath?: string;
+  note?: string;
+  windows_paths: string[];
+  macos_paths: string[];
+}
+
+/**
+ * skill 载荷：网页端「选择目录」直接写入用的完整文件清单。
+ * 与安装脚本、服务端一键安装共用同一份内容，避免三处不一致。
+ */
+export interface SkillPayload {
+  name: string;
+  version: string;
+  directory: string;
+  frontends: SkillPayloadFrontend[];
+  files: SkillPayloadFile[];
 }
 
 export interface Task {

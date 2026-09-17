@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{Extension, Path, RawQuery, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -323,18 +323,22 @@ pub async fn patch_priority(
 
 /// 接口自述。**无需 token**：没有 pm-cli、没有 skill 的 Agent 也能访问它，
 /// 从中得知「要让用户做什么」。真正读写任务仍需 token。
-pub async fn help(State(core): State<CoreState>) -> Json<serde_json::Value> {
+pub async fn help(State(core): State<CoreState>, headers: HeaderMap) -> Json<serde_json::Value> {
+    // 用调用方这次实际走通的路由回地址：局域网来的给局域网地址，tailnet 来的给 Tailscale 地址。
+    let server_url = super::api_agent_access::suggested_server_url(&core, &headers);
     Json(serde_json::json!({
         "name": "Agents PM Tool Agent API",
-        "introduction": "Agents PM Tool 是本地任务管理工具，Agent 通过受限客户端 pm-cli 或本接口（HTTP + Bearer token）读取和推进任务。pm-cli 由 pm-cli-skill 提供：可在网页端「我的 Agent 访问」下载 ZIP，解压到 Codex、Claude Code、WorkBuddy 或 DeepSeek Harness 等前端的 skills 目录后即可使用，完整用法见同目录的 SKILL.md。",
-        "server_url": super::api_agent_access::reachable_server_url(&core),
+        "introduction": "Agents PM Tool 是本地任务管理工具，Agent 通过受限客户端 pm-cli 或本接口（HTTP + Bearer token）读取和推进任务。pm-cli 是 pm-cli-skill 里的一个 Node 脚本（需要 Node.js 18 或更高版本），装到本机 Agent 前端的 skills 目录后即可使用；完整用法见 skill 目录里的 SKILL.md。",
+        "server_url": server_url,
         "authentication": "Authorization: Bearer <PM_AGENT_TOKEN>",
         "requires_token": true,
+        "runtime_requirement": "pm-cli 需要 Node.js 18 或更高版本；没有 Node.js 时可直接调用本接口里的 HTTP 端点。",
         "bootstrap": {
             "summary": "本接口无需 token 即可访问；但读取或推进任务必须带 token。token 由已登录用户在网页端签发，Agent 无法自行获取，请把下列步骤转告用户。",
             "ask_the_user": [
                 "打开 Agents PM Tool 网页端，进入「我的 Agent 访问」。",
                 "复制面板上的「服务地址」，并生成（或复制）Agent token。",
+                "在本机安装 pm-cli skill：主机账号可在面板上一键安装到已检测到的 Agent 前端；其他情况在面板里选择目标目录直接写入，或下载安装脚本运行一次。",
                 "把服务地址与 token 提供给 Agent；或由用户在本机执行下面的配置命令。"
             ],
             "configure": [
@@ -343,8 +347,10 @@ pub async fn help(State(core): State<CoreState>) -> Json<serde_json::Value> {
                 "pm-cli doctor"
             ],
             "if_pm_cli_missing": [
-                "由用户在网页端「我的 Agent 访问」下载 pm-cli-skill，解压到 Codex、Claude Code、WorkBuddy 或 DeepSeek Harness 等前端的 skills 目录。",
-                "或直接用 curl：<curl> -H \"Authorization: Bearer <token>\" <服务地址>/api/agent/tasks"
+                "先确认本机有 Node.js 18 或更高版本。",
+                "在目标机器上获取安装脚本并运行一次：curl -fsSL <服务地址>/api/agent/skill/install.mjs | node --input-type=module（Windows PowerShell 用 irm 代替 curl）。",
+                "脚本会自动检测已安装的 Agent 前端并写入 skill；也可用 --list 先看候选目录，或用 --dir <目录> 指定。",
+                "或直接用 HTTP：curl -H \"Authorization: Bearer <token>\" <服务地址>/api/agent/tasks"
             ]
         },
         "commands": [
@@ -356,15 +362,23 @@ pub async fn help(State(core): State<CoreState>) -> Json<serde_json::Value> {
             {"method":"PATCH", "path":"/api/agent/tasks/{id}/status", "description":"推进状态"},
             {"method":"PATCH", "path":"/api/agent/tasks/{id}/priority", "description":"调整任务优先级（高/中/低）"},
             {"method":"PATCH", "path":"/api/agent/tasks/{id}/description", "description":"修改 Agent 创建任务的描述"},
-            {"method":"GET", "path":"/api/agent/projects", "description":"只读查看项目"},
-            {"method":"GET", "path":"/api/agent/skill/download", "description":"下载匹配服务端版本的 pm-cli-skill"}
+            {"method":"GET", "path":"/api/agent/projects", "description":"只读查看项目"}
         ],
         "configuration": {
             "environment": ["PM_SERVER_URL", "PM_AGENT_TOKEN"],
-            "example": "PM_SERVER_URL=http://192.168.1.10:17890; PM_AGENT_TOKEN=<token>"
+            "example": "PM_SERVER_URL=http://192.168.1.10:17890; PM_AGENT_TOKEN=<token>",
+            "note": "本机装有 Agents PM Tool 时不需要配置：应用会把端口与 token 写到你电脑上固定的一处位置，pm-cli 自动读取。"
         },
-        "unauthenticated_access": ["/api/agent/help"],
-        "skill_download": "/api/agent/skill/download",
+        "skill": {
+            "payload": "/api/agent/skill/payload",
+            "installer": "/api/agent/skill/install.mjs",
+            "installer_example": format!("curl -fsSL {server_url}/api/agent/skill/install.mjs | node --input-type=module")
+        },
+        "unauthenticated_access": [
+            "/api/agent/help",
+            "/api/agent/skill/payload",
+            "/api/agent/skill/install.mjs"
+        ],
         "permissions": [
             "可以查看/筛选任务、只读查看项目、创建任务，并查看和下载已授权项目中的任务附件。",
             "只能把任务状态改为进行中、待验证或已完成；可以把任务优先级改为高、中或低。",

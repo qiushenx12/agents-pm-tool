@@ -1,7 +1,8 @@
 pub mod db;
 pub mod domain;
 pub mod error;
-pub mod paths; // pm-cli 复用服务发现路径
+pub mod netinfo; // 本机地址探测（局域网 / Tailscale）
+pub mod paths; // 数据目录与用户级运行信息位置（pm-cli 的脚本用同一套规则解析）
 pub mod server;
 pub mod settings;
 pub mod window_state;
@@ -31,6 +32,8 @@ struct ServerStatus {
     url: String,
     /// LAN 模式下的局域网访问地址（供其他设备访问）；local 模式为空
     lan_url: String,
+    /// 本机装了 Tailscale 且在线时的组网地址；没有则为空（界面据此决定是否显示这一行）
+    tailscale_url: String,
     data_dir: String,
 }
 
@@ -100,6 +103,7 @@ async fn stop_embedded_server(state: &AppState) -> bool {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => eprintln!("清理服务运行信息失败：{error}"),
     }
+    server::clear_user_runtime(&state.core);
     was_running
 }
 
@@ -278,45 +282,44 @@ async fn save_settings(
     })
 }
 
-/// 本机局域网 IPv4（UDP connect 不真发包，只是让内核选出对外网卡）
-fn lan_ipv4() -> Option<std::net::Ipv4Addr> {
-    let s = std::net::UdpSocket::bind(("0.0.0.0", 0)).ok()?;
-    s.connect(("8.8.8.8", 80)).ok()?;
-    match s.local_addr().ok()?.ip() {
-        std::net::IpAddr::V4(v4) if !v4.is_loopback() => Some(v4),
-        _ => None,
-    }
-}
-
 #[tauri::command]
 fn get_server_status(state: State<'_, AppState>) -> ServerStatus {
     current_server_status(&state)
 }
 
 fn current_server_status(state: &AppState) -> ServerStatus {
-    let guard = state.server.lock().unwrap();
     let is_lan = state.core.settings.read().unwrap().bind_host() == [0, 0, 0, 0];
-    match guard.as_ref() {
-        Some(h) => ServerStatus {
-            running: true,
-            port: h.port,
-            url: format!("http://127.0.0.1:{}", h.port),
-            lan_url: if is_lan {
-                lan_ipv4()
-                    .map(|ip| format!("http://{ip}:{}", h.port))
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            },
-            data_dir: state.core.data_dir.display().to_string(),
-        },
-        None => ServerStatus {
+    let data_dir = state.core.data_dir.display().to_string();
+    // 先把端口取出来再探测地址：Tailscale 探测要起子进程，不该占着服务器锁。
+    let Some(port) = state.server.lock().unwrap().as_ref().map(|handle| handle.port) else {
+        return ServerStatus {
             running: false,
             port: 0,
             url: String::new(),
             lan_url: String::new(),
-            data_dir: state.core.data_dir.display().to_string(),
+            tailscale_url: String::new(),
+            data_dir,
+        };
+    };
+    ServerStatus {
+        running: true,
+        port,
+        url: format!("http://127.0.0.1:{port}"),
+        lan_url: if is_lan {
+            netinfo::lan_ipv4()
+                .map(|ip| format!("http://{ip}:{port}"))
+                .unwrap_or_default()
+        } else {
+            String::new()
         },
+        tailscale_url: if is_lan {
+            netinfo::tailscale_ipv4()
+                .map(|ip| format!("http://{ip}:{port}"))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        },
+        data_dir,
     }
 }
 
@@ -357,19 +360,12 @@ async fn regenerate_token(state: State<'_, AppState>) -> Result<(), String> {
             .map_err(|error| error.message)?;
     }
     *state.core.token.write().await = new_token;
-    // 立即写 runtime.json，让 CLI 用上新 token（规划 §5.6）
+    // 立即刷新运行信息，让 pm-cli 用上新 token（规划 §5.6）；两处一起写，避免只更新一半
     let port = state.server.lock().unwrap().as_ref().map(|h| h.port);
     if let Some(port) = port {
-        let info = serde_json::json!({
-            "port": port,
-            "token": state.core.token.read().await.clone(),
-            "pid": std::process::id(),
-        });
-        std::fs::write(
-            paths::runtime_path(&state.core.data_dir),
-            serde_json::to_string_pretty(&info).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
+        server::write_runtime_json(&state.core, port)
+            .await
+            .map_err(|error| error.message)?;
     }
     Ok(())
 }
@@ -599,7 +595,10 @@ pub fn run() {
             let db_conn = db::open(&paths::db_path(&data_dir))?;
             let app_settings = Settings::load(&paths::settings_path(&data_dir));
             let startup_view = window_state::load_active_view(&data_dir);
-            let core = server::CoreStateInner::new(data_dir, db_conn, app_settings.clone());
+            let core = server::CoreStateInner::new(data_dir, db_conn, app_settings.clone())
+                // 桌面应用实例才把运行信息写到你电脑上固定的用户级位置，
+                // 让装在任意 skill 目录下的 pm-cli 零配置找到本机服务。
+                .publish_runtime_pointer(true);
             let core = std::sync::Arc::new(core);
 
             app.manage(AppState {

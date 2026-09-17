@@ -17,6 +17,7 @@ import type {
   UserPermissionsResponse,
   AgentAccess,
   LocalSkillTarget,
+  SkillPayload,
   HostSettingsResponse,
   SaveHostSettingsResponse,
   WorkspaceSettings,
@@ -278,6 +279,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ frontend }),
     }),
+  /**
+   * skill 文件清单：与安装脚本、服务端一键安装共用同一份内容。
+   * 这个入口与 `/api/agent/help` 同级公开（skill 内容不含机密），
+   * 所以「还没有 skill 的机器」也能取到它，网页端直接写入用户选中的目录。
+   */
+  getSkillPayload: () => request<SkillPayload>("/api/agent/skill/payload"),
 };
 
 /** SSE 订阅：任务变更触发 onChange、主题变更触发 onThemeChange；断线自动降级为 10s 轮询 */

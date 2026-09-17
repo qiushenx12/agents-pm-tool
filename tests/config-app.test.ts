@@ -10,6 +10,7 @@ const {
   shellOpen,
   running,
   lanUrl,
+  tailscaleUrl,
   serverTheme,
   listenTheme,
   hideWindow,
@@ -20,6 +21,7 @@ const {
   hideWindow: vi.fn(),
   running: { value: true },
   lanUrl: { value: "" },
+  tailscaleUrl: { value: "" },
   serverTheme: { value: undefined as string | null | undefined },
 }));
 
@@ -44,6 +46,7 @@ function serverStatus() {
     port: running.value ? 17890 : 0,
     url: running.value ? "http://127.0.0.1:17890" : "",
     lan_url: running.value ? lanUrl.value : "",
+    tailscale_url: running.value ? tailscaleUrl.value : "",
     data_dir: "C:/data",
   };
 }
@@ -80,6 +83,7 @@ afterEach(() => {
   localStorage.clear();
   running.value = true;
   lanUrl.value = "";
+  tailscaleUrl.value = "";
   serverTheme.value = undefined;
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
@@ -192,6 +196,46 @@ it("为本机和局域网地址分别提供复制按钮", async () => {
     expect(writeText).toHaveBeenLastCalledWith("http://192.168.1.20:17890"),
   );
   expect(writeText).toHaveBeenCalledTimes(2);
+});
+
+it("本机没装 Tailscale 时只显示本机与局域网两条地址", async () => {
+  lanUrl.value = "http://192.168.1.20:17890";
+  const mounted = await mountConfig();
+
+  const labels = [...mounted.querySelectorAll(".service-address-row span")].map(
+    (span) => span.textContent?.trim(),
+  );
+  expect(labels).toEqual(["本机地址", "局域网地址"]);
+  expect(mounted.querySelector('[aria-label="复制 Tailscale 地址"]')).toBeNull();
+});
+
+it("本机装了 Tailscale 时在局域网地址下方多出一条 Tailscale 地址", async () => {
+  lanUrl.value = "http://192.168.1.20:17890";
+  tailscaleUrl.value = "http://100.101.102.103:17890";
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+  const mounted = await mountConfig();
+
+  const labels = [...mounted.querySelectorAll(".service-address-row span")].map(
+    (span) => span.textContent?.trim(),
+  );
+  expect(labels, "Tailscale 地址应排在局域网地址之后").toEqual([
+    "本机地址",
+    "局域网地址",
+    "Tailscale 地址",
+  ]);
+
+  const copy = mounted.querySelector<HTMLButtonElement>(
+    '[aria-label="复制 Tailscale 地址"]',
+  );
+  expect(copy).not.toBeNull();
+  copy!.click();
+  await vi.waitFor(() =>
+    expect(writeText).toHaveBeenCalledWith("http://100.101.102.103:17890"),
+  );
 });
 
 it("「进入应用」位于服务开关和「打开网页」之间，点击后在应用内打开窗口", async () => {

@@ -73,6 +73,7 @@ vi.mock("@/grid-app/api/client", () => ({
         port: 17890,
         url: "http://127.0.0.1:17890",
         lan_url: "",
+        tailscale_url: "",
         data_dir: "C:/data",
       },
     }),

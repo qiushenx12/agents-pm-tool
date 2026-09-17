@@ -9,8 +9,6 @@
     "build:frontend:uncached": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "build:cli": "node scripts/build-cli.mjs",
-    "build:all": "npm run build && npm run build:cli",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -22,6 +20,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.5.0",
+    "@types/node": "^22.20.3",
     "@vitejs/plugin-vue": "^5.2.3",
     "jsdom": "^30.0.1",
     "typescript": "^5.7.3",

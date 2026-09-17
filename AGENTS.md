@@ -10,7 +10,7 @@ Agents PM Tool 是一个 Windows 本地项目管理工具，服务于“用户�
 
 1. **Tauri 桌面应用**：显示设置窗口，管理内嵌 HTTP 服务、系统托盘和应用生命周期。
 2. **浏览器任务工作台**：Vue 应用，由 Rust/Axum 服务托管，用户在这里管理项目、任务和附件。
-3. **`pm-cli`**：供 Agent 使用的受限 HTTP 客户端，只调用 `/api/agent/*`，不直接访问数据库。
+3. **`pm-cli`**：供 Agent 使用的受限 HTTP 客户端，是 skill 里的一个零依赖 Node 脚本（`pm-cli-skill/bin/pm-cli.mjs`，需要 Node.js 18+，不随安装包分发、不写系统 PATH），只调用 `/api/agent/*`，不直接访问数据库。
 
 主要技术栈：
 
@@ -82,7 +82,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - 仅文档：至少执行 `git diff --check` 并核对命令、路径和功能描述。
 - 前端逻辑或组件：执行 `npm run build` 和 `npm test`。
 - Rust、数据库、API、CLI：执行 `cargo test --manifest-path src-tauri/Cargo.toml`；涉及前后端 DTO 时同时执行前端构建和测试。
-- 打包相关：先执行 `npm run build:all`，只有用户明确要求正式打包时才运行 `python build.py`。
+- 打包相关：先执行 `npm run build`，只有用户明确要求正式打包时才运行 `python build.py`。
 
 `python build.py` 是 Windows 正式发布脚本，会同步多个版本文件、构建 NSIS 安装包，并询问是否将版本记录为已发布。它会改变发布状态，不是普通的只读构建命令，不要为了“验证一下”随意运行。
 
@@ -91,10 +91,10 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ```powershell
 npm run dev                       # 仅启动 Vite；主要用于 Tauri 设置页开发
 npm run build                     # vue-tsc + Vite，多入口构建到 dist/
-npm run build:cli                 # release 编译 pm-cli，并复制 target-triple sidecar
-npm run build:all                 # 前端 + CLI
 npm run preview                   # 预览 Vite 构建产物
 ```
+
+`npm test` 里包含 pm-cli 与 skill 安装脚本的行为测试（以子进程方式跑真实的 `pm-cli.mjs`）。
 
 前端有两个入口：`index.html` 是浏览器任务工作台，`config.html` 是 Tauri 设置窗口。Tauri 开发窗口使用 Vite 的 `config.html`，而任务工作台由 Axum 从编译时嵌入的 `dist/` 提供。因此修改 `grid-app` 后，仅运行 `npm run dev` 不足以更新内嵌页面；需要重新执行 `npm run build`，并让 Rust 服务重新编译/启动。
 
@@ -119,6 +119,7 @@ agents-pm-tool/
 │  └─ shared/                    # DTO、枚举、主题、反馈和基础组件
 ├─ src-tauri/
 │  ├─ src/lib.rs                 # Tauri 生命周期、托盘、设置命令、服务启停
+│  ├─ src/netinfo.rs             # 本机地址探测（局域网 IPv4、Tailscale）
 │  ├─ src/paths.rs               # 数据目录解析
 │  ├─ src/settings.rs            # 端口、访问范围、关闭行为
 │  ├─ src/window_state.rs        # 应用内窗口的位置/大小记忆
@@ -129,7 +130,7 @@ agents-pm-tool/
 │  │  ├─ api_agent.rs            # Agent 受限 API
 │  │  ├─ api_users.rs            # 用户、角色与权限管理
 │  │  ├─ api_agent_access.rs     # 当前用户 Agent token 与接入文案
-│  │  ├─ api_skill.rs            # pm-cli-skill 下载与本机安装
+│  │  ├─ api_skill.rs            # skill 载荷、安装脚本与本机一键安装
 │  │  ├─ api_batch.rs            # 批量更新/删除
 │  │  ├─ auth.rs                 # Web 会话、CSRF 头与 Agent token 校验
 │  │  ├─ events.rs               # SSE 事件总线
@@ -144,12 +145,11 @@ agents-pm-tool/
 │  │  ├─ view_state.rs           # 按用户保存的分组/排序/筛选
 │  │  └─ permissions.rs          # 项目/字段/枚举选项授权
 │  ├─ src/domain/                # Task、ID、附件白名单等领域规则
-│  ├─ src/cli/main.rs            # pm-cli
 │  ├─ examples/serve.rs          # 无头服务
 │  └─ tests/                     # Rust API/权限/分页集成测试
-├─ tests/                         # Vitest 测试
-├─ pm-cli-skill/                  # pm-cli skill 源文件
-├─ scripts/                       # 前端和 CLI 增量构建脚本
+├─ tests/                         # Vitest 测试（含 pm-cli 行为测试）
+├─ pm-cli-skill/                  # skill 载荷源：SKILL.md、VERSION、bin/ 下的 pm-cli 脚本、安装脚本
+├─ scripts/                       # 前端增量构建脚本
 ├─ docs/                          # 规划与验收资料
 ├─ dev.py                         # 交互式开发启动器
 ├─ build.py                       # 正式发布脚本
@@ -229,8 +229,8 @@ Agent 不可以：
 
 ## 6. API 与前端状态约定
 
-- Web API 前缀：`/api/web`。`/auth/register`、`/auth/login`、`/auth/host-login` 为公开入口，其余接口全部经过会话中间件；用户管理、权限、当前用户 Agent 接入和 skill 下载也在此前缀下。
-- Agent API 前缀：`/api/agent`，全部按用户 Bearer token 鉴权并注入用户上下文；`/help` 提供自描述帮助，`/skill/download` 提供 skill 包。
+- Web API 前缀：`/api/web`。`/auth/register`、`/auth/login`、`/auth/host-login` 为公开入口，其余接口全部经过会话中间件；用户管理、权限、当前用户 Agent 接入与本机 skill 安装也在此前缀下。
+- Agent API 前缀：`/api/agent`，默认全部按用户 Bearer token 鉴权并注入用户上下文；`/help` 提供自描述帮助，`/skill/payload`（文件清单）与 `/skill/install.mjs`（自包含安装脚本）提供 skill —— 这三个**免 token**，因为「还没有 skill 的 Agent」必须先拿到它们，且内容不含任何机密。
 - 错误响应统一为：
 
   ```json
@@ -284,7 +284,7 @@ SQLite 连接启用了 WAL、外键和 5 秒 busy timeout。多步一致性操�
 - `data/pm.db`：数据库
 - `data/attachments/`：附件
 - `data/settings.json`：用户设置
-- `data/runtime.json`：运行端口、PID、本机主机 Agent token
+- `data/runtime.json`：运行端口、PID、本机主机 Agent token；桌面应用实例还会在用户级配置目录（Windows `%APPDATA%\agents-pm-tool\runtime.json`）写一份，供装在任意 skill 目录下的 pm-cli 零配置发现本机服务。写入受 `CoreState::publish_runtime_pointer` 控制，**测试与无头脚本必须保持关闭**，否则会覆盖用户真实的连接信息。
 
 `data/` 已被 Git 忽略。不要提交数据库、附件、token 或真实用户路径。测试应使用临时目录或 `PM_DATA_DIR` 隔离。
 
@@ -292,7 +292,7 @@ SQLite 连接启用了 WAL、外键和 5 秒 busy timeout。多步一致性操�
 
 `data/` 的物理安全等同于最高权限：完整复制数据库到另一台机器后，那台机器的 loopback 主机账号会自动获得超级管理员身份。不要提交或分享数据库、`runtime.json`、用户 Agent token 或 `%APPDATA%\agents-pm-tool\cli.json`。
 
-服务默认端口为 `17890`，占用时最多向后尝试 20 个端口。CLI 必须读取 `runtime.json` 获取实际端口，不能假定始终是 17890。
+服务默认端口为 `17890`，占用时最多向后尝试 20 个端口。pm-cli 必须按「环境变量 > 用户配置 > 本机应用写出的运行信息」的顺序解析连接，从运行信息里取实际端口，不能假定始终是 17890。
 
 ## 9. 构建与生成文件
 
@@ -301,13 +301,12 @@ SQLite 连接启用了 WAL、外键和 5 秒 busy timeout。多步一致性操�
 - `node_modules/`
 - `dist/`
 - `src-tauri/target/`
-- `src-tauri/binaries/`
 - `src-tauri/release-bundle/`
 - `data/`
 
-`scripts/build-frontend.mjs` 和 `scripts/build-cli.mjs` 使用输入指纹跳过无变化构建。若确实需要强制重建 CLI，可设置 `FORCE_CLI_BUILD=1`，但不要把该环境变量持久化到项目文件。
+`scripts/build-frontend.mjs` 使用输入指纹跳过无变化构建。
 
-`npm run build:cli` 会把 `pm-cli` 复制成 Tauri target-triple 命名的 sidecar 文件，并用 `pm-cli-skill/SKILL.md`、`pm-cli.exe` 和版本号生成 `src-tauri/binaries/pm-cli-skill.zip`。涉及安装包时，不要只看到 `src-tauri/binaries/` 中存在文件就断言已随安装器发布；还要核对 `src-tauri/tauri.conf.json` 的 bundle 配置和最终安装目录。
+skill 的载荷（`pm-cli-skill/SKILL.md`、`bin/pm-cli.mjs`、`bin/pm-cli.cmd`、`bin/pm-cli`、`installer.mjs`）由 `src-tauri/src/server/api_skill.rs` 用 `include_str!` 编进二进制；改了这些文件必须重编 Rust，否则分发出的仍是旧内容。版本号来自 `pm-cli-skill/VERSION`，由 `build.py` 随其它版本文件一起同步（`api_skill.rs` 里有测试校验它与 `Cargo.toml` 一致）。`installer.mjs` 里的 `const PAYLOAD = [];` 是服务端替换载荷的锚点，改名要同步 `PAYLOAD_ANCHOR`，否则会发出空载荷脚本（有测试兜底）。
 
 ## 10. 测试定位
 
@@ -320,12 +319,16 @@ SQLite 连接启用了 WAL、外键和 5 秒 busy timeout。多步一致性操�
 - `tests/editor.test.ts`：描述编辑
 - `tests/task-create.test.ts`：任务创建
 - `tests/upload-queue.test.ts` / `tests/api-upload.test.ts`：附件队列与上传
+- `tests/pm-cli.test.ts`：以子进程方式跑真实的 `pm-cli.mjs` 与 `installer.mjs`，覆盖参数解析、连接发现分层、退出码、附件下载与安装脚本的落点规则
+- `tests/agent-access.test.ts`：Agent 访问面板（本机一键安装、远程选目录写入与路径提示）
 
 Rust 测试：
 
-- `src-tauri/tests/api.rs`：Web CRUD、会话、用户/角色/权限矩阵、Agent token、项目级联、附件清理、局域网监听和静态站点等集成路径
+- `src-tauri/tests/api.rs`：Web CRUD、会话、用户/角色/权限矩阵、Agent token、项目级联、附件清理、局域网监听、静态站点，以及**用真实 pm-cli 脚本**打通的环境变量连接与附件下载
 - `src-tauri/tests/p2.rs`：分页、分组、锚点和批量操作
 - 各 Rust 模块中的 `#[cfg(test)]`：领域规则、设置、排序与 ID 生成
+
+修改 pm-cli 或 skill 相关行为时，前端测试（`tests/pm-cli.test.ts`）和 Rust 测试（`src-tauri/tests/api.rs`）都要跟着更新：前者验证 CLI 自身，后者验证服务端接口与 CLI 的配合。
 
 修复缺陷时先补能复现问题的最小测试，再实现修复。测试断言应覆盖行为和权限边界，不要只断言 HTTP 成功。
 
