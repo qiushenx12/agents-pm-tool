@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 
 use axum::{
     extract::{ConnectInfo, Extension, State},
+    http::HeaderMap,
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -50,10 +51,12 @@ pub struct SaveHostSettingsBody {
     pub agent_server_url: String,
 }
 
-fn ensure_local_host(user: &User, peer: SocketAddr) -> ApiResult<()> {
-    if user.id != HOST_USER_ID || !peer.ip().is_loopback() {
-        return Err(ApiError::forbidden("工作区设置仅允许主机账号从本机操作"));
+fn ensure_local_host(user: &User, peer: SocketAddr, headers: &HeaderMap) -> ApiResult<()> {
+    if user.id != HOST_USER_ID {
+        return Err(ApiError::forbidden("工作区设置仅允许主机账号操作"));
     }
+    // 回环对端不足以证明是本机：隧道/反代的代理进程就在本机（见 auth::require_direct_local）。
+    super::auth::require_direct_local(peer, headers)?;
     Ok(())
 }
 
@@ -88,8 +91,9 @@ pub async fn get_host_settings(
     State(core): State<CoreState>,
     Extension(user): Extension<User>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> ApiResult<Json<HostSettingsResponse>> {
-    ensure_local_host(&user, peer)?;
+    ensure_local_host(&user, peer, &headers)?;
     let settings = core.settings.read().unwrap().clone();
     Ok(Json(HostSettingsResponse {
         settings,
@@ -101,9 +105,10 @@ pub async fn save_host_settings(
     State(core): State<CoreState>,
     Extension(user): Extension<User>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<SaveHostSettingsBody>,
 ) -> ApiResult<Json<SaveHostSettingsResponse>> {
-    ensure_local_host(&user, peer)?;
+    ensure_local_host(&user, peer, &headers)?;
     let old = core.settings.read().unwrap().clone();
     let next = Settings {
         port: body.port,
@@ -147,10 +152,33 @@ mod tests {
         }
     }
 
+    fn local_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "127.0.0.1:17890".parse().unwrap());
+        headers
+    }
+
     #[test]
     fn only_loopback_host_can_manage_settings() {
-        assert!(ensure_local_host(&user(HOST_USER_ID), "127.0.0.1:1".parse().unwrap()).is_ok());
-        assert!(ensure_local_host(&user("admin"), "127.0.0.1:1".parse().unwrap()).is_err());
-        assert!(ensure_local_host(&user(HOST_USER_ID), "192.168.1.20:1".parse().unwrap()).is_err());
+        let peer = "127.0.0.1:1".parse().unwrap();
+        assert!(ensure_local_host(&user(HOST_USER_ID), peer, &local_headers()).is_ok());
+        assert!(ensure_local_host(&user("admin"), peer, &local_headers()).is_err());
+        assert!(
+            ensure_local_host(&user(HOST_USER_ID), "192.168.1.20:1".parse().unwrap(), &local_headers())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn tunnelled_host_cannot_manage_settings() {
+        // 隧道转发过来的请求对端也是回环，必须靠 Host 与转发头把它认出来。
+        let peer = "127.0.0.1:1".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "abc.ngrok-free.dev".parse().unwrap());
+        assert!(ensure_local_host(&user(HOST_USER_ID), peer, &headers).is_err());
+
+        let mut headers = local_headers();
+        headers.insert("x-forwarded-for", "1.2.3.4".parse().unwrap());
+        assert!(ensure_local_host(&user(HOST_USER_ID), peer, &headers).is_err());
     }
 }

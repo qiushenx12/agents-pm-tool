@@ -294,6 +294,8 @@ SQLite 连接启用了 WAL、外键和 5 秒 busy timeout。多步一致性操�
 
 `data/` 的物理安全等同于最高权限：完整复制数据库到另一台机器后，那台机器的 loopback 主机账号会自动获得超级管理员身份。不要提交或分享数据库、`runtime.json`、用户 Agent token 或 `%APPDATA%\agents-pm-tool\cli.json`。
 
+**只允许本机直连的动作（主机登录、工作区设置、本机 skill 安装）必须走 `auth::require_direct_local`**，它同时要求「回环对端 + 回环 `Host` + 没有任何转发头」。**不要退回只看 `peer.ip().is_loopback()`**：隧道与反向代理（ngrok、Cloudflare Tunnel、Tailscale Funnel…）的代理进程就装在同一台机器上，转发过来的连接对端同样是回环 —— 实测把服务经 ngrok 暴露出去后，从公网 `POST /api/web/auth/host-login` 能直接拿到主机（超级管理员）会话。普通业务接口不受影响，Agent 接口照旧经隧道可用。
+
 服务默认端口为 `17890`，占用时最多向后尝试 20 个端口。pm-cli 必须按「环境变量 > 用户配置 > 本机应用写出的运行信息」的顺序解析连接，从运行信息里取实际端口，不能假定始终是 17890。
 
 ## 9. 构建与生成文件

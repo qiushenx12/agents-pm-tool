@@ -38,14 +38,6 @@ fn clear_session_cookie() -> &'static str {
     "pm_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
 }
 
-fn require_loopback(peer: SocketAddr) -> ApiResult<()> {
-    if peer.ip().is_loopback() {
-        Ok(())
-    } else {
-        Err(ApiError::forbidden("主机登录仅允许从本机访问"))
-    }
-}
-
 fn login_response(user: User, token: String, status: StatusCode) -> ApiResult<Response> {
     let mut response = (status, Json(SessionResponse { user })).into_response();
     response.headers_mut().insert(
@@ -78,8 +70,9 @@ pub async fn login(
 pub async fn host_login(
     State(core): State<CoreState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
 ) -> ApiResult<Response> {
-    require_loopback(peer)?;
+    auth::require_direct_local(peer, &headers)?;
     let connection = core.db.lock().unwrap();
     let user = users::get(&connection, HOST_USER_ID)?;
     let token = users::create_session(&connection, &user.id)?;
@@ -117,8 +110,45 @@ mod tests {
 
     #[test]
     fn host_login_rejects_non_loopback_peer() {
-        assert!(require_loopback("127.0.0.1:1234".parse().unwrap()).is_ok());
-        let error = require_loopback("192.168.1.20:1234".parse().unwrap()).unwrap_err();
+        let headers = request_headers("127.0.0.1:17890");
+        assert!(auth::require_direct_local("127.0.0.1:1234".parse().unwrap(), &headers).is_ok());
+        let error =
+            auth::require_direct_local("192.168.1.20:1234".parse().unwrap(), &headers).unwrap_err();
         assert_eq!(error.status, StatusCode::FORBIDDEN);
+    }
+
+    fn request_headers(host: &str) -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(header::HOST, host.parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn host_login_rejects_tunnelled_requests_from_loopback() {
+        // 隧道/反代的代理进程就在本机，对端也是回环：只看 IP 会把主机身份放到公网上。
+        let peer: SocketAddr = "127.0.0.1:1234".parse().unwrap();
+        // ① Host 是公网域名（ngrok 这类隧道会校验 Host，攻击者也塞不进去）
+        assert!(auth::require_direct_local(peer, &request_headers("abc.ngrok-free.dev")).is_err());
+        // ② 带转发头（客户端自己也能加，加了只会更容易被拒）
+        for name in ["x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "forwarded"] {
+            let mut headers = request_headers("127.0.0.1:17890");
+            headers.insert(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                "1.2.3.4".parse().unwrap(),
+            );
+            assert!(
+                auth::require_direct_local(peer, &headers).is_err(),
+                "{name} 应该让请求被判为非本机直连"
+            );
+        }
+        // ③ 缺 Host 也当不满足（HTTP/1.1 必须有 Host）
+        assert!(auth::require_direct_local(peer, &axum::http::HeaderMap::new()).is_err());
+        // 回环 Host 的几种写法都认
+        for host in ["127.0.0.1:17890", "localhost:17890", "[::1]:17890"] {
+            assert!(
+                auth::require_direct_local(peer, &request_headers(host)).is_ok(),
+                "{host} 应被认作本机直连"
+            );
+        }
     }
 }

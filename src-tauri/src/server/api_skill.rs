@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use axum::{
     body::Body,
     extract::{ConnectInfo, Extension},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::Response,
     Json,
 };
@@ -434,12 +434,14 @@ fn install_into_roots(roots: &[SkillRoot], files: &[SkillFile]) -> ApiResult<()>
     Ok(())
 }
 
-fn ensure_local_host(user: &User, peer: SocketAddr) -> ApiResult<()> {
-    if user.id != crate::domain::user::HOST_USER_ID || !peer.ip().is_loopback() {
+fn ensure_local_host(user: &User, peer: SocketAddr, headers: &HeaderMap) -> ApiResult<()> {
+    if user.id != crate::domain::user::HOST_USER_ID {
         return Err(ApiError::forbidden(
-            "本机 skill 检测与安装仅允许主机账号从本机操作",
+            "本机 skill 检测与安装仅允许主机账号操作",
         ));
     }
+    // 回环对端不足以证明是本机：隧道/反代的代理进程就在本机（见 auth::require_direct_local）。
+    super::auth::require_direct_local(peer, headers)?;
     Ok(())
 }
 
@@ -476,17 +478,19 @@ pub struct FrontendBody {
 pub async fn local_targets(
     Extension(user): Extension<User>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> ApiResult<Json<Vec<SkillTarget>>> {
-    ensure_local_host(&user, peer)?;
+    ensure_local_host(&user, peer, &headers)?;
     Ok(Json(local_skill_targets()))
 }
 
 pub async fn install_local(
     Extension(user): Extension<User>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<FrontendBody>,
 ) -> ApiResult<Json<Vec<SkillTarget>>> {
-    ensure_local_host(&user, peer)?;
+    ensure_local_host(&user, peer, &headers)?;
     let roots = select_frontend_roots(skill_roots(), &body.frontend)?;
     install_into_roots(&roots, &skill_files())?;
     Ok(Json(local_skill_targets()))
@@ -511,9 +515,10 @@ fn open_directory(_path: &std::path::Path) -> ApiResult<()> {
 pub async fn open_local_directory(
     Extension(user): Extension<User>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<FrontendBody>,
 ) -> ApiResult<StatusCode> {
-    ensure_local_host(&user, peer)?;
+    ensure_local_host(&user, peer, &headers)?;
     let root = select_frontend_roots(skill_roots(), &body.frontend)?
         .into_iter()
         .next()

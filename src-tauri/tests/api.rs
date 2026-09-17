@@ -2419,12 +2419,17 @@ async fn test_instances_never_publish_the_user_level_runtime_pointer() {
 
 /// 直接写 HTTP/1.1 请求，用于精确构造 Host 与转发头。
 /// （reqwest 会按 URL 自己填 Host，测不了「客户端实际用哪个地址访问」这件事。）
-async fn raw_get(base: &str, path: &str, headers: &[(&str, &str)]) -> String {
+async fn raw_request(
+    base: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+) -> (u16, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::net::TcpStream::connect(base.trim_start_matches("http://"))
         .await
         .unwrap();
-    let mut request = format!("GET {path} HTTP/1.1\r\nConnection: close\r\n");
+    let mut request = format!("{method} {path} HTTP/1.1\r\nConnection: close\r\n");
     for (name, value) in headers {
         request.push_str(&format!("{name}: {value}\r\n"));
     }
@@ -2432,17 +2437,105 @@ async fn raw_get(base: &str, path: &str, headers: &[(&str, &str)]) -> String {
     stream.write_all(request.as_bytes()).await.unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).await.unwrap();
-    response
+    let (head, body) = response
         .split_once("\r\n\r\n")
-        .expect("响应缺少头部与正文的分隔")
-        .1
-        .to_string()
+        .expect("响应缺少头部与正文的分隔");
+    let status: u16 = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .expect("响应缺少状态行");
+    (status, body.to_string())
+}
+
+async fn raw_get(base: &str, path: &str, headers: &[(&str, &str)]) -> String {
+    raw_request(base, "GET", path, headers).await.1
 }
 
 async fn help_server_url(app: &TestApp, headers: &[(&str, &str)]) -> String {
     let body = raw_get(&app.base, "/api/agent/help", headers).await;
     let help: Value = serde_json::from_str(&body).unwrap();
     help["server_url"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn host_only_actions_reject_tunnelled_requests() {
+    // 隧道/反代的代理进程就装在本机，转发过来的连接对端也是回环。
+    // 只看对端 IP 的话，任何拿到隧道地址的人都能以主机（超级管理员）身份登录——
+    // 这里把三条拦截条件都钉住。
+    let app = spawn_app().await;
+    let port = app.port().to_string();
+
+    // 本机直连：放行
+    let (status, _) = raw_request(
+        &app.base,
+        "POST",
+        "/api/web/auth/host-login",
+        &[
+            ("host", &format!("127.0.0.1:{port}")),
+            ("x-pm-client", "web"),
+        ],
+    )
+    .await;
+    assert_eq!(status, 200, "本机直连应能主机登录");
+
+    // ① 带转发头（ngrok / cloudflared 都会加）→ 拒绝
+    let (status, _) = raw_request(
+        &app.base,
+        "POST",
+        "/api/web/auth/host-login",
+        &[
+            ("host", &format!("127.0.0.1:{port}")),
+            ("x-pm-client", "web"),
+            ("x-forwarded-for", "1.2.3.4"),
+            ("x-forwarded-proto", "https"),
+        ],
+    )
+    .await;
+    assert_eq!(status, 403, "经隧道的请求不该拿到主机会话");
+
+    // ② Host 不是回环写法（隧道会用公网域名）→ 拒绝
+    let (status, _) = raw_request(
+        &app.base,
+        "POST",
+        "/api/web/auth/host-login",
+        &[
+            ("host", "abc.ngrok-free.dev"),
+            ("x-pm-client", "web"),
+        ],
+    )
+    .await;
+    assert_eq!(status, 403, "公网 Host 不该拿到主机会话");
+
+    // ③ 工作区设置同理（带上真实的主机会话，确认拦下来的是「非本机直连」而不是没登录）
+    let cookie = app
+        .web(reqwest::Method::POST, "/auth/host-login")
+        .send()
+        .await
+        .unwrap()
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let (status, _) = raw_request(
+        &app.base,
+        "GET",
+        "/api/web/host-settings",
+        &[
+            ("host", &format!("127.0.0.1:{port}")),
+            ("x-pm-client", "web"),
+            ("cookie", &cookie),
+            ("x-forwarded-host", "abc.ngrok-free.dev"),
+        ],
+    )
+    .await;
+    assert_eq!(status, 403, "经隧道不该读到工作区设置");
 }
 
 #[tokio::test]
