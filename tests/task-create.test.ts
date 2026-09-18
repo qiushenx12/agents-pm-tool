@@ -182,7 +182,7 @@ it.each([
   expect(onCreated).toHaveBeenCalledWith(task);
 });
 
-it("remembers the last project selected in the new-task dialog", async () => {
+it("defaults to the single filtered project, then remembers the manual choice without a filter", async () => {
   window.history.replaceState(null, "", "/?project=Alpha");
   localStorage.setItem("pm-create-task-project-v1", "Beta");
   const projects: Project[] = ["Alpha", "Beta"].map((name, sort_order) => ({
@@ -204,22 +204,23 @@ it("remembers the last project selected in the new-task dialog", async () => {
     app.mount(host);
   };
 
+  // 单一项目筛选时优先跟随筛选，而不是上次新建选择的 Beta。
   mountModal();
   const projectTrigger = document.body.querySelector<HTMLButtonElement>(
-    '[aria-label="项目：Beta"]',
+    '[aria-label="项目：Alpha"]',
   );
   expect(projectTrigger).not.toBeNull();
   projectTrigger!.click();
   await nextTick();
-  const alpha = Array.from(
+  const beta = Array.from(
     document.body.querySelectorAll<HTMLButtonElement>(
       '[role="listbox"][aria-label="项目"] [role="option"]',
     ),
-  ).find((option) => option.textContent?.trim() === "Alpha");
-  expect(alpha).not.toBeUndefined();
-  alpha!.click();
+  ).find((option) => option.textContent?.trim() === "Beta");
+  expect(beta).not.toBeUndefined();
+  beta!.click();
   await nextTick();
-  expect(localStorage.getItem("pm-create-task-project-v1")).toBe("Alpha");
+  expect(localStorage.getItem("pm-create-task-project-v1")).toBe("Beta");
 
   app!.unmount();
   disposePinia(pinia!);
@@ -228,9 +229,36 @@ it("remembers the last project selected in the new-task dialog", async () => {
   pinia = undefined;
   host = undefined;
   window.history.replaceState(null, "", "/");
+  // 清掉上一次挂载保存的筛选状态，模拟「没有筛选」的场景。
+  localStorage.removeItem("pm-grid-filters-v1");
 
+  // 没有筛选时仍记住上次手动选择的项目。
   mountModal();
   expect(
-    document.body.querySelector('[aria-label="项目：Alpha"]'),
+    document.body.querySelector('[aria-label="项目：Beta"]'),
+  ).not.toBeNull();
+});
+
+it("ignores the project filter default when multiple projects are filtered", async () => {
+  window.history.replaceState(null, "", "/?project=Alpha&project=Beta");
+  localStorage.setItem("pm-create-task-project-v1", "Beta");
+  pinia = createPinia();
+  useMetaStore(pinia).projects = ["Alpha", "Beta"].map((name, sort_order) => ({
+    name,
+    color: "#3370ff",
+    sort_order,
+    local_path: "",
+    git_url: "",
+    created_at: "",
+  }));
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp(TaskCreateModal);
+  app.use(pinia);
+  app.mount(host);
+  await nextTick();
+  // 多项目筛选不适用该规则，回退到上次新建选择的项目。
+  expect(
+    document.body.querySelector('[aria-label="项目：Beta"]'),
   ).not.toBeNull();
 });

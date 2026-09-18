@@ -33,11 +33,13 @@ function lastProject() {
   }
 }
 function initialProjectFrom(projects = meta.projects) {
-  const saved = lastProject();
-  if (projects.some((item) => item.name === saved)) return saved;
+  // 恰好筛选一个项目时，默认跟随当前筛选，忽略上次新建的选择；多项目筛选不适用。
   const filtered =
     tasks.filters.project.length === 1 ? tasks.filters.project[0] : "";
-  if (projects.some((item) => item.name === filtered)) return filtered;
+  if (filtered && projects.some((item) => item.name === filtered))
+    return filtered;
+  const saved = lastProject();
+  if (projects.some((item) => item.name === saved)) return saved;
   return projects[0]?.name ?? "";
 }
 const initialProject = initialProjectFrom();
