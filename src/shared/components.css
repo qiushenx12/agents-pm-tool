@@ -137,6 +137,9 @@ input[type="radio"] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
 }
 .tag {
   display: inline-flex;
@@ -190,6 +193,9 @@ input[type="radio"] {
   color: var(--text-primary);
   background: var(--input-bg);
   text-align: left;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .select-trigger:hover {
   border-color: var(--primary);
@@ -199,6 +205,14 @@ input[type="radio"] {
   border: 0;
   background: transparent;
   padding: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.select-field .field-value {
+  flex: 1;
+  min-width: 0;
 }
 .select-chevron {
   color: var(--text-tertiary);
@@ -247,6 +261,8 @@ input[type="radio"] {
   color: var(--text-primary);
   text-align: left;
   cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .menu-item:hover,
 .menu-item:focus-visible {

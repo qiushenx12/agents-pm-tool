@@ -641,12 +641,18 @@ th:focus-within .column-menu {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
 }
 .note-cell {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
 }
 .expand-record {
   width: 21px;
@@ -725,6 +731,9 @@ th:focus-within .column-menu {
   font-size: 11px;
   color: var(--text-secondary);
   white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
 }
 .cell-id {
   font: 11px var(--font-mono);
@@ -735,6 +744,9 @@ th:focus-within .column-menu {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
 }
 .id-cell {
   display: flex;
@@ -759,6 +771,9 @@ th:focus-within .column-menu {
   gap: 6px;
   min-width: 0;
   font-size: 12px;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
 }
 .submitter-label {
   overflow: hidden;
@@ -785,6 +800,9 @@ th:focus-within .column-menu {
   gap: 5px;
   color: var(--text-secondary);
   font-size: 12px;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
 }
 .attachment-cell .spinner {
   width: 11px;
