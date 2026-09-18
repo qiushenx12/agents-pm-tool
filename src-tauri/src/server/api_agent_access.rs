@@ -172,10 +172,11 @@ pub async fn get_access(
     let server_url = server_url(&core, &user, &headers);
     let access_instructions = if user.id == HOST_USER_ID {
         "Agents PM Tool 是本地任务管理工具，Agent 通过受限客户端 pm-cli 读取和推进任务。\
-         请先确保桌面应用正在运行，然后在下面把 pm-cli skill 安装到本机的 Agent 前端\
-         （需要 Node.js 18 或更高版本，未检测到的前端需先安装该前端）。\
+         请先确保桌面应用正在运行，然后用下面两种方式之一把 pm-cli skill 装到本机的 Agent 前端：\
+         点卡片上的按钮直接安装，或把最下面那条命令贴到终端执行一次（装到检测到的全部前端）。\
+         两种方式效果相同，都需要 Node.js 18 或更高版本，未检测到的前端需先安装该前端。\
          本机安装后不需要任何连接配置：应用会把端口与 token 写到你电脑上固定的一处位置，\
-         pm-cli 自动读取。安装或升级后请重新打开终端或 Agent 前端。"
+         pm-cli 自动读取，所以命令里不带这两项。安装或升级后请重新打开终端或 Agent 前端。"
             .to_string()
     } else {
         format!(

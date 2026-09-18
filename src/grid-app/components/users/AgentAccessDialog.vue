@@ -102,8 +102,14 @@ function isTunnelHost(url: string) {
 
 /**
  * 一行命令：拉取安装脚本直接执行。
- * 装到检测到的全部前端，并把服务地址与 token 一并写进 pm-cli 的用户级配置，
- * 所以既不用下载文件、也不用选目录，跑完 Agent 就能直接连上。
+ * 装到检测到的全部前端；远程机器上还会把服务地址与 token 一并写进 pm-cli 的
+ * 用户级配置，所以既不用下载文件、也不用选目录，跑完 Agent 就能直接连上。
+ * 本机（主机账号）与非本机用的是同一条命令，区别只在连接参数：
+ *
+ * **本机故意不带 `--server-url` / `--token`**。应用已经把端口与 token 写在固定的
+ * 用户级位置，pm-cli 零配置就能读到；写进 cli.json 反而是一条静态配置，
+ * 优先级高于本机自动发现——应用换端口后它会盖住新端口，把「本机明明装着应用」
+ * 变成连着读不通的假象。所以本机只需要装 skill 这一步。
  *
  * 中间那个 `-` 不能省：它告诉 node「程序从标准输入读」，后面的才是脚本参数。
  * 写成 `node --input-type=module -- --all` 会被 node 把 `--all` 当成脚本路径而报错。
@@ -116,8 +122,11 @@ function isTunnelHost(url: string) {
  */
 const command = computed(() => {
   const base = access.value?.server_url ?? location.origin;
-  const args = ["--all", "--server-url", base];
-  if (access.value?.token) args.push("--token", access.value.token);
+  const args = ["--all"];
+  if (!props.user.is_host) {
+    args.push("--server-url", base);
+    if (access.value?.token) args.push("--token", access.value.token);
+  }
   const run = `node --input-type=module - ${args.join(" ")}`;
   if (targetOs.value === "macos") {
     return `curl -fsSL ${base}${installerUrl} | ${run}`;
@@ -382,7 +391,8 @@ onMounted(() => {
           <div>
             <h3>pm-cli skill</h3>
             <p v-if="user.is_host">
-              装到本机 Agent 前端的 skill 目录，之后 Agent 就能直接调用 pm-cli。需要 Node.js 18 或更高版本。
+              两种装法都行：点卡片上的按钮直接装到本机 Agent 前端，或把下面的命令贴到终端跑一次
+              （效果相同，装到检测到的全部前端）。需要 Node.js 18 或更高版本。
             </p>
           </div>
           <div class="inline-actions">
@@ -393,72 +403,90 @@ onMounted(() => {
         </header>
 
         <!-- 本机（主机账号）：服务端直接检测并写入，一键完成 -->
-        <div v-if="user.is_host" class="skill-frontend-grid">
-          <article
-            v-for="frontend in frontendCards"
-            :key="frontend.id"
-            class="skill-frontend-card"
-            :class="`frontend-${frontend.id}`"
-            :data-frontend="frontend.id"
-          >
-            <header>
-              <span class="skill-frontend-mark"><FrontendLogo :id="frontend.id" :size="20" /></span>
-              <strong>{{ frontend.title }}</strong>
-              <span
-                class="skill-state"
-                :class="{ ready: frontend.allInstalled, partial: frontend.someInstalled && !frontend.allInstalled }"
-              >
-                {{
-                  !frontend.primary
-                    ? "未检测到"
-                    : frontend.allInstalled
-                      ? "已就绪"
-                      : frontend.someInstalled
-                        ? "部分已安装"
-                        : "可安装"
-                }}
-              </span>
-            </header>
-            <code
-              v-if="frontend.primary"
-              class="skill-path"
-              :title="
-                frontend.primary.path +
-                (frontend.extraCount ? ` 等 ${frontend.extraCount + 1} 个目录` : '')
-              "
+        <div v-if="user.is_host" class="manual-skill">
+          <div class="skill-frontend-grid">
+            <article
+              v-for="frontend in frontendCards"
+              :key="frontend.id"
+              class="skill-frontend-card"
+              :class="`frontend-${frontend.id}`"
+              :data-frontend="frontend.id"
             >
-              <span>{{ frontend.primary.path }}</span>
-              <em v-if="frontend.primary.version">v{{ frontend.primary.version }}</em>
-            </code>
-            <span v-else class="skill-path empty">
-              启动或安装 {{ frontend.title }} 后重新检测
-            </span>
-            <div class="skill-card-actions">
-              <button
-                class="btn btn-primary skill-install-button"
-                :disabled="busy || !frontend.primary"
-                @click="install(frontend.id)"
+              <header>
+                <span class="skill-frontend-mark"><FrontendLogo :id="frontend.id" :size="20" /></span>
+                <strong>{{ frontend.title }}</strong>
+                <span
+                  class="skill-state"
+                  :class="{ ready: frontend.allInstalled, partial: frontend.someInstalled && !frontend.allInstalled }"
+                >
+                  {{
+                    !frontend.primary
+                      ? "未检测到"
+                      : frontend.allInstalled
+                        ? "已就绪"
+                        : frontend.someInstalled
+                          ? "部分已安装"
+                          : "可安装"
+                  }}
+                </span>
+              </header>
+              <code
+                v-if="frontend.primary"
+                class="skill-path"
+                :title="
+                  frontend.primary.path +
+                  (frontend.extraCount ? ` 等 ${frontend.extraCount + 1} 个目录` : '')
+                "
               >
-                <UiIcon :name="frontend.allInstalled ? 'refresh' : 'download'" />
-                {{
-                  installing === frontend.id
-                    ? "安装中…"
-                    : frontend.allInstalled
-                      ? "更新"
-                      : "安装"
-                }}
-              </button>
-              <button
-                class="icon-btn skill-open-button"
-                :disabled="busy || !frontend.primary"
-                :title="opening === frontend.id ? '正在打开…' : `打开 ${frontend.title} 的 skill 目录`"
-                :aria-label="`打开 ${frontend.title} 的 skill 目录`"
-                @click="openDirectory(frontend.id)"
-              >
-                <UiIcon name="folder" :size="15" />
+                <span>{{ frontend.primary.path }}</span>
+                <em v-if="frontend.primary.version">v{{ frontend.primary.version }}</em>
+              </code>
+              <span v-else class="skill-path empty">
+                启动或安装 {{ frontend.title }} 后重新检测
+              </span>
+              <div class="skill-card-actions">
+                <button
+                  class="btn btn-primary skill-install-button"
+                  :disabled="busy || !frontend.primary"
+                  @click="install(frontend.id)"
+                >
+                  <UiIcon :name="frontend.allInstalled ? 'refresh' : 'download'" />
+                  {{
+                    installing === frontend.id
+                      ? "安装中…"
+                      : frontend.allInstalled
+                        ? "更新"
+                        : "安装"
+                  }}
+                </button>
+                <button
+                  class="icon-btn skill-open-button"
+                  :disabled="busy || !frontend.primary"
+                  :title="opening === frontend.id ? '正在打开…' : `打开 ${frontend.title} 的 skill 目录`"
+                  :aria-label="`打开 ${frontend.title} 的 skill 目录`"
+                  @click="openDirectory(frontend.id)"
+                >
+                  <UiIcon name="folder" :size="15" />
+                </button>
+              </div>
+            </article>
+          </div>
+
+          <div class="skill-fallback">
+            <div class="skill-fallback-copy">
+              <strong>或在终端执行以下命令</strong>
+              <span>
+                与上面的按钮效果相同：装到检测到的全部前端。本机不需要连接配置——
+                应用会把端口与 token 写在固定位置由 pm-cli 自动读取，所以命令里不带这两项。
+              </span>
+            </div>
+            <code class="skill-command">{{ command }}</code>
+            <div class="inline-actions">
+              <button class="btn btn-sm" @click="copyText(command)">
+                <UiIcon name="copy" :size="13" />复制命令
               </button>
             </div>
-          </article>
+          </div>
         </div>
 
         <!-- 远程用户：服务端碰不到对方电脑，由网页把 skill 写进用户选中的目录 -->

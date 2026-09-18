@@ -122,6 +122,52 @@ it("opens targets and installs Codex and Claude Code skills independently", asyn
   );
 });
 
+it("本机面板同样给出一条终端安装命令，且不带连接参数", async () => {
+  const user: User = {
+    id: "host",
+    username: "主机",
+    role: "super_admin",
+    created_at: "2026-09-10 10:00:00",
+    disabled: false,
+    is_host: true,
+  };
+  vi.mocked(api.getAgentAccess).mockResolvedValue({
+    server_url: "http://127.0.0.1:17890",
+    token: "host-token",
+    access_instructions: "本机 pm-cli 会自动读取连接信息。",
+  });
+  vi.mocked(api.listLocalSkills).mockResolvedValue([]);
+
+  root = document.createElement("div");
+  document.body.append(root);
+  app = createApp(AgentAccessDialog, { user });
+  app.mount(root);
+
+  const command = () =>
+    document.querySelector(".skill-command")?.textContent?.trim();
+
+  await vi.waitFor(() =>
+    expect(command()).toBe(
+      "$OutputEncoding=[Text.UTF8Encoding]::new($false); irm " +
+        "http://127.0.0.1:17890/api/agent/skill/install.mjs | " +
+        "node --input-type=module - --all",
+    ),
+  );
+  // 本机零配置：命令里绝不能出现静态连接配置，否则会盖住自动发现
+  expect(command()).not.toContain("--server-url");
+  expect(command()).not.toContain("--token");
+  expect(command()).not.toContain("host-token");
+  // 一键安装按钮仍在，两种装法并存
+  expect(document.querySelectorAll(".skill-frontend-card").length).toBe(7);
+  expect(
+    document.querySelector<HTMLButtonElement>(
+      '[data-frontend="codex"] .skill-install-button',
+    ),
+  ).not.toBeNull();
+  // 本机不需要「选择目录并写入」（那是服务端碰不到对方电脑时的退路）
+  expect(document.body.textContent).not.toContain("选择目录并写入");
+});
+
 it("renders and installs the WorkBuddy skill target", async () => {
   const user: User = {
     id: "host",
