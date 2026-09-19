@@ -771,8 +771,25 @@ pub fn run() {
             open_app_window,
             open_settings_window,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Agents PM Tool");
+        .build(tauri::generate_context!())
+        .expect("error while building Agents PM Tool")
+        .run(|app_handle, event| {
+            // macOS：窗口全部关闭/隐藏后点击程序坞图标只会发 Reopen，不会自己恢复界面
+            // （与托盘左键走同一套恢复逻辑）。Windows 托盘没有这个概念，事件本身也是
+            // macOS 独有，因此整个处理按平台隔离，不影响其它系统。
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } = event
+            {
+                if let Err(error) = restore_active_view(app_handle, server_port(app_handle)) {
+                    eprintln!("从程序坞恢复应用界面失败：{error}");
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app_handle, event);
+        });
 }
 
 #[cfg(test)]
