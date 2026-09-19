@@ -222,6 +222,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 python build.py
 ```
 
+macOS 日常自用打包也可以直接双击运行 `build.command`（不推进版本号、不写发布记录，产出在 `src-tauri/target/release/bundle/dmg/`）。
+
 该脚本会同步项目版本、构建当前平台的安装包（Windows 为 NSIS，macOS 为 DMG），并在人工确认测试通过后记录发布。安装包位于 `src-tauri/target/release/bundle/<nsis|dmg>/`，确认发布后的归档位于 `src-tauri/release-bundle/<nsis|dmg>/`。macOS 构建默认按当前机器架构产出（Apple Silicon 为 aarch64），未签名的 DMG 首次打开需在「系统设置 → 隐私与安全性」中放行。
 
 `build.py` 和 `dev.py` 都会核对 `package.json` 与 `package-lock.json` 的内容指纹，**依赖清单变过就自动重装**（优先 `npm ci`），不需要你记着手动跑 `npm ci`。所以换机器、拉取到新增依赖的提交后，直接运行脚本即可。
@@ -252,7 +254,8 @@ agents-pm-tool/
 ├─ docs/                 # 开发规划、验收与评审记录
 ├─ scripts/              # 前端构建脚本
 ├─ dev.py                # 开发环境检查与启动入口
-└─ build.py              # 正式打包脚本（Windows NSIS / macOS DMG）
+├─ build.py              # 正式打包脚本（Windows NSIS / macOS DMG）
+└─ build.command         # macOS 双击打包（自用，不推进版本号）
 ```
 
 更完整的设计背景与阶段记录参见 [`docs/development-plan.md`](docs/development-plan.md)。

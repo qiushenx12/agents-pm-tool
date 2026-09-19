@@ -155,6 +155,7 @@ agents-pm-tool/
 ├─ docs/                          # 规划与验收资料
 ├─ dev.py                         # 交互式开发启动器
 ├─ build.py                       # 正式发布脚本
+├─ build.command                  # macOS 双击打包（自用，不推进版本号）
 └─ version.json                   # 发布版本状态
 ```
 
