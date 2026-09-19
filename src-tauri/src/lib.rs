@@ -547,7 +547,10 @@ fn create_settings_window(app: &tauri::App) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .hidden_title(true);
+        .hidden_title(true)
+        // Overlay 的红绿灯默认按标准 28px 标题栏就位，而我们的自绘标题栏高 42px，
+        // 直接放着会偏高约 5px；把按钮下移，与标题栏内容垂直居中对齐（x 保持默认）。
+        .traffic_light_position(tauri::LogicalPosition::new(10.0, 14.0));
     #[cfg(not(target_os = "macos"))]
     let builder = builder.decorations(false);
     builder.build()?;
