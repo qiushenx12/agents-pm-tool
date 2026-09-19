@@ -25,6 +25,10 @@ interface SaveSettingsResult {
 }
 const desktop = isTauri();
 const appWindow = desktop ? getCurrentWindow() : null;
+// macOS 设置窗口用原生红绿灯（Overlay 标题栏叠在左上角），自绘按钮只留给 Windows；
+// WKWebView 的 UA 含 "Mac OS X"，Windows WebView2 含 "Windows NT"，足够区分两端。
+const nativeWindowControls =
+  typeof navigator !== "undefined" && navigator.userAgent.includes("Mac OS X");
 const settings = ref<WorkspaceSettings>({
   port: 17890,
   autostart: true,
@@ -236,6 +240,7 @@ onBeforeUnmount(() => {
   <div class="config-app">
     <header
       class="titlebar"
+      :class="{ 'titlebar-native-controls': nativeWindowControls }"
       @mousedown="startTitleBarDrag"
       @dblclick="handleTitleBarDoubleClick"
     >
@@ -253,7 +258,7 @@ onBeforeUnmount(() => {
             :name="theme === 'dark' ? 'sun' : 'moon'"
             :size="15"
           /></button
-        ><template v-if="desktop"
+        ><template v-if="desktop && !nativeWindowControls"
           ><button
             class="icon-btn"
             aria-label="最小化"
@@ -360,6 +365,10 @@ onBeforeUnmount(() => {
 }
 .titlebar-brand > .ui-icon {
   color: var(--primary);
+}
+/* macOS：红绿灯叠在标题栏左上角，内容右移让位（红绿灯约占 70px） */
+.titlebar-native-controls {
+  padding-left: 80px;
 }
 .config-body {
   flex: 1;

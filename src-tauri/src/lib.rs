@@ -529,6 +529,31 @@ async fn set_theme(state: State<'_, AppState>, theme: String) -> Result<(), Stri
     server::set_theme(&state.core, &theme).map_err(|e| e.message)
 }
 
+/// 设置窗口（label = "main"）改为代码创建：窗口装饰在不同平台上形态不同，
+/// 配置文件只能写一份静态值，区分不了。
+/// - Windows / Linux：无边框 + 网页自绘标题栏按钮（原有行为）；
+/// - macOS：Overlay 标题栏，系统红绿灯叠在窗口左上角，符合平台习惯。
+fn create_settings_window(app: &tauri::App) -> tauri::Result<()> {
+    let builder = tauri::WebviewWindowBuilder::new(
+        app,
+        "main",
+        tauri::WebviewUrl::App("config.html".into()),
+    )
+    .title("Agents PM Tool")
+    .inner_size(520.0, 680.0)
+    .min_inner_size(420.0, 480.0)
+    .center()
+    .visible(false);
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.decorations(false);
+    builder.build()?;
+    Ok(())
+}
+
 /// 系统托盘：打开设置 / 打开网页 / 退出（停止服务）
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
@@ -587,6 +612,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            create_settings_window(app)?;
             setup_tray(app)?;
             let data_dir = paths::data_dir().map_err(|e| {
                 eprintln!("数据目录初始化失败：{e}");

@@ -10,21 +10,6 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
-    "windows": [
-      {
-        "title": "Agents PM Tool",
-        "url": "config.html",
-        "width": 520,
-        "height": 680,
-        "minWidth": 420,
-        "minHeight": 480,
-        "decorations": false,
-        "transparent": false,
-        "center": true,
-        "visible": false,
-        "theme": null
-      }
-    ],
     "security": {
       "csp": null
     }
