@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-/// 数据目录：发布版 = exe 同目录/data；开发模式 = 项目根/data。
+/// 数据目录：发布版 = exe 同目录/data（macOS 除外，见 release_data_dir）；开发模式 = 项目根/data。
 /// 探测不可写时明确报错，不静默回退（规划 §7）。
 pub fn data_dir() -> std::io::Result<PathBuf> {
     // 显式覆盖（测试 / 无头服务模式）
@@ -20,10 +20,7 @@ pub fn data_dir() -> std::io::Result<PathBuf> {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("data")
     } else {
-        let exe = std::env::current_exe()?;
-        exe.parent()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "无法定位 exe 目录"))?
-            .join("data")
+        release_data_dir()?
     };
 
     std::fs::create_dir_all(&dir)?;
@@ -40,6 +37,25 @@ pub fn data_dir() -> std::io::Result<PathBuf> {
     })?;
     let _ = std::fs::remove_file(&probe);
     Ok(dir)
+}
+
+/// Windows / Linux 发布版：保持「exe 同目录 data/」的便携式布局。
+#[cfg(not(target_os = "macos"))]
+fn release_data_dir() -> std::io::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    Ok(exe
+        .parent()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "无法定位 exe 目录"))?
+        .join("data"))
+}
+
+/// macOS 发布版：可执行文件在 .app 包内（Contents/MacOS/），包目录签名后即只读，
+/// 数据必须落到用户目录 `~/Library/Application Support/agents-pm-tool/data`。
+#[cfg(target_os = "macos")]
+fn release_data_dir() -> std::io::Result<PathBuf> {
+    dirs::data_dir()
+        .map(|base| base.join("agents-pm-tool").join("data"))
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "无法定位用户数据目录"))
 }
 
 pub fn db_path(data: &std::path::Path) -> PathBuf {

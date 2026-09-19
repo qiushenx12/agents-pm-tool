@@ -53,9 +53,9 @@ flowchart LR
 
 开发环境需要：
 
-- Windows 10/11 与 WebView2；
+- Windows 10/11（含 WebView2）或 macOS 11+；
 - Node.js 20+；
-- Rust stable（Windows MSVC 工具链）；
+- Rust stable（Windows 用 MSVC 工具链，macOS 需 Xcode 命令行工具）；
 - Python 3（用于项目提供的启动与正式打包脚本）。
 
 安装依赖并启动开发模式：
@@ -187,7 +187,8 @@ node pm-cli-skill/bin/pm-cli.mjs projects
 运行数据位于：
 
 - 开发模式：`<项目根目录>/data/`
-- 发布版本：`<主程序所在目录>/data/`
+- 发布版本（Windows）：`<主程序所在目录>/data/`
+- 发布版本（macOS）：`~/Library/Application Support/agents-pm-tool/data/`（可执行文件在 .app 包内，包目录签名后只读，数据落在用户目录）
 
 目录内容包括：
 
@@ -215,13 +216,13 @@ npm test                          # 运行 Vitest 测试（含 pm-cli 与安装�
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-Windows 正式打包使用：
+正式打包使用（Windows 与 macOS 均可）：
 
 ```powershell
 python build.py
 ```
 
-该脚本会同步项目版本、构建 NSIS 安装包，并在人工确认测试通过后记录发布。安装包位于 `src-tauri/target/release/bundle/nsis/`，确认发布后的归档位于 `src-tauri/release-bundle/nsis/`。
+该脚本会同步项目版本、构建当前平台的安装包（Windows 为 NSIS，macOS 为 DMG），并在人工确认测试通过后记录发布。安装包位于 `src-tauri/target/release/bundle/<nsis|dmg>/`，确认发布后的归档位于 `src-tauri/release-bundle/<nsis|dmg>/`。macOS 构建默认按当前机器架构产出（Apple Silicon 为 aarch64），未签名的 DMG 首次打开需在「系统设置 → 隐私与安全性」中放行。
 
 `build.py` 和 `dev.py` 都会核对 `package.json` 与 `package-lock.json` 的内容指纹，**依赖清单变过就自动重装**（优先 `npm ci`），不需要你记着手动跑 `npm ci`。所以换机器、拉取到新增依赖的提交后，直接运行脚本即可。
 
@@ -251,7 +252,7 @@ agents-pm-tool/
 ├─ docs/                 # 开发规划、验收与评审记录
 ├─ scripts/              # 前端构建脚本
 ├─ dev.py                # 开发环境检查与启动入口
-└─ build.py              # Windows 正式打包脚本
+└─ build.py              # 正式打包脚本（Windows NSIS / macOS DMG）
 ```
 
 更完整的设计背景与阶段记录参见 [`docs/development-plan.md`](docs/development-plan.md)。

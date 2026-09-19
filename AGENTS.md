@@ -33,7 +33,7 @@ rg --files -g "AGENTS.md" -g "!node_modules" -g "!src-tauri/target"
 
 工作区可能已有用户的未提交修改。不要覆盖、回退或格式化无关文件；只修改任务需要的内容。尤其不要使用 `git reset --hard`、`git checkout -- <file>` 等破坏性命令。
 
-本项目主要在 Windows 和 PowerShell 下开发。文件写入优先使用补丁式修改，搜索优先使用 `rg`。
+本项目支持 Windows 与 macOS（打包分别为 NSIS / DMG），Windows 下主要用 PowerShell 开发。文件写入优先使用补丁式修改，搜索优先使用 `rg`。
 
 ## 3. 常用命令
 
@@ -84,7 +84,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - Rust、数据库、API、CLI：执行 `cargo test --manifest-path src-tauri/Cargo.toml`；涉及前后端 DTO 时同时执行前端构建和测试。
 - 打包相关：先执行 `npm run build`，只有用户明确要求正式打包时才运行 `python build.py`。
 
-`python build.py` 是 Windows 正式发布脚本，会同步多个版本文件、构建 NSIS 安装包，并询问是否将版本记录为已发布。它会改变发布状态，不是普通的只读构建命令，不要为了“验证一下”随意运行。
+`python build.py` 是正式发布脚本（Windows 打 NSIS、macOS 打 DMG），会同步多个版本文件、构建安装包，并询问是否将版本记录为已发布。它会改变发布状态，不是普通的只读构建命令，不要为了“验证一下”随意运行。
 
 `build.py` 与 `dev.py` 启动时都会核对 **package.json + package-lock.json 的内容指纹**（标记写在 `node_modules/.pm-deps-stamp`），指纹不一致才重装依赖，不一致时优先 `npm ci`、失败回退 `npm install`。**不要退回「node_modules 目录存在就跳过安装」**：依赖清单新增包时旧目录里没有它，检查会通过、跳过安装，随后 `vue-tsc` 在打包阶段抛出一堆 `Cannot find module 'node:...'`（加 `@types/node` 那次就这样在另一台机器上炸过）。自己手工删过 `node_modules` 里的东西后，直接重跑脚本即可自愈。
 
@@ -278,7 +278,8 @@ SQLite 连接启用了 WAL、外键和 5 秒 busy timeout。多步一致性操�
 数据目录规则：
 
 - Debug：仓库根目录 `data/`
-- Release：主程序所在目录的 `data/`
+- Release（Windows / Linux）：主程序所在目录的 `data/`
+- Release（macOS）：`~/Library/Application Support/agents-pm-tool/data/`（.app 包内只读，不能放包内）
 - 测试/无头模式可通过 `PM_DATA_DIR` 覆盖
 
 关键文件：

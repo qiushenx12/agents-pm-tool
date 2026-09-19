@@ -505,10 +505,19 @@ fn open_directory(path: &std::path::Path) -> ApiResult<()> {
         .map_err(ApiError::internal)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn open_directory(path: &std::path::Path) -> ApiResult<()> {
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(ApiError::internal)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn open_directory(_path: &std::path::Path) -> ApiResult<()> {
     Err(ApiError::unprocessable(
-        "一键打开目录目前仅支持 Windows 桌面版",
+        "一键打开目录目前仅支持 Windows 与 macOS 桌面版",
     ))
 }
 

@@ -1,10 +1,10 @@
-"""Agents PM Tool 正式打包脚本（Windows / NSIS）。
+"""Agents PM Tool 正式打包脚本（Windows / NSIS，macOS / DMG）。
 
 功能与 cc-launcher/build.py 对齐：
 - version.json 驱动的版本管理（发布后自动递增 patch，0.0.9 → 0.1.0）
 - 版本号同步 package.json / package-lock.json / tauri.conf.json / Cargo.toml / Cargo.lock / pm-cli-skill/VERSION
 - npm run tauri build（beforeBuildCommand = npm run build，只构建前端；pm-cli 是内嵌的 Node 脚本，无需单独编译）
-- 产物归档到 src-tauri/release-bundle/nsis/，bundle 目录里保留历史安装包
+- 产物归档到 src-tauri/release-bundle/<nsis|dmg>/，bundle 目录里保留历史安装包
 - 打包完成后交互确认测试是否通过，通过则记录为已发布
 
 注意：Cargo.lock 在 .gitignore 里（binary 项目惯例可提交，本项目选择忽略），
@@ -33,8 +33,27 @@ VERSION_FILE = PROJECT_DIR / "version.json"
 DEFAULT_VERSION = "1.0.0"
 VERSION_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 PACKAGE_NAME = "agents-pm-tool"  # Cargo.toml [package].name
-PLATFORM_KEY = "windows"  # 本项目只打 Windows
-PLATFORM_LABEL = "Windows"
+
+# 平台分派：打包产物形态（扩展名 / bundle 子目录 / 归档目录）按平台隔离，
+# Windows 的 NSIS 流程不受影响。
+if sys.platform == "win32":
+    PLATFORM_KEY = "windows"
+    PLATFORM_LABEL = "Windows"
+    ARTIFACT_SUFFIX = "-setup.exe"  # 当前版本安装包命名后缀
+    ARTIFACT_GLOB = "*.exe"
+    BUNDLE_SUBDIR = "nsis"
+elif sys.platform == "darwin":
+    PLATFORM_KEY = "macos"
+    PLATFORM_LABEL = "macOS"
+    ARTIFACT_SUFFIX = ".dmg"
+    ARTIFACT_GLOB = "*.dmg"
+    BUNDLE_SUBDIR = "dmg"
+else:
+    PLATFORM_KEY = None
+    PLATFORM_LABEL = None
+    ARTIFACT_SUFFIX = None
+    ARTIFACT_GLOB = None
+    BUNDLE_SUBDIR = None
 
 
 class VersionStateError(ValueError):
@@ -352,15 +371,17 @@ def load_product_name() -> str:
 
 
 def bundle_dir() -> Path:
-    return PROJECT_DIR / "src-tauri" / "target" / "release" / "bundle" / "nsis"
+    return PROJECT_DIR / "src-tauri" / "target" / "release" / "bundle" / BUNDLE_SUBDIR
 
 
 def archive_dir() -> Path:
-    return PROJECT_DIR / "src-tauri" / "release-bundle" / "nsis"
+    return PROJECT_DIR / "src-tauri" / "release-bundle" / BUNDLE_SUBDIR
 
 
 def is_current_artifact(filename: str, product_name: str, version: str) -> bool:
-    return filename.startswith(f"{product_name}_{version}_") and filename.endswith("-setup.exe")
+    return filename.startswith(f"{product_name}_{version}_") and filename.endswith(
+        ARTIFACT_SUFFIX
+    )
 
 
 def restore_archived_artifacts() -> int:
@@ -371,7 +392,7 @@ def restore_archived_artifacts() -> int:
     dst = bundle_dir()
     dst.mkdir(parents=True, exist_ok=True)
     restored = 0
-    for archived in arc.glob("*.exe"):
+    for archived in arc.glob(ARTIFACT_GLOB):
         target = dst / archived.name
         if not target.exists():
             shutil.copy2(archived, target)
@@ -397,16 +418,16 @@ def run_build(version: str, product_name: str) -> bool:
 
     bundle_dir().mkdir(parents=True, exist_ok=True)
     archived_names = {
-        artifact.name for artifact in archive_dir().glob("*.exe")
+        artifact.name for artifact in archive_dir().glob(ARTIFACT_GLOB)
     }
     # 已归档的历史包不需要在构建前再次复制到 bundle；构建完成后统一恢复即可。
     # 这里只备份尚未归档的当前版本包，以便构建失败时保留它。
     existing = [
         artifact
-        for artifact in bundle_dir().glob("*.exe")
+        for artifact in bundle_dir().glob(ARTIFACT_GLOB)
         if artifact.name not in archived_names
     ]
-    print(f"正在打包 Agents PM Tool {version}（Windows NSIS）……")
+    print(f"正在打包 Agents PM Tool {version}（{PLATFORM_LABEL}）……")
 
     with tempfile.TemporaryDirectory(prefix="agents-pm-tool-installer-history-") as backup:
         backup_path = Path(backup)
@@ -436,7 +457,7 @@ def run_build(version: str, product_name: str) -> bool:
     if kept:
         print(f"已保留 {kept} 个历史安装包。")
     if result.returncode != 0:
-        print(f"\nWindows 版本 {version} 打包失败；版本号不会递增。")
+        print(f"\n{PLATFORM_LABEL} 版本 {version} 打包失败；版本号不会递增。")
         return False
     return True
 
@@ -446,7 +467,7 @@ def find_built_artifacts(version: str, product_name: str) -> list[Path]:
     if not bd.exists():
         return []
     return sorted(
-        p for p in bd.glob("*.exe") if is_current_artifact(p.name, product_name, version)
+        p for p in bd.glob(ARTIFACT_GLOB) if is_current_artifact(p.name, product_name, version)
     )
 
 
@@ -501,8 +522,8 @@ def pause_on_error() -> None:
 
 
 def main() -> int:
-    if sys.platform != "win32":
-        print(f"当前系统不支持正式打包（仅 Windows）：{sys.platform}")
+    if PLATFORM_KEY is None:
+        print(f"当前系统不支持正式打包（仅 Windows / macOS）：{sys.platform}")
         pause_on_error()
         return 1
 

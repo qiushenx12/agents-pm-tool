@@ -40,6 +40,20 @@ interface RunResult {
 /** 每个用例都用一个独立的用户级配置目录，避免碰到开发机真实的 cli.json 与运行信息。 */
 const sandboxHome = mkdtempSync(path.join(tmpdir(), "pm-cli-home-"));
 
+/**
+ * 子进程里 userConfigDir 的平台规则（与 pm-cli.mjs 保持一致）：
+ * Windows 用 APPDATA，macOS 用 ~/Library/Application Support，Linux 用 XDG_CONFIG_HOME 或 ~/.config。
+ * 测试不能假定 Windows 布局，否则在 macOS 上清不掉/找不到配置，用例互相污染。
+ */
+const userConfigDir = path.join(
+  process.platform === "darwin"
+    ? path.join(sandboxHome, "Library", "Application Support")
+    : process.platform === "win32"
+      ? sandboxHome // APPDATA 已指向 sandboxHome
+      : (process.env.XDG_CONFIG_HOME ?? path.join(sandboxHome, ".config")),
+  "agents-pm-tool",
+);
+
 function runCli(
   script: string,
   args: string[],
@@ -132,7 +146,7 @@ const emptyDir = (prefix: string) => mkdtempSync(path.join(tmpdir(), prefix));
 
 afterEach(() => {
   // 清掉可能写入的配置，避免用例之间互相影响连接来源判定。
-  const configFile = path.join(sandboxHome, "agents-pm-tool", "cli.json");
+  const configFile = path.join(userConfigDir, "cli.json");
   if (existsSync(configFile)) {
     writeFileSync(configFile, "{}\n", "utf8");
   }
@@ -253,7 +267,7 @@ describe("连接发现", () => {
   it("用户级运行信息：应用写出的那一份优先于旧版 skill 目录旁的 data/", async () => {
     const stub = await startStub();
     const port = Number(new URL(stub.base).port);
-    const configDir = path.join(sandboxHome, "agents-pm-tool");
+    const configDir = userConfigDir;
     mkdirSync(configDir, { recursive: true });
     writeFileSync(
       path.join(configDir, "runtime.json"),
@@ -270,7 +284,7 @@ describe("连接发现", () => {
   });
 
   it("用户配置盖住了本机运行信息时，doctor 要点明端口不一致", async () => {
-    const configDir = path.join(sandboxHome, "agents-pm-tool");
+    const configDir = userConfigDir;
     mkdirSync(configDir, { recursive: true });
     // 配置指向一个没人监听的端口，运行信息里是另一个端口
     writeFileSync(
