@@ -826,15 +826,17 @@ th:focus-within .column-menu {
   border: 1px solid var(--card);
   border-radius: 5px;
   padding: 0;
+  text-decoration: none;
+  cursor: pointer;
+  /* .attachment-cell 整体 pointer-events:none 让点击穿透到单元格（选中/拖放/粘贴），
+     预览图标本身恢复接收鼠标事件，单击预览/下载才能生效。 */
+  pointer-events: auto;
 }
 .attachment-preview:first-child {
   margin-left: 0;
 }
-button.attachment-preview {
-  cursor: pointer;
-}
-button.attachment-preview:hover,
-button.attachment-preview:focus-visible {
+.attachment-preview:hover,
+.attachment-preview:focus-visible {
   z-index: 1;
   color: var(--primary);
   border-color: var(--primary);

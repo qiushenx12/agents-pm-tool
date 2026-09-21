@@ -973,11 +973,16 @@ defineExpose({ reveal });
                             :src="api.attachmentUrl(attachment.id)"
                             :alt="attachment.filename"
                           /><UiIcon v-else name="video" :size="14" /></button
-                        ><span
+                        ><a
                           v-else
                           class="attachment-preview attachment-preview-file"
-                          :title="attachment.filename"
-                          ><UiIcon name="file" :size="14" /></span
+                          :href="api.attachmentUrl(attachment.id)"
+                          :download="attachment.filename"
+                          :title="'下载：' + attachment.filename"
+                          :aria-label="'下载：' + attachment.filename"
+                          @click.stop
+                          @dblclick.stop
+                          ><UiIcon name="file" :size="14" /></a
                       ></template
                       ><span
                         v-if="
