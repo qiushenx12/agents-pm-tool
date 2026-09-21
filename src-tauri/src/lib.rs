@@ -548,10 +548,10 @@ fn create_settings_window(app: &tauri::App) -> tauri::Result<()> {
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true)
-        // Overlay 的红绿灯默认按标准 28px 标题栏就位，而我们的自绘标题栏高 42px，
-        // 会偏高约 5px。实测此 API 的 y 与灯位反向（灯中心 ≈ 25.75 − y，默认 y≈10），
-        // 取 4.75 与标题栏内容垂直居中对齐（x 保持默认）。
-        .traffic_light_position(tauri::LogicalPosition::new(10.0, 4.75));
+        // Overlay 的红绿灯默认按标准 28px 标题栏就位（y≈18），而我们的自绘标题栏
+        // 高 42px，默认会偏高约 5px。实测回归：灯中心 ≈ y − 2.25（按钮框高约 14pt），
+        // 居中需中心 21 → y = 23.25（x 保持默认）。
+        .traffic_light_position(tauri::LogicalPosition::new(10.0, 23.25));
     #[cfg(not(target_os = "macos"))]
     let builder = builder.decorations(false);
     builder.build()?;
