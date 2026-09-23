@@ -6,6 +6,8 @@ import UiDialog from "@/shared/UiDialog.vue";
 import { useSavedViewStore } from "../stores/savedViewStore";
 import { askConfirm, errorText, notify } from "@/shared/feedback";
 const saved = useSavedViewStore();
+defineProps<{ mode: "table" | "graph" }>();
+const emit = defineEmits<{ "update:mode": [mode: "table" | "graph"] }>();
 const dialog = ref<"save" | "rename" | null>(null),
   name = ref(""),
   targetId = ref(""),
@@ -57,14 +59,17 @@ function update() {
 }
 </script>
 <template>
-  <div class="view-tabs saved-view-bar">
+  <div class="view-tabs saved-view-bar" role="tablist" aria-label="任务视图">
     <UiPopover :width="300" label="筛选方案"
       ><template #trigger="{ toggle, open }"
         ><button
-          class="view-tab view-selector active"
+          class="view-tab view-selector"
+          :class="{ active: mode === 'table' }"
+          role="tab"
+          :aria-selected="mode === 'table'"
           :aria-expanded="open"
           aria-label="切换筛选方案"
-          @click="toggle"
+          @click="emit('update:mode', 'table'); toggle()"
         >
           <UiIcon name="grid" :size="15" /><span>{{
             saved.active?.name || "任务表"
@@ -134,12 +139,20 @@ function update() {
         </button>
       </template></UiPopover
     >
-    <span v-if="saved.dirty" class="view-dirty">已修改</span
-    ><button v-if="saved.dirty" class="text-button" @click="update">
+    <span v-if="mode === 'table' && saved.dirty" class="view-dirty">已修改</span
+    ><button v-if="mode === 'table' && saved.dirty" class="text-button" @click="update">
       更新方案
     </button>
-    <button class="btn btn-ghost btn-sm save-view-button" @click="openSave">
-      <UiIcon name="plus" :size="13" />保存方案
+    <button
+      class="view-tab graph-view-tab"
+      :class="{ active: mode === 'graph' }"
+      type="button"
+      role="tab"
+      aria-label="关联图"
+      :aria-selected="mode === 'graph'"
+      @click="emit('update:mode', 'graph')"
+    >
+      <UiIcon name="git" :size="15" />关联图
     </button>
   </div>
   <UiDialog

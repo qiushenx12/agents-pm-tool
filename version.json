@@ -1,6 +1,18 @@
 {
   "schemaVersion": 1,
   "currentVersion": "1.0.0",
-  "published": false,
-  "releases": []
+  "published": true,
+  "releases": [
+    {
+      "version": "1.0.0",
+      "publishedAt": "2026-09-23T11:50:16+08:00",
+      "architecture": "x64",
+      "artifacts": [
+        {
+          "path": "src-tauri/release-bundle/nsis/Agents PM Tool_1.0.0_x64-setup.exe",
+          "size": 4647819
+        }
+      ]
+    }
+  ]
 }

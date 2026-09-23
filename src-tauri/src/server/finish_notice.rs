@@ -93,6 +93,8 @@ mod tests {
             position: 1.0,
             attachment_count: 0,
             owner_user_id: None,
+            predecessor_task_ids: vec![],
+            unlock_task_ids: vec![],
         }
     }
 

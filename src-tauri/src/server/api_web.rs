@@ -21,8 +21,10 @@ pub async fn get_task(
     Path(id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
     let conn = core.db.lock().unwrap();
-    let task = tasks::get(&conn, &id)?;
+    let mut task = tasks::get(&conn, &id)?;
     permissions::require_project(&conn, &user, &task.project)?;
+    let visible = permissions::visible_projects(&conn, &user)?;
+    tasks::retain_visible_dependencies(&conn, std::slice::from_mut(&mut task), visible.as_deref())?;
     Ok(Json(task))
 }
 
@@ -34,10 +36,11 @@ pub async fn page_tasks(
     let mut filter = parse_task_filter(query.as_deref())?;
     let options = crate::db::task_page::PageOptions::parse(query.as_deref())?;
     let conn = core.db.lock().unwrap();
-    filter.visible_projects = permissions::visible_projects(&conn, &user)?;
-    Ok(Json(crate::db::task_page::list_page(
-        &conn, &filter, &options,
-    )?))
+    let visible = permissions::visible_projects(&conn, &user)?;
+    filter.visible_projects = visible.clone();
+    let mut page = crate::db::task_page::list_page(&conn, &filter, &options)?;
+    tasks::retain_visible_dependencies(&conn, &mut page.items, visible.as_deref())?;
+    Ok(Json(page))
 }
 
 // ── 任务 ─────────────────────────────────────────────────
@@ -63,8 +66,11 @@ pub async fn list_tasks(
 ) -> ApiResult<impl IntoResponse> {
     let mut filter = parse_task_filter(q.as_deref())?;
     let conn = core.db.lock().unwrap();
-    filter.visible_projects = permissions::visible_projects(&conn, &user)?;
-    Ok(Json(tasks::list(&conn, &filter)?))
+    let visible = permissions::visible_projects(&conn, &user)?;
+    filter.visible_projects = visible.clone();
+    let mut result = tasks::list(&conn, &filter)?;
+    tasks::retain_visible_dependencies(&conn, &mut result, visible.as_deref())?;
+    Ok(Json(result))
 }
 
 #[derive(Deserialize)]
@@ -75,6 +81,43 @@ pub struct CreateTaskBody {
     pub description: Option<String>,
     pub note: Option<String>,
     pub priority: Option<String>,
+    pub predecessor_task_ids: Option<Vec<String>>,
+    pub unlock_task_ids: Option<Vec<String>>,
+}
+
+pub(super) fn require_related_projects(
+    conn: &rusqlite::Connection,
+    user: &User,
+    ids: &[String],
+) -> ApiResult<()> {
+    for id in ids {
+        let related = tasks::get(conn, id)?;
+        permissions::require_project(conn, user, &related.project)?;
+    }
+    Ok(())
+}
+
+pub(super) fn preserve_hidden_relationships(
+    conn: &rusqlite::Connection,
+    user: &User,
+    current_ids: &[String],
+    submitted_ids: &mut Option<Vec<String>>,
+) -> ApiResult<()> {
+    if user.is_admin() {
+        return Ok(());
+    }
+    let Some(submitted) = submitted_ids.as_mut() else {
+        return Ok(());
+    };
+    for id in current_ids {
+        let related = tasks::get(conn, id)?;
+        if permissions::require_project(conn, user, &related.project).is_err()
+            && !submitted.contains(id)
+        {
+            submitted.push(id.clone());
+        }
+    }
+    Ok(())
 }
 
 pub async fn create_task(
@@ -102,8 +145,24 @@ pub async fn create_task(
     if let Some(value) = body.priority.as_deref() {
         fields.push(("priority", Some(value)));
     }
+    if body.predecessor_task_ids.is_some() {
+        fields.push(("predecessor_task_ids", None));
+    }
+    if body.unlock_task_ids.is_some() {
+        fields.push(("unlock_task_ids", None));
+    }
     permissions::require_fields(&conn, &user, project.trim(), &fields)?;
-    let task = tasks::create(
+    require_related_projects(
+        &conn,
+        &user,
+        body.predecessor_task_ids.as_deref().unwrap_or_default(),
+    )?;
+    require_related_projects(
+        &conn,
+        &user,
+        body.unlock_task_ids.as_deref().unwrap_or_default(),
+    )?;
+    let mut task = tasks::create(
         &mut conn,
         &tasks::NewTask {
             project: project.trim(),
@@ -113,8 +172,12 @@ pub async fn create_task(
             submitter: "用户", // 网页端固定（规划 §4.3）
             owner_user_id: Some(&user.id),
             priority: body.priority.as_deref(),
+            predecessor_task_ids: body.predecessor_task_ids.as_deref().unwrap_or_default(),
+            unlock_task_ids: body.unlock_task_ids.as_deref().unwrap_or_default(),
         },
     )?;
+    let visible = permissions::visible_projects(&conn, &user)?;
+    tasks::retain_visible_dependencies(&conn, std::slice::from_mut(&mut task), visible.as_deref())?;
     drop(conn);
     core.events.notify();
     Ok((StatusCode::CREATED, Json(task)))
@@ -129,13 +192,15 @@ pub struct PatchTaskBody {
     pub note: Option<String>,
     pub status: Option<String>,
     pub priority: Option<String>,
+    pub predecessor_task_ids: Option<Vec<String>>,
+    pub unlock_task_ids: Option<Vec<String>>,
 }
 
 pub async fn patch_task(
     State(core): State<CoreState>,
     Extension(user): Extension<User>,
     Path(id): Path<String>,
-    Json(body): Json<PatchTaskBody>,
+    Json(mut body): Json<PatchTaskBody>,
 ) -> ApiResult<impl IntoResponse> {
     let mut conn = core.db.lock().unwrap();
     let current = tasks::get(&conn, &id)?;
@@ -158,11 +223,35 @@ pub async fn patch_task(
     if let Some(value) = body.priority.as_deref() {
         fields.push(("priority", Some(value)));
     }
+    if body.predecessor_task_ids.is_some() {
+        fields.push(("predecessor_task_ids", None));
+    }
+    if body.unlock_task_ids.is_some() {
+        fields.push(("unlock_task_ids", None));
+    }
     permissions::require_fields(&conn, &user, &current.project, &fields)?;
     if let Some(project) = body.project.as_deref() {
         permissions::require_project(&conn, &user, project)?;
     }
-    let task = tasks::patch(
+    if let Some(ids) = body.predecessor_task_ids.as_deref() {
+        require_related_projects(&conn, &user, ids)?;
+    }
+    if let Some(ids) = body.unlock_task_ids.as_deref() {
+        require_related_projects(&conn, &user, ids)?;
+    }
+    preserve_hidden_relationships(
+        &conn,
+        &user,
+        &current.predecessor_task_ids,
+        &mut body.predecessor_task_ids,
+    )?;
+    preserve_hidden_relationships(
+        &conn,
+        &user,
+        &current.unlock_task_ids,
+        &mut body.unlock_task_ids,
+    )?;
+    let mut task = tasks::patch(
         &mut conn,
         &id,
         &tasks::TaskPatch {
@@ -172,8 +261,12 @@ pub async fn patch_task(
             note: body.note,
             status: body.status,
             priority: body.priority,
+            predecessor_task_ids: body.predecessor_task_ids,
+            unlock_task_ids: body.unlock_task_ids,
         },
     )?;
+    let visible = permissions::visible_projects(&conn, &user)?;
+    tasks::retain_visible_dependencies(&conn, std::slice::from_mut(&mut task), visible.as_deref())?;
     drop(conn);
     if let Some(notice) = super::finish_notice::notice_on_finish(&current, &task) {
         core.finish_notices.notify(notice);
@@ -225,12 +318,14 @@ pub async fn reorder_task(
         let neighbor = tasks::get(&conn, neighbor)?;
         permissions::require_project(&conn, &user, &neighbor.project)?;
     }
-    let task = tasks::reorder(
+    let mut task = tasks::reorder(
         &mut conn,
         &id,
         body.prev_id.as_deref(),
         body.next_id.as_deref(),
     )?;
+    let visible = permissions::visible_projects(&conn, &user)?;
+    tasks::retain_visible_dependencies(&conn, std::slice::from_mut(&mut task), visible.as_deref())?;
     drop(conn);
     core.events.notify();
     Ok(Json(task))

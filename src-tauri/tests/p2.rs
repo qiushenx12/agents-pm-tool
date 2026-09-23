@@ -23,6 +23,8 @@ fn seed(conn: &mut rusqlite::Connection, count: usize) -> Vec<String> {
                     submitter: "用户",
                     owner_user_id: None,
                     priority: None,
+                    predecessor_task_ids: &[],
+                    unlock_task_ids: &[],
                 },
             )
             .unwrap();

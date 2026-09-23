@@ -7,7 +7,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    db::{permissions, users},
+    db::{agent_permissions, permissions, users},
     domain::user::{User, HOST_USER_ID},
     error::{ApiError, ApiResult},
     server::CoreState,
@@ -180,5 +180,54 @@ pub async fn put_permissions(
     Ok(Json(PermissionsResponse {
         user: target,
         permissions: updated,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentPermissionsResponse {
+    pub user: User,
+    pub permissions: agent_permissions::AgentPermissions,
+}
+
+fn may_manage_agent_permissions(actor: &User, target: &User) -> ApiResult<()> {
+    require_admin(actor)?;
+    if target.role != "user" && !actor.is_super_admin() {
+        return Err(ApiError::forbidden("仅超级管理员可以调整管理员的 Agent 权限"));
+    }
+    Ok(())
+}
+
+pub async fn get_agent_permissions(
+    State(core): State<CoreState>,
+    Extension(actor): Extension<User>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<AgentPermissionsResponse>> {
+    let conn = core.db.lock().unwrap();
+    let target = users::get(&conn, &id)?;
+    may_manage_agent_permissions(&actor, &target)?;
+    Ok(Json(AgentPermissionsResponse {
+        permissions: agent_permissions::get(&conn, &id)?,
+        user: target,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PutAgentPermissionsBody {
+    pub permissions: agent_permissions::AgentPermissions,
+}
+
+pub async fn put_agent_permissions(
+    State(core): State<CoreState>,
+    Extension(actor): Extension<User>,
+    Path(id): Path<String>,
+    Json(body): Json<PutAgentPermissionsBody>,
+) -> ApiResult<Json<AgentPermissionsResponse>> {
+    let conn = core.db.lock().unwrap();
+    let target = users::get(&conn, &id)?;
+    may_manage_agent_permissions(&actor, &target)?;
+    Ok(Json(AgentPermissionsResponse {
+        permissions: agent_permissions::put(&conn, &id, &body.permissions)?,
+        user: target,
     }))
 }

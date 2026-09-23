@@ -7,7 +7,12 @@ import { useMetaStore } from "@/grid-app/stores/metaStore";
 import { api } from "@/grid-app/api/client";
 import type { Project, Task } from "@/shared/types";
 vi.mock("@/grid-app/api/client", () => ({
-  api: { createTask: vi.fn(), uploadAttachment: vi.fn(), pageTasks: vi.fn() },
+  api: {
+    createTask: vi.fn(),
+    uploadAttachment: vi.fn(),
+    pageTasks: vi.fn(),
+    listTasks: vi.fn().mockResolvedValue([]),
+  },
 }));
 let app: App | undefined,
   pinia: Pinia | undefined,
@@ -101,6 +106,8 @@ it("creates the task only once when retrying an attachment failure in the new-ta
     description: "",
     note: "创建备注",
     priority: "中",
+    predecessor_task_ids: [],
+    unlock_task_ids: [],
   });
   expect(onCreated).not.toHaveBeenCalled();
   expect(document.body.textContent).toContain("任务已创建，部分附件上传失败");

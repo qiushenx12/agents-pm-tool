@@ -1,8 +1,17 @@
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::HashSet;
 
 use crate::domain::idgen;
 use crate::domain::task::{self, Task};
 use crate::error::{ApiError, ApiResult};
+
+fn split_dependency_ids(value: String) -> Vec<String> {
+    value
+        .split(',')
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect()
+}
 
 #[derive(Debug, Default)]
 pub struct TaskFilter {
@@ -39,12 +48,32 @@ pub(super) fn row_to_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
         position: r.get("position")?,
         attachment_count: r.get("attachment_count")?,
         owner_user_id: r.get("owner_user_id")?,
+        predecessor_task_ids: split_dependency_ids(r.get("predecessor_task_ids")?),
+        unlock_task_ids: split_dependency_ids(r.get("unlock_task_ids")?),
     })
 }
 
 pub(super) const SELECT_TASKS: &str = r#"
 SELECT t.*, u.username AS owner_username,
-       (SELECT COUNT(*) FROM attachments a WHERE a.task_id = t.id) AS attachment_count
+       (SELECT COUNT(*) FROM attachments a WHERE a.task_id = t.id) AS attachment_count,
+       COALESCE((
+         SELECT group_concat(predecessor_task_id, ',') FROM (
+           SELECT d.predecessor_task_id
+           FROM task_dependencies d
+           JOIN tasks predecessor ON predecessor.id = d.predecessor_task_id
+           WHERE d.task_id = t.id
+           ORDER BY predecessor.seq
+         )
+       ), '') AS predecessor_task_ids,
+       COALESCE((
+         SELECT group_concat(task_id, ',') FROM (
+           SELECT d.task_id
+           FROM task_dependencies d
+           JOIN tasks unlocked ON unlocked.id = d.task_id
+           WHERE d.predecessor_task_id = t.id
+           ORDER BY unlocked.seq
+         )
+       ), '') AS unlock_task_ids
 FROM tasks t
 LEFT JOIN users u ON u.id = t.owner_user_id
 "#;
@@ -199,6 +228,38 @@ pub fn get(conn: &Connection, id: &str) -> ApiResult<Task> {
     })
 }
 
+/// 从 API 响应中移除用户不可见项目的关联任务 ID，避免关系字段绕过项目可见性。
+pub fn retain_visible_dependencies(
+    conn: &Connection,
+    records: &mut [Task],
+    visible_projects: Option<&[String]>,
+) -> ApiResult<()> {
+    let Some(projects) = visible_projects else {
+        return Ok(());
+    };
+    if projects.is_empty() {
+        for task in records {
+            task.predecessor_task_ids.clear();
+            task.unlock_task_ids.clear();
+        }
+        return Ok(());
+    }
+    let marks = vec!["?"; projects.len()].join(",");
+    let mut statement = conn.prepare(&format!(
+        "SELECT id FROM tasks WHERE project IN ({marks})"
+    ))?;
+    let rows = statement.query_map(rusqlite::params_from_iter(projects.iter()), |row| {
+        row.get::<_, String>(0)
+    })?;
+    let visible_ids = rows.collect::<Result<HashSet<_>, _>>()?;
+    for task in records {
+        task.predecessor_task_ids
+            .retain(|id| visible_ids.contains(id));
+        task.unlock_task_ids.retain(|id| visible_ids.contains(id));
+    }
+    Ok(())
+}
+
 pub struct NewTask<'a> {
     pub project: &'a str,
     pub task_type: &'a str,
@@ -208,10 +269,109 @@ pub struct NewTask<'a> {
     pub owner_user_id: Option<&'a str>,
     /// None 时用默认优先级「中」
     pub priority: Option<&'a str>,
+    pub predecessor_task_ids: &'a [String],
+    pub unlock_task_ids: &'a [String],
+}
+
+fn normalize_dependency_ids(ids: &[String]) -> ApiResult<Vec<String>> {
+    let mut result = Vec::new();
+    for id in ids {
+        let id = id.trim();
+        if id.is_empty() {
+            return Err(ApiError::unprocessable("任务依赖 ID 不能为空"));
+        }
+        if !result.iter().any(|existing| existing == id) {
+            result.push(id.to_string());
+        }
+    }
+    Ok(result)
+}
+
+fn validate_dependency_targets(conn: &Connection, ids: &[String]) -> ApiResult<()> {
+    for id in ids {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1)",
+            [id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(ApiError::unprocessable(format!("关联任务 {id} 不存在"))
+                .with_details(serde_json::json!({ "task_id": id })));
+        }
+    }
+    Ok(())
+}
+
+fn replace_dependencies(
+    conn: &Connection,
+    id: &str,
+    predecessor_task_ids: Option<&[String]>,
+    unlock_task_ids: Option<&[String]>,
+) -> ApiResult<()> {
+    if let Some(predecessors) = predecessor_task_ids {
+        conn.execute("DELETE FROM task_dependencies WHERE task_id=?1", [id])?;
+        for predecessor in predecessors {
+            conn.execute(
+                "INSERT INTO task_dependencies(predecessor_task_id, task_id) VALUES (?1, ?2)",
+                params![predecessor, id],
+            )?;
+        }
+    }
+    if let Some(unlocked) = unlock_task_ids {
+        conn.execute(
+            "DELETE FROM task_dependencies WHERE predecessor_task_id=?1",
+            [id],
+        )?;
+        for task_id in unlocked {
+            conn.execute(
+                "INSERT INTO task_dependencies(predecessor_task_id, task_id) VALUES (?1, ?2)",
+                params![id, task_id],
+            )?;
+        }
+    }
+    let cyclic: bool = conn.query_row(
+        "WITH RECURSIVE reach(start_id, task_id) AS (
+           SELECT predecessor_task_id, task_id FROM task_dependencies
+           UNION
+           SELECT reach.start_id, dependency.task_id
+           FROM reach
+           JOIN task_dependencies dependency
+             ON dependency.predecessor_task_id = reach.task_id
+         )
+         SELECT EXISTS(SELECT 1 FROM reach WHERE start_id = task_id)",
+        [],
+        |row| row.get(0),
+    )?;
+    if cyclic {
+        return Err(ApiError::unprocessable("任务依赖不能形成循环"));
+    }
+    Ok(())
+}
+
+fn unfinished_predecessors(conn: &Connection, id: &str) -> ApiResult<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT predecessor.id
+         FROM task_dependencies dependency
+         JOIN tasks predecessor ON predecessor.id = dependency.predecessor_task_id
+         WHERE dependency.task_id=?1
+           AND predecessor.status NOT IN ('已完成','验收通过')
+         ORDER BY predecessor.seq",
+    )?;
+    let rows = statement.query_map([id], |row| row.get(0))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 /// 校验 + 创建（ID 生成与插入在同一事务，规划 §4.2）
 pub fn create(conn: &mut Connection, n: &NewTask) -> ApiResult<Task> {
+    create_with_status(conn, n, None)
+}
+
+/// Agent 显式获准设置状态时使用；网页创建仍由 create() 固定为「未开始」。
+pub fn create_with_status(
+    conn: &mut Connection,
+    n: &NewTask,
+    requested_status: Option<&str>,
+) -> ApiResult<Task> {
     validate_project_exists(conn, n.project)?;
     if !task::is_valid_task_type(n.task_type) {
         return Err(ApiError::unprocessable(format!(
@@ -227,14 +387,25 @@ pub fn create(conn: &mut Connection, n: &NewTask) -> ApiResult<Task> {
             task::PRIORITIES.join(" / ")
         )));
     }
+    let status = requested_status.unwrap_or("未开始");
+    if !task::is_valid_status(status) {
+        return Err(ApiError::unprocessable(format!(
+            "状态不合法：{status}，合法取值：{}",
+            task::STATUSES.join(" / ")
+        )));
+    }
+    let predecessor_task_ids = normalize_dependency_ids(n.predecessor_task_ids)?;
+    let unlock_task_ids = normalize_dependency_ids(n.unlock_task_ids)?;
+    validate_dependency_targets(conn, &predecessor_task_ids)?;
+    validate_dependency_targets(conn, &unlock_task_ids)?;
 
     let now = task::now_str();
     let tx = conn.transaction()?;
     let (id, seq) = idgen::next_task_id(&tx)?;
     // 新任务排在手动排序末尾：position 取递增的 seq 即可
     tx.execute(
-        "INSERT INTO tasks (id, seq, project, type, description, note, status, priority, submitter, created_at, updated_at, position, owner_user_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, '未开始', ?7, ?8, ?9, ?9, ?2, ?10)",
+        "INSERT INTO tasks (id, seq, project, type, description, note, status, priority, submitter, created_at, finished_at, updated_at, position, owner_user_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?10, ?2, ?12)",
         params![
             id,
             seq,
@@ -242,12 +413,23 @@ pub fn create(conn: &mut Connection, n: &NewTask) -> ApiResult<Task> {
             n.task_type,
             n.description,
             n.note,
+            status,
             priority,
             n.submitter,
             now,
+            task::transition(status, None),
             n.owner_user_id,
         ],
     )?;
+    replace_dependencies(
+        &tx,
+        &id,
+        Some(&predecessor_task_ids),
+        Some(&unlock_task_ids),
+    )?;
+    if status != "未开始" && status != "取消" && !unfinished_predecessors(&tx, &id)?.is_empty() {
+        return Err(ApiError::unprocessable("前置任务尚未完成，暂时不能开始本任务"));
+    }
     tx.commit()?;
     get(conn, &id)
 }
@@ -277,6 +459,8 @@ pub struct TaskPatch {
     pub note: Option<String>,
     pub status: Option<String>,
     pub priority: Option<String>,
+    pub predecessor_task_ids: Option<Vec<String>>,
+    pub unlock_task_ids: Option<Vec<String>>,
 }
 
 /// 网页端全量修改。状态走 transition() 统一入口（完成时间规则 §4.3）。
@@ -310,6 +494,31 @@ pub fn patch(conn: &mut Connection, id: &str, p: &TaskPatch) -> ApiResult<Task> 
             )));
         }
     }
+    let predecessor_task_ids = p
+        .predecessor_task_ids
+        .as_deref()
+        .map(normalize_dependency_ids)
+        .transpose()?;
+    let unlock_task_ids = p
+        .unlock_task_ids
+        .as_deref()
+        .map(normalize_dependency_ids)
+        .transpose()?;
+    if predecessor_task_ids
+        .as_deref()
+        .is_some_and(|ids| ids.iter().any(|candidate| candidate == id))
+        || unlock_task_ids
+            .as_deref()
+            .is_some_and(|ids| ids.iter().any(|candidate| candidate == id))
+    {
+        return Err(ApiError::unprocessable("任务不能依赖或解锁自身"));
+    }
+    if let Some(ids) = predecessor_task_ids.as_deref() {
+        validate_dependency_targets(conn, ids)?;
+    }
+    if let Some(ids) = unlock_task_ids.as_deref() {
+        validate_dependency_targets(conn, ids)?;
+    }
 
     let project = p.project.as_deref().unwrap_or(&current.project);
     let task_type = p.task_type.as_deref().unwrap_or(&current.task_type);
@@ -320,7 +529,8 @@ pub fn patch(conn: &mut Connection, id: &str, p: &TaskPatch) -> ApiResult<Task> 
     let finished_at = task::transition(status, current.finished_at.clone());
     let now = task::now_str();
 
-    conn.execute(
+    let tx = conn.transaction()?;
+    tx.execute(
         "UPDATE tasks SET project = ?2, type = ?3, description = ?4, note = ?5, status = ?6,
             priority = ?7, finished_at = ?8, updated_at = ?9 WHERE id = ?1",
         params![
@@ -335,6 +545,26 @@ pub fn patch(conn: &mut Connection, id: &str, p: &TaskPatch) -> ApiResult<Task> 
             now
         ],
     )?;
+    replace_dependencies(
+        &tx,
+        id,
+        predecessor_task_ids.as_deref(),
+        unlock_task_ids.as_deref(),
+    )?;
+    let starts_task = matches!(current.status.as_str(), "未开始" | "取消")
+        && p
+            .status
+            .as_deref()
+            .is_some_and(|status| status != "未开始" && status != "取消");
+    if starts_task {
+        let unfinished = unfinished_predecessors(&tx, id)?;
+        if !unfinished.is_empty() {
+            return Err(ApiError::unprocessable(
+                "前置任务尚未完成，暂时不能开始本任务",
+            ));
+        }
+    }
+    tx.commit()?;
     get(conn, id)
 }
 
@@ -546,6 +776,8 @@ mod tests {
                 submitter: "用户",
                 owner_user_id: None,
                 priority: None,
+                predecessor_task_ids: &[],
+                unlock_task_ids: &[],
             },
         )
         .unwrap()
@@ -573,6 +805,127 @@ mod tests {
         let b = add(&mut conn, "B");
         assert!(a.position < b.position);
         assert_eq!(manual_order(&conn), ["A", "B"]);
+    }
+
+    #[test]
+    fn dependencies_are_bidirectional_and_block_start_until_complete() {
+        let mut conn = db::open_memory().unwrap();
+        let predecessor = add(&mut conn, "前置");
+        let task = add(&mut conn, "当前");
+        let unlocked = add(&mut conn, "后续");
+
+        let linked = patch(
+            &mut conn,
+            &task.id,
+            &TaskPatch {
+                predecessor_task_ids: Some(vec![predecessor.id.clone()]),
+                unlock_task_ids: Some(vec![unlocked.id.clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(linked.predecessor_task_ids, [predecessor.id.clone()]);
+        assert_eq!(linked.unlock_task_ids, [unlocked.id.clone()]);
+        assert_eq!(get(&conn, &predecessor.id).unwrap().unlock_task_ids, [task.id.clone()]);
+        assert_eq!(get(&conn, &unlocked.id).unwrap().predecessor_task_ids, [task.id.clone()]);
+
+        let error = patch(
+            &mut conn,
+            &task.id,
+            &TaskPatch {
+                status: Some("进行中".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "validation_failed");
+        assert!(error.message.contains("前置任务尚未完成"));
+        assert_eq!(get(&conn, &task.id).unwrap().status, "未开始");
+        assert!(patch(
+            &mut conn,
+            &task.id,
+            &TaskPatch {
+                status: Some("已完成".into()),
+                ..Default::default()
+            },
+        )
+        .is_err(), "不能通过直接跳到完成状态绕过前置任务");
+
+        patch(
+            &mut conn,
+            &predecessor.id,
+            &TaskPatch {
+                status: Some("已完成".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            patch(
+                &mut conn,
+                &task.id,
+                &TaskPatch {
+                    status: Some("进行中".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .status,
+            "进行中"
+        );
+    }
+
+    #[test]
+    fn create_with_status_rolls_back_when_predecessor_is_unfinished() {
+        let mut conn = db::open_memory().unwrap();
+        let predecessor = add(&mut conn, "前置未完成");
+        let ids = vec![predecessor.id.clone()];
+        let before: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0)).unwrap();
+        let result = create_with_status(&mut conn, &NewTask {
+            project: "default-project",
+            task_type: "优化",
+            description: "不能提前开始",
+            note: "",
+            submitter: "Agent",
+            owner_user_id: Some("host"),
+            priority: None,
+            predecessor_task_ids: &ids,
+            unlock_task_ids: &[],
+        }, Some("进行中"));
+        assert_eq!(result.unwrap_err().code, "validation_failed");
+        let after: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0)).unwrap();
+        assert_eq!(after, before, "失败创建不能留下任务或依赖关系");
+    }
+
+    #[test]
+    fn dependency_cycles_are_rejected_and_deletion_cleans_links() {
+        let mut conn = db::open_memory().unwrap();
+        let a = add(&mut conn, "A");
+        let b = add(&mut conn, "B");
+        patch(
+            &mut conn,
+            &a.id,
+            &TaskPatch {
+                unlock_task_ids: Some(vec![b.id.clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let error = patch(
+            &mut conn,
+            &b.id,
+            &TaskPatch {
+                unlock_task_ids: Some(vec![a.id.clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "validation_failed");
+        assert!(get(&conn, &b.id).unwrap().unlock_task_ids.is_empty());
+
+        remove(&conn, &b.id).unwrap();
+        assert!(get(&conn, &a.id).unwrap().unlock_task_ids.is_empty());
     }
 
     #[test]

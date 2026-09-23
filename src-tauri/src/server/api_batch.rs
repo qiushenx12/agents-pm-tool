@@ -110,6 +110,8 @@ pub async fn batch_tasks(
                             priority: patch.priority.clone(),
                             description: None,
                             note: None,
+                            predecessor_task_ids: None,
+                            unlock_task_ids: None,
                         },
                     )
                     .map(|task| {
@@ -153,6 +155,16 @@ pub async fn batch_tasks(
                     message: error.message,
                 }),
             }),
+        }
+    }
+    let visible = permissions::visible_projects(&conn, &user)?;
+    for item in &mut results {
+        if let Some(task) = item.task.as_mut() {
+            tasks::retain_visible_dependencies(
+                &conn,
+                std::slice::from_mut(task),
+                visible.as_deref(),
+            )?;
         }
     }
     drop(conn);

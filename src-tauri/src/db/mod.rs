@@ -1,3 +1,4 @@
+pub mod agent_permissions;
 pub mod attachments;
 pub mod permissions;
 pub mod projects;
@@ -13,7 +14,7 @@ use rusqlite::Connection;
 
 use crate::error::ApiResult;
 
-const USER_VERSION: i32 = 11;
+const USER_VERSION: i32 = 13;
 
 fn configure(conn: &Connection) -> ApiResult<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -33,6 +34,8 @@ fn configure(conn: &Connection) -> ApiResult<()> {
 /// v9：历史任务回填主机归属；新任务由创建入口写入实际 owner_user_id
 /// v10：user_view_state（按用户保存的分组/排序/筛选，供网页端与应用内窗口共用）
 /// v11：tasks 增加 priority（高/中/低，默认中；含 CHECK，新列按 NOT NULL DEFAULT 追加）
+/// v12：task_dependencies（前置任务与解锁任务的规范化关系）
+/// v13：agent_permission_profiles（按用户配置 Agent 能力；缺失行沿用旧版默认权限）
 fn migrate(conn: &Connection) -> ApiResult<()> {
     let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version < 1 {
@@ -179,6 +182,31 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
              PRAGMA user_version = 11;",
         )?;
     }
+    if version < 12 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE IF NOT EXISTS task_dependencies (
+               predecessor_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+               task_id             TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+               PRIMARY KEY (predecessor_task_id, task_id),
+               CHECK (predecessor_task_id <> task_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_task_dependencies_task ON task_dependencies(task_id);
+             PRAGMA user_version = 12;
+             COMMIT;",
+        )?;
+    }
+    if version < 13 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE IF NOT EXISTS agent_permission_profiles (
+               user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+               permissions_json TEXT NOT NULL
+             );
+             PRAGMA user_version = 13;
+             COMMIT;",
+        )?;
+    }
     debug_assert!(version <= USER_VERSION);
     Ok(())
 }
@@ -214,6 +242,14 @@ mod tests {
     fn fresh_database_contains_note_column() {
         let conn = open_memory().unwrap();
         assert!(task_columns(&conn).iter().any(|column| column == "note"));
+        let dependencies_exist: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_dependencies')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(dependencies_exist);
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
@@ -232,7 +268,7 @@ mod tests {
     #[test]
     fn fresh_database_contains_user_tables_and_host_account() {
         let conn = open_memory().unwrap();
-        for table in ["users", "sessions", "user_permissions", "agent_tokens"] {
+        for table in ["users", "sessions", "user_permissions", "agent_tokens", "agent_permission_profiles"] {
             let exists: bool = conn
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
@@ -408,6 +444,41 @@ mod tests {
         );
         conn.execute("UPDATE tasks SET priority='高' WHERE id='legacy-p'", [])
             .unwrap();
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, USER_VERSION);
+    }
+
+    #[test]
+    fn version_eleven_database_gains_empty_dependency_table() {
+        let conn = open_memory().unwrap();
+        conn.execute_batch("DROP TABLE task_dependencies; PRAGMA user_version = 11;")
+            .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM task_dependencies", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, USER_VERSION);
+    }
+
+    #[test]
+    fn version_twelve_database_gains_agent_permissions_with_old_defaults() {
+        let conn = open_memory().unwrap();
+        conn.execute_batch("DROP TABLE agent_permission_profiles; PRAGMA user_version = 12;")
+            .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let profile = agent_permissions::get(&conn, "host").unwrap();
+        assert_eq!(profile, agent_permissions::AgentPermissions::default());
+        assert_eq!(profile.edit_fields, ["status", "priority", "description"]);
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();

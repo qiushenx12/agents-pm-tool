@@ -21,6 +21,7 @@ import TaskDetailDrawer from "./components/TaskDetailDrawer.vue";
 import ProjectOptionPopover from "./components/ProjectOptionPopover.vue";
 import SidebarProjects from "./components/SidebarProjects.vue";
 import TaskGrid from "./components/TaskGrid.vue";
+import TaskRelationGraph from "./components/TaskRelationGraph.vue";
 import AuthScreen from "./components/users/AuthScreen.vue";
 import UserManagementDialog from "./components/users/UserManagementDialog.vue";
 import AgentAccessDialog from "./components/users/AgentAccessDialog.vue";
@@ -45,6 +46,7 @@ const quickCreating = ref(false);
 const currentUser = ref<User | null>(null);
 const authLoading = ref(true);
 const detailTask = ref<Task | null>(null);
+const activeMode = ref<"table" | "graph">("table");
 const desktop = isTauri();
 const theme = ref(currentTheme());
 /** 全局主题传输层：网页端走 HTTP（GET 公开、PUT 需登录） */
@@ -341,10 +343,10 @@ onBeforeUnmount(() => {
             title
           }}</span>
         </div>
-        <SavedViews />
+        <SavedViews v-model:mode="activeMode" />
       </header>
-      <FilterBar @create="showCreate = true" />
-      <BulkActions />
+      <FilterBar v-if="activeMode === 'table'" @create="showCreate = true" />
+      <BulkActions v-if="activeMode === 'table'" />
       <div
         v-if="tasks.error || meta.error"
         class="workspace-error error-banner"
@@ -369,11 +371,18 @@ onBeforeUnmount(() => {
         实时连接暂时中断，正在自动重连；每 10 秒检查一次更新。
       </div>
       <TaskGrid
+        v-if="activeMode === 'table'"
         ref="table"
         :quick-creating="quickCreating"
         @open-detail="detailTask = $event"
         @create="showCreate = true"
         @quick-create="quickCreate"
+      />
+      <TaskRelationGraph
+        v-else
+        :projects="tasks.filters.project"
+        :revision="tasks.externalRevision"
+        @open-detail="detailTask = $event"
       />
     </main>
     <TaskCreateModal
@@ -385,6 +394,7 @@ onBeforeUnmount(() => {
     <TaskDetailDrawer
       v-if="detailTask"
       :task="detailTask"
+      :navigation="activeMode === 'table'"
       @close="detailTask = null"
       @navigate="detailTask = $event"
     />

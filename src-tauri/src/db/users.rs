@@ -362,6 +362,8 @@ mod tests {
                 submitter,
                 owner_user_id: Some(owner),
                 priority: None,
+                predecessor_task_ids: &[],
+                unlock_task_ids: &[],
             },
         )
         .unwrap();

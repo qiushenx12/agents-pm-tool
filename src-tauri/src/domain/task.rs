@@ -11,7 +11,7 @@ pub const STATUSES: [&str; 7] = [
     "验收通过",
     "取消",
 ];
-/// Agent 仅可切到的状态（验收类状态留给用户，规划 §5.4）
+/// 未单独配置权限时 Agent 默认可切到的状态。
 pub const AGENT_STATUSES: [&str; 3] = ["进行中", "待验证", "已完成"];
 pub const SUBMITTERS: [&str; 2] = ["用户", "Agent"];
 /// 优先级：默认「中」；展示颜色高=红、中=黄、低=绿（对齐状态色）
@@ -41,6 +41,12 @@ pub struct Task {
     #[serde(default)]
     pub attachment_count: i64,
     pub owner_user_id: Option<String>,
+    /// 本任务开始前必须完成的任务 ID，按任务序号排序。
+    #[serde(default)]
+    pub predecessor_task_ids: Vec<String>,
+    /// 完成本任务后可解锁的任务 ID，按任务序号排序。
+    #[serde(default)]
+    pub unlock_task_ids: Vec<String>,
 }
 
 /// 当前本地时间，统一 'YYYY-MM-DD HH:MM:SS'
@@ -70,6 +76,11 @@ fn default_priority() -> String {
 
 pub fn is_agent_status(s: &str) -> bool {
     AGENT_STATUSES.contains(&s)
+}
+
+/// 只有明确完成或验收通过才满足后续任务的前置条件；待验证尚未完成验收流程。
+pub fn satisfies_predecessor(status: &str) -> bool {
+    status == "已完成" || status == "验收通过"
 }
 
 pub fn submitter_name(submitter: &str, owner_username: Option<&str>) -> String {
@@ -160,6 +171,9 @@ mod tests {
         assert!(AGENT_STATUSES.iter().all(|s| is_valid_status(s)));
         assert!(!is_agent_status("验收通过"));
         assert!(!is_agent_status("取消"), "取消只能由网页端设置");
+        assert!(satisfies_predecessor("已完成"));
+        assert!(satisfies_predecessor("验收通过"));
+        assert!(!satisfies_predecessor("待验证"));
         assert_eq!(PRIORITIES, ["高", "中", "低"]);
         assert!(is_valid_priority(DEFAULT_PRIORITY));
         assert!(!is_valid_priority("紧急"));

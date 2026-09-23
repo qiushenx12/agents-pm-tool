@@ -15,6 +15,8 @@ import type {
   UserRole,
   UserPermission,
   UserPermissionsResponse,
+  AgentPermissionSettings,
+  AgentPermissionsResponse,
   AgentAccess,
   LocalSkillTarget,
   SkillPayload,
@@ -119,6 +121,8 @@ export const api = {
     description?: string;
     note?: string;
     priority?: Priority;
+    predecessor_task_ids?: string[];
+    unlock_task_ids?: string[];
   }) =>
     request<Task>("/api/web/tasks", {
       method: "POST",
@@ -134,6 +138,8 @@ export const api = {
       note: string;
       status: TaskStatus;
       priority: Priority;
+      predecessor_task_ids: string[];
+      unlock_task_ids: string[];
     }>,
   ) =>
     request<Task>(`/api/web/tasks/${id}`, {
@@ -236,6 +242,15 @@ export const api = {
   putUserPermissions: (id: string, permissions: UserPermission[]) =>
     request<UserPermissionsResponse>(
       `/api/web/users/${encodeURIComponent(id)}/permissions`,
+      { method: "PUT", body: JSON.stringify({ permissions }) },
+    ),
+  getUserAgentPermissions: (id: string) =>
+    request<AgentPermissionsResponse>(
+      `/api/web/users/${encodeURIComponent(id)}/agent-permissions`,
+    ),
+  putUserAgentPermissions: (id: string, permissions: AgentPermissionSettings) =>
+    request<AgentPermissionsResponse>(
+      `/api/web/users/${encodeURIComponent(id)}/agent-permissions`,
       { method: "PUT", body: JSON.stringify({ permissions }) },
     ),
   getAgentAccess: () => request<AgentAccess>("/api/web/me/agent-access"),

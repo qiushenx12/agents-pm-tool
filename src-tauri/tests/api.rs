@@ -337,6 +337,11 @@ async fn agent_help_and_skill_distribution_are_versioned() {
         .unwrap()
         .iter()
         .any(|command| command["path"] == "/api/agent/attachments/{id}"));
+    assert!(help["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|command| command["path"] == "/api/agent/permissions"));
 
     // 文件清单：网页端「选择目录」与安装脚本共用这一份，必须包含全部 skill 文件。
     let payload = app
@@ -448,7 +453,7 @@ async fn agent_help_is_public_but_other_agent_routes_are_not() {
     }
 
     // 其余 Agent 路由仍必须鉴权，避免公开分发入口时顺手放宽了边界。
-    for path in ["/tasks", "/projects"] {
+    for path in ["/tasks", "/projects", "/permissions"] {
         let response = anonymous
             .get(format!("{}/api/agent{path}", app.base))
             .send()
@@ -992,6 +997,136 @@ async fn user_agent_token_ownership_permissions_and_revocation() {
 }
 
 #[tokio::test]
+async fn agent_permissions_default_and_admin_grants_cover_create_patch_and_legacy_routes() {
+    let app = spawn_app().await;
+    let user_task = create_task(&app, false, "用户任务").await;
+    let user_task_id = user_task["id"].as_str().unwrap();
+
+    let default = app.agent(reqwest::Method::GET, "/permissions").send().await.unwrap();
+    assert_eq!(default.status(), 200);
+    let default = default.json::<Value>().await.unwrap();
+    let project = &default["projects"][0];
+    assert_eq!(project["can_create"], true);
+    assert_eq!(project["edit_fields"], json!(["description", "status", "priority"]));
+    assert_eq!(project["allowed_values"]["status"], json!(["进行中", "待验证", "已完成"]));
+    assert_eq!(project["description_scope"], "own_agent");
+
+    let denied_create = app.agent(reqwest::Method::POST, "/tasks")
+        .json(&json!({"project":"default-project","type":"BUG","description":"新任务","note":"未授权"}))
+        .send().await.unwrap();
+    assert_eq!(denied_create.status(), 403);
+    let denied_patch = app.agent(reqwest::Method::PATCH, &format!("/tasks/{user_task_id}"))
+        .json(&json!({"note":"未授权"})).send().await.unwrap();
+    assert_eq!(denied_patch.status(), 403);
+
+    let profile = json!({
+        "task_create": true,
+        "create_fields": ["note","status","priority","predecessor_task_ids","unlock_task_ids"],
+        "edit_fields": ["project","type","description","note","status","priority","predecessor_task_ids","unlock_task_ids"],
+        "status_values": ["未开始","进行中","待验证","已完成","验收未通过","验收通过","取消"],
+        "description_any_task": true
+    });
+    let saved = app.web(reqwest::Method::PUT, "/users/host/agent-permissions")
+        .json(&json!({"permissions":profile})).send().await.unwrap();
+    assert_eq!(saved.status(), 200);
+    assert_eq!(saved.json::<Value>().await.unwrap()["permissions"], profile);
+    let invalid_profile = app.web(reqwest::Method::PUT, "/users/host/agent-permissions")
+        .json(&json!({"permissions": {"task_create":true,"create_fields":["id"],"edit_fields":[],"status_values":[],"description_any_task":false}}))
+        .send().await.unwrap();
+    assert_eq!(invalid_profile.status(), 422);
+
+    let created = app.agent(reqwest::Method::POST, "/tasks")
+        .json(&json!({"project":"default-project","type":"BUG","description":"已授权新任务","note":"可写备注","status":"验收通过","priority":"高"}))
+        .send().await.unwrap();
+    assert_eq!(created.status(), 201);
+    let created = created.json::<Value>().await.unwrap();
+    let created_id = created["id"].as_str().unwrap();
+    assert_eq!(created["status"], "验收通过");
+    assert_eq!(created["note"], "可写备注");
+    assert!(created["finished_at"].as_str().is_some());
+
+    let patched = app.agent(reqwest::Method::PATCH, &format!("/tasks/{user_task_id}"))
+        .json(&json!({"description":"管理员已授权修改用户任务","note":"已更新","predecessor_task_ids":[created_id]}))
+        .send().await.unwrap();
+    assert_eq!(patched.status(), 200);
+    let patched = patched.json::<Value>().await.unwrap();
+    assert_eq!(patched["predecessor_task_ids"], json!([created_id]));
+    assert_eq!(patched["description"], "管理员已授权修改用户任务");
+
+    let legacy = app.agent(reqwest::Method::PATCH, &format!("/tasks/{created_id}/status"))
+        .json(&json!({"status":"取消"})).send().await.unwrap();
+    assert_eq!(legacy.status(), 200);
+    let mut restricted = profile.clone();
+    restricted["edit_fields"] = json!(["note"]);
+    let saved = app.web(reqwest::Method::PUT, "/users/host/agent-permissions")
+        .json(&json!({"permissions":restricted})).send().await.unwrap();
+    assert_eq!(saved.status(), 200);
+    let denied_legacy = app.agent(reqwest::Method::PATCH, &format!("/tasks/{created_id}/status"))
+        .json(&json!({"status":"进行中"})).send().await.unwrap();
+    assert_eq!(denied_legacy.status(), 403);
+    let immutable = app.agent(reqwest::Method::PATCH, &format!("/tasks/{created_id}"))
+        .json(&json!({"submitter":"用户"})).send().await.unwrap();
+    assert!(immutable.status().is_client_error());
+}
+
+#[tokio::test]
+async fn agent_permissions_intersect_ordinary_user_fields_and_values() {
+    let app = spawn_app().await;
+    let (alice, alice_http) = register_user(&app, "alice-agent-grants").await;
+    let id = alice["id"].as_str().unwrap();
+    let web_permissions = json!([
+        {"project":"default-project","field":"project_access","allowed_values":null},
+        {"project":"default-project","field":"task_create","allowed_values":null},
+        {"project":"default-project","field":"type","allowed_values":["BUG"]},
+        {"project":"default-project","field":"description","allowed_values":null},
+        {"project":"default-project","field":"status","allowed_values":["进行中"]}
+    ]);
+    let saved = app.web(reqwest::Method::PUT, &format!("/users/{id}/permissions"))
+        .json(&json!({"permissions":web_permissions})).send().await.unwrap();
+    assert_eq!(saved.status(), 200);
+    let agent_profile = json!({
+        "task_create":true,"create_fields":["note","status","priority"],
+        "edit_fields":["note","status"],
+        "status_values":["进行中","已完成"],"description_any_task":false
+    });
+    let saved = app.web(reqwest::Method::PUT, &format!("/users/{id}/agent-permissions"))
+        .json(&json!({"permissions":agent_profile})).send().await.unwrap();
+    assert_eq!(saved.status(), 200);
+    let ordinary_admin = alice_http.put(format!("{}/api/web/users/{id}/agent-permissions", app.base))
+        .json(&json!({"permissions":agent_profile})).send().await.unwrap();
+    assert_eq!(ordinary_admin.status(), 403);
+    let token = alice_http.post(format!("{}/api/web/me/agent-token", app.base))
+        .send().await.unwrap().json::<Value>().await.unwrap()["token"].as_str().unwrap().to_string();
+    let agent = reqwest::Client::new();
+    let effective = agent.get(format!("{}/api/agent/permissions", app.base))
+        .bearer_auth(&token).send().await.unwrap();
+    assert_eq!(effective.status(), 200);
+    let effective = effective.json::<Value>().await.unwrap();
+    let project = &effective["projects"][0];
+    assert_eq!(project["allowed_values"]["status"], json!(["进行中"]));
+    assert!(!project["create_fields"].as_array().unwrap().contains(&json!("note")));
+    assert!(!project["edit_fields"].as_array().unwrap().contains(&json!("note")));
+
+    let denied = agent.post(format!("{}/api/agent/tasks", app.base)).bearer_auth(&token)
+        .json(&json!({"project":"default-project","type":"BUG","description":"任务","note":"越权"}))
+        .send().await.unwrap();
+    assert_eq!(denied.status(), 403);
+    let denied_status = agent.post(format!("{}/api/agent/tasks", app.base)).bearer_auth(&token)
+        .json(&json!({"project":"default-project","type":"BUG","description":"任务","status":"已完成"}))
+        .send().await.unwrap();
+    assert_eq!(denied_status.status(), 403);
+    let created = agent.post(format!("{}/api/agent/tasks", app.base)).bearer_auth(&token)
+        .json(&json!({"project":"default-project","type":"BUG","description":"任务","status":"进行中"}))
+        .send().await.unwrap();
+    assert_eq!(created.status(), 201);
+    let created = created.json::<Value>().await.unwrap();
+    let task_id = created["id"].as_str().unwrap();
+    let denied_note = agent.patch(format!("{}/api/agent/tasks/{task_id}", app.base)).bearer_auth(&token)
+        .json(&json!({"note":"越权"})).send().await.unwrap();
+    assert_eq!(denied_note.status(), 403);
+}
+
+#[tokio::test]
 async fn host_agent_token_persists_across_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let data_dir = tmp.path().to_path_buf();
@@ -1132,6 +1267,173 @@ async fn web_crud_and_filter() {
         .unwrap();
     let list: Value = res.json().await.unwrap();
     assert!(list.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn task_dependencies_round_trip_and_gate_agent_start() {
+    let app = spawn_app().await;
+    let predecessor = create_task(&app, false, "前置任务").await;
+    let unlocked = create_task(&app, false, "后续任务").await;
+    let predecessor_id = predecessor["id"].as_str().unwrap();
+    let unlocked_id = unlocked["id"].as_str().unwrap();
+
+    let response = app
+        .web(reqwest::Method::POST, "/tasks")
+        .json(&json!({
+            "project": "default-project",
+            "type": "新增需求",
+            "description": "受前置约束的任务",
+            "predecessor_task_ids": [predecessor_id],
+            "unlock_task_ids": [unlocked_id]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201);
+    let task: Value = response.json().await.unwrap();
+    let task_id = task["id"].as_str().unwrap();
+    assert_eq!(task["predecessor_task_ids"], json!([predecessor_id]));
+    assert_eq!(task["unlock_task_ids"], json!([unlocked_id]));
+
+    let predecessor_after: Value = app
+        .web(reqwest::Method::GET, &format!("/tasks/{predecessor_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(predecessor_after["unlock_task_ids"], json!([task_id]));
+    let unlocked_after: Value = app
+        .web(reqwest::Method::GET, &format!("/tasks/{unlocked_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(unlocked_after["predecessor_task_ids"], json!([task_id]));
+
+    let blocked = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{task_id}/status"))
+        .json(&json!({"status": "进行中"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), 422);
+    assert!(blocked.json::<Value>().await.unwrap()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("前置任务尚未完成"));
+
+    let pending_review = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{predecessor_id}"))
+        .json(&json!({"status": "待验证"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(pending_review.status(), 200);
+    let still_blocked = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{task_id}/status"))
+        .json(&json!({"status": "进行中"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(still_blocked.status(), 422);
+
+    let completed = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{predecessor_id}"))
+        .json(&json!({"status": "已完成"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(completed.status(), 200);
+    let started = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{task_id}/status"))
+        .json(&json!({"status": "进行中"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(started.status(), 200);
+
+    let cycle = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{predecessor_id}"))
+        .json(&json!({"predecessor_task_ids": [task_id]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cycle.status(), 422);
+
+    let project = app
+        .web(reqwest::Method::POST, "/projects")
+        .json(&json!({"name": "secret-project"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(project.status(), 201);
+    let secret = app
+        .web(reqwest::Method::POST, "/tasks")
+        .json(&json!({
+            "project": "secret-project",
+            "type": "优化",
+            "description": "不可见关联任务"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(secret.status(), 201);
+    let secret: Value = secret.json().await.unwrap();
+    let secret_id = secret["id"].as_str().unwrap();
+    let relinked = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{task_id}"))
+        .json(&json!({"unlock_task_ids": [unlocked_id, secret_id]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(relinked.status(), 200);
+
+    let (alice, alice_http) = register_user(&app, "dependency-viewer").await;
+    let alice_id = alice["id"].as_str().unwrap();
+    let permissions = app
+        .web(
+            reqwest::Method::PUT,
+            &format!("/users/{alice_id}/permissions"),
+        )
+        .json(&json!({"permissions":[
+            {"project":"default-project","field":"project_access","allowed_values":null},
+            {"project":"default-project","field":"unlock_task_ids","allowed_values":null}
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(permissions.status(), 200);
+    let visible: Value = alice_http
+        .get(format!("{}/api/web/tasks/{task_id}", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(visible["unlock_task_ids"], json!([unlocked_id]));
+    let alice_patch = alice_http
+        .patch(format!("{}/api/web/tasks/{task_id}", app.base))
+        .json(&json!({"unlock_task_ids": [unlocked_id]}))
+        .send()
+        .await
+        .unwrap();
+    let alice_patch_status = alice_patch.status();
+    let alice_patch_body = alice_patch.text().await.unwrap();
+    assert_eq!(alice_patch_status, 200, "{alice_patch_body}");
+    let host_view: Value = app
+        .web(reqwest::Method::GET, &format!("/tasks/{task_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(host_view["unlock_task_ids"], json!([unlocked_id, secret_id]));
 }
 
 // ── 优先级字段（高/中/低，默认中） ──────────────────────

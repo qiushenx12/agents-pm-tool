@@ -5,6 +5,7 @@ import { GROUP_FIELDS, type GroupField } from "@/shared/types";
 import UiIcon from "@/shared/UiIcon.vue";
 import UiPopover from "@/shared/UiPopover.vue";
 import TaskField from "./TaskField.vue";
+import TaskMultiSelect from "./TaskMultiSelect.vue";
 import TaskActions from "./TaskActions.vue";
 import DescriptionEditor from "./DescriptionEditor.vue";
 import AttachmentPreviewDialog from "./AttachmentPreviewDialog.vue";
@@ -32,6 +33,43 @@ const editingTask = ref<Task | null>(null);
 const preview = ref<Attachment | null>(null);
 const editor = ref<InstanceType<typeof DescriptionEditor>>();
 const editorPosition = ref({ left: "0px", top: "0px" });
+const dependencyOptions = ref<Task[]>([]);
+const dependencyOptionsLoading = ref(false);
+async function loadDependencyOptions() {
+  if (dependencyOptionsLoading.value) return;
+  dependencyOptionsLoading.value = true;
+  try {
+    dependencyOptions.value = await api.listTasks();
+  } catch (error) {
+    notify("加载关联任务失败：" + errorText(error), "error");
+  } finally {
+    dependencyOptionsLoading.value = false;
+  }
+}
+async function updateDependencies(
+  task: Task,
+  field: "predecessor_task_ids" | "unlock_task_ids",
+  ids: string[],
+) {
+  try {
+    await tasks.updateTask(task.id, { [field]: ids });
+    void loadDependencyOptions();
+  } catch (error) {
+    notify(errorText(error), "error");
+  }
+}
+function dependencyChoices(
+  task: Task,
+  field: "predecessor_task_ids" | "unlock_task_ids",
+) {
+  const opposite =
+    field === "predecessor_task_ids"
+      ? (task.unlock_task_ids ?? [])
+      : (task.predecessor_task_ids ?? []);
+  return dependencyOptions.value.filter(
+    (candidate) => !opposite.includes(candidate.id),
+  );
+}
 const { page, pages } = storeToRefs(tasks);
 const collapsedGroups = ref(new Set<string>());
 const pageGroups = computed(() => {
@@ -353,6 +391,16 @@ async function select(task: Task, key: string, focus = true) {
     cell(task.id, key)?.focus({ preventScroll: true });
   }
 }
+async function selectDependency(
+  task: Task,
+  key: "predecessor_task_ids" | "unlock_task_ids",
+) {
+  await select(task, key);
+  const trigger = cell(task.id, key)?.querySelector<HTMLButtonElement>(
+    ".dependency-trigger",
+  );
+  if (trigger?.getAttribute("aria-expanded") === "false") trigger.click();
+}
 function cell(id: string, key: string) {
   return root.value?.querySelector<HTMLElement>(
     '[data-task-id="' + CSS.escape(id) + '"][data-column="' + key + '"]',
@@ -402,6 +450,15 @@ function activate(task: Task, key: string) {
     cell(task.id, key)
       ?.querySelector<HTMLButtonElement>(".select-trigger")
       ?.click();
+  else if (
+    key === "predecessor_task_ids" ||
+    key === "unlock_task_ids"
+  ) {
+    void loadDependencyOptions();
+    cell(task.id, key)
+      ?.querySelector<HTMLButtonElement>(".dependency-trigger")
+      ?.click();
+  }
   else emit("open-detail", task);
 }
 function keyboard(e: KeyboardEvent, index: number, key: string) {
@@ -862,10 +919,16 @@ defineExpose({ reveal });
                 @click="
                   column.key === 'description'
                     ? startEdit(task, 'description')
+                    : column.key === 'predecessor_task_ids' ||
+                        column.key === 'unlock_task_ids'
+                      ? selectDependency(task, column.key)
                     : select(task, column.key)
                 "
                 @dblclick="
-                  column.key !== 'description' && activate(task, column.key)
+                  column.key !== 'description' &&
+                  column.key !== 'predecessor_task_ids' &&
+                  column.key !== 'unlock_task_ids' &&
+                  activate(task, column.key)
                 "
                 @keydown="keyboard($event, rowIndex(task.id), column.key)"
                 @dragover="
@@ -918,6 +981,31 @@ defineExpose({ reveal });
                     !tasks.batchBusy
                   "
                 />
+                <template
+                  v-else-if="
+                    column.key === 'predecessor_task_ids' ||
+                    column.key === 'unlock_task_ids'
+                  "
+                >
+                  <TaskMultiSelect
+                    :model-value="task[column.key] ?? []"
+                    :options="dependencyChoices(task, column.key)"
+                    :label="column.label"
+                    :exclude-id="task.id"
+                    :disabled="
+                      !tasks.isCurrentPage ||
+                      tasks.batchBusy ||
+                      !!tasks.pending[task.id]
+                    "
+                    :loading="dependencyOptionsLoading"
+                    field
+                    @open="loadDependencyOptions"
+                    @trigger-click="select(task, column.key, false)"
+                    @update:model-value="
+                      updateDependencies(task, column.key, $event)
+                    "
+                  />
+                </template>
                 <span
                   v-else-if="column.key === 'note'"
                   class="note-cell"

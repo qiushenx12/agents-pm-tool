@@ -96,7 +96,7 @@ type StubHandler = (request: IncomingMessage) => StubOutcome;
 
 interface StubServer {
   base: string;
-  requests: { method: string; url: string; authorization?: string }[];
+  requests: { method: string; url: string; authorization?: string; body: string }[];
 }
 
 const servers: Server[] = [];
@@ -108,11 +108,14 @@ async function startStub(
   },
 ): Promise<StubServer> {
   const requests: StubServer["requests"] = [];
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
     requests.push({
       method: request.method ?? "",
       url: request.url ?? "",
       authorization: request.headers.authorization,
+      body: Buffer.concat(chunks).toString("utf8"),
     });
     const outcome = handler?.(request) ?? fallback;
     if (outcome.binary) {
@@ -321,6 +324,44 @@ describe("连接发现", () => {
 });
 
 describe("HTTP 交互", () => {
+  it("permissions 显示当前有效字段，create/update 传递所有可编辑字段", async () => {
+    const stub = await startStub((request) => request.url === "/api/agent/permissions"
+      ? { json: { projects: [{ project: "demo", can_create: true, create_fields: ["project", "type", "description", "note"], edit_fields: ["note"], allowed_values: { status: ["进行中"] }, description_scope: "own_agent" }] } }
+      : { json: { id: "task-1", status: "进行中" } });
+    const env = remote(stub.base);
+    const permissions = await run(["permissions", "--json"], env);
+    expect(permissions.status).toBe(0);
+    expect(JSON.parse(permissions.stdout).projects[0].edit_fields).toEqual(["note"]);
+    expect(stub.requests.at(-1)?.authorization).toBe("Bearer token");
+
+    const created = await run([
+      "create", "--project", "demo", "--type", "BUG", "--description", "新任务",
+      "--note", "备注", "--status", "进行中", "--priority", "高",
+      "--predecessor-task-ids", "a,b", "--unlock-task-ids", "c", "--json",
+    ], env);
+    expect(created.status).toBe(0);
+    expect(stub.requests.at(-1)?.method).toBe("POST");
+    expect(JSON.parse(stub.requests.at(-1)!.body)).toEqual({
+      project: "demo", type: "BUG", description: "新任务", note: "备注",
+      status: "进行中", priority: "高", predecessor_task_ids: ["a", "b"], unlock_task_ids: ["c"],
+    });
+
+    const updated = await run(["update", "task-1", "--note", "修改", "--predecessor-task-ids", "", "--json"], env);
+    expect(updated.status).toBe(0);
+    expect(stub.requests.at(-1)?.method).toBe("PATCH");
+    expect(stub.requests.at(-1)?.url).toBe("/api/agent/tasks/task-1");
+    expect(JSON.parse(stub.requests.at(-1)!.body)).toEqual({ note: "修改", predecessor_task_ids: [] });
+  });
+
+  it("update 拒绝空修改和不可变字段选项", async () => {
+    const empty = await run(["update", "task-1", "--json"]);
+    expect(empty.status).toBe(2);
+    expect(empty.stderr).toContain("至少需要一个待修改字段");
+    const immutable = await run(["update", "task-1", "--submitter", "用户"]);
+    expect(immutable.status).toBe(2);
+    expect(immutable.stderr).toContain("未知选项");
+  });
+
   it("list 的人类可读输出与 JSON 输出", async () => {
     const stub = await startStub(() => ({
       json: [

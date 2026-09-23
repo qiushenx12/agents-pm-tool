@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { api } from "../api/client";
 import { useMetaStore } from "../stores/metaStore";
 import { useTaskStore } from "../stores/taskStore";
 import UiDialog from "@/shared/UiDialog.vue";
 import UiSelect from "@/shared/UiSelect.vue";
 import UiIcon from "@/shared/UiIcon.vue";
+import TaskMultiSelect from "./TaskMultiSelect.vue";
 import AttachmentUploader from "./AttachmentUploader.vue";
 import { useUploadQueue } from "./useUploadQueue";
 import { typeOptions, priorityOptions } from "@/shared/taskOptions";
@@ -47,10 +48,36 @@ const project = ref(initialProject),
   type = ref<TaskType>("新增需求"),
   priority = ref<Priority>(DEFAULT_PRIORITY),
   description = ref(""),
-  note = ref("");
+  note = ref(""),
+  predecessorTaskIds = ref<string[]>([]),
+  unlockTaskIds = ref<string[]>([]);
 const createdTask = ref<Task | null>(null),
   error = ref(""),
   submitting = ref(false);
+const dependencyOptions = ref<Task[]>([]),
+  dependencyOptionsLoading = ref(false);
+async function loadDependencyOptions() {
+  if (dependencyOptionsLoading.value) return;
+  dependencyOptionsLoading.value = true;
+  try {
+    dependencyOptions.value = await api.listTasks();
+  } catch (e) {
+    notify("加载关联任务失败：" + errorText(e), "error");
+  } finally {
+    dependencyOptionsLoading.value = false;
+  }
+}
+function setPredecessors(ids: string[]) {
+  predecessorTaskIds.value = ids;
+  unlockTaskIds.value = unlockTaskIds.value.filter((id) => !ids.includes(id));
+}
+function setUnlocked(ids: string[]) {
+  unlockTaskIds.value = ids;
+  predecessorTaskIds.value = predecessorTaskIds.value.filter(
+    (id) => !ids.includes(id),
+  );
+}
+onMounted(() => void loadDependencyOptions());
 const projectOptions = computed(() =>
   meta.projects.map((p) => ({ value: p.name, color: p.color })),
 );
@@ -98,6 +125,8 @@ async function close() {
   if (
     (description.value ||
       note.value ||
+      predecessorTaskIds.value.length ||
+      unlockTaskIds.value.length ||
       queue.items.value.length ||
       type.value !== "新增需求" ||
       project.value !== initialProject) &&
@@ -123,6 +152,8 @@ async function submit() {
         description: description.value,
         note: note.value,
         priority: priority.value,
+        predecessor_task_ids: predecessorTaskIds.value,
+        unlock_task_ids: unlockTaskIds.value,
       });
       tasks.acceptTask(createdTask.value);
     }
@@ -175,6 +206,32 @@ async function submit() {
           label="优先级"
           :disabled="busy || !!createdTask"
           @update:model-value="priority = $event as Priority"
+        />
+      </div>
+    </div>
+    <div class="form-grid">
+      <div class="form-field">
+        <label>前置任务 ID</label>
+        <TaskMultiSelect
+          :model-value="predecessorTaskIds"
+          :options="dependencyOptions.filter((task) => !unlockTaskIds.includes(task.id))"
+          label="前置任务 ID"
+          :disabled="busy || !!createdTask"
+          :loading="dependencyOptionsLoading"
+          @open="loadDependencyOptions"
+          @update:model-value="setPredecessors"
+        />
+      </div>
+      <div class="form-field">
+        <label>解锁任务 ID</label>
+        <TaskMultiSelect
+          :model-value="unlockTaskIds"
+          :options="dependencyOptions.filter((task) => !predecessorTaskIds.includes(task.id))"
+          label="解锁任务 ID"
+          :disabled="busy || !!createdTask"
+          :loading="dependencyOptionsLoading"
+          @open="loadDependencyOptions"
+          @update:model-value="setUnlocked"
         />
       </div>
     </div>

@@ -9,6 +9,7 @@ import {
   PRIORITIES,
   TASK_STATUSES,
   TASK_TYPES,
+  type AgentPermissionSettings,
   type User,
   type UserPermission,
   type UserRole,
@@ -20,6 +21,7 @@ const meta = useMetaStore();
 const users = ref<User[]>([]);
 const selected = ref<User>();
 const draft = ref<UserPermission[]>([]);
+const agentDraft = ref<AgentPermissionSettings>();
 const error = ref("");
 const busy = ref(false);
 
@@ -27,6 +29,8 @@ const fields = [
   ["task_create", "创建任务"],
   ["description", "描述"],
   ["note", "备注"],
+  ["predecessor_task_ids", "前置任务 ID"],
+  ["unlock_task_ids", "解锁任务 ID"],
   ["status", "状态"],
   ["type", "类型"],
   ["priority", "优先级"],
@@ -35,6 +39,20 @@ const fields = [
   ["task_delete", "删除任务"],
   ["attachment_upload", "上传附件"],
   ["attachment_delete", "删除附件"],
+] as const;
+
+const agentCreateFields = [
+  ["note", "备注"],
+  ["status", "状态"],
+  ["priority", "优先级"],
+  ["predecessor_task_ids", "前置任务 ID"],
+  ["unlock_task_ids", "解锁任务 ID"],
+] as const;
+const agentEditFields = [
+  ["project", "移动项目"],
+  ["type", "类型"],
+  ["description", "描述"],
+  ...agentCreateFields,
 ] as const;
 
 const roleNames: Record<UserRole, string> = {
@@ -65,11 +83,41 @@ async function loadUsers() {
 function selectUser(user: User) {
   selected.value = user;
   draft.value = [];
-  if (user.role === "user") {
-    void run(async () => {
-      draft.value = (await api.getUserPermissions(user.id)).permissions;
-    });
-  }
+  agentDraft.value = undefined;
+  void run(async () => {
+    const [webPermissions, agentPermissions] = await Promise.all([
+      user.role === "user" ? api.getUserPermissions(user.id) : Promise.resolve(undefined),
+      api.getUserAgentPermissions(user.id),
+    ]);
+    if (selected.value?.id !== user.id) return;
+    draft.value = webPermissions?.permissions ?? [];
+    agentDraft.value = agentPermissions.permissions;
+  });
+}
+
+function toggleAgentField(kind: "create_fields" | "edit_fields", field: string, enabled: boolean) {
+  if (!agentDraft.value) return;
+  const current = agentDraft.value[kind];
+  agentDraft.value[kind] = enabled
+    ? Array.from(new Set([...current, field]))
+    : current.filter((item) => item !== field);
+}
+
+function toggleAgentStatus(status: (typeof TASK_STATUSES)[number], enabled: boolean) {
+  if (!agentDraft.value) return;
+  const current = agentDraft.value.status_values;
+  agentDraft.value.status_values = enabled
+    ? Array.from(new Set([...current, status]))
+    : current.filter((item) => item !== status);
+}
+
+function saveAgentPermissions() {
+  if (!selected.value || !agentDraft.value) return;
+  const id = selected.value.id;
+  void run(async () => {
+    const saved = await api.putUserAgentPermissions(id, agentDraft.value!);
+    if (selected.value?.id === id) agentDraft.value = saved.permissions;
+  });
 }
 
 function permission(project: string, field: string) {
@@ -261,6 +309,32 @@ onMounted(() => run(async () => { await Promise.all([loadUsers(), meta.refresh()
           </article>
           <button class="btn btn-primary permission-save" :disabled="busy" @click="savePermissions">保存权限</button>
         </div>
+
+        <section v-if="agentDraft" class="agent-permission-section">
+          <h4>Agent 访问权限</h4>
+          <p>默认保持原有 Agent 限制；实际能力还会与上方项目和字段授权取交集。任务读取与附件下载仍限于可见项目，删除任务及上传/删除附件不开放给 Agent。</p>
+          <label class="agent-permission-main"><input v-model="agentDraft.task_create" type="checkbox" />允许创建任务（项目、类型、描述仍必填）</label>
+          <div class="agent-permission-group">
+            <strong>创建时可额外设置</strong>
+            <div class="field-permissions">
+              <label v-for="field in agentCreateFields" :key="field[0]"><input type="checkbox" :checked="agentDraft.create_fields.includes(field[0])" @change="toggleAgentField('create_fields', field[0], ($event.target as HTMLInputElement).checked)" />{{ field[1] }}</label>
+            </div>
+          </div>
+          <div class="agent-permission-group">
+            <strong>可修改的任务字段</strong>
+            <div class="field-permissions">
+              <label v-for="field in agentEditFields" :key="field[0]"><input type="checkbox" :checked="agentDraft.edit_fields.includes(field[0])" @change="toggleAgentField('edit_fields', field[0], ($event.target as HTMLInputElement).checked)" />{{ field[1] }}</label>
+            </div>
+          </div>
+          <div class="agent-permission-group">
+            <strong>Agent 可设为的状态</strong>
+            <div class="value-permissions">
+              <label v-for="status in TASK_STATUSES" :key="status"><input type="checkbox" :checked="agentDraft.status_values.includes(status)" @change="toggleAgentStatus(status, ($event.target as HTMLInputElement).checked)" />{{ status }}</label>
+            </div>
+          </div>
+          <label class="agent-permission-main"><input v-model="agentDraft.description_any_task" type="checkbox" />允许修改可见项目中任意任务的描述（默认仅能改自己 Agent 创建的任务）</label>
+          <button class="btn btn-primary permission-save" :disabled="busy" @click="saveAgentPermissions">保存 Agent 权限</button>
+        </section>
       </section>
       <section v-else class="permission-empty"><UiIcon name="user" :size="28" /><p>选择用户查看角色与权限。</p></section>
     </div>

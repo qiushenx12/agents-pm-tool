@@ -14,7 +14,7 @@ export const TASK_STATUSES = [
 ] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
-/** Agent（CLI）允许切换到的状态子集 */
+/** 未单独配置权限时 Agent（CLI）默认允许切换到的状态子集。 */
 export const AGENT_STATUSES = ["进行中", "待验证", "已完成"] as const;
 
 export const SUBMITTERS = ["用户", "Agent"] as const;
@@ -78,6 +78,20 @@ export interface UserPermission {
 export interface UserPermissionsResponse {
   user: User;
   permissions: UserPermission[];
+}
+
+/** 管理员单独配置的 Agent 写权限；未保存时服务端返回旧版默认权限。 */
+export interface AgentPermissionSettings {
+  task_create: boolean;
+  create_fields: string[];
+  edit_fields: string[];
+  status_values: TaskStatus[];
+  description_any_task: boolean;
+}
+
+export interface AgentPermissionsResponse {
+  user: User;
+  permissions: AgentPermissionSettings;
 }
 
 export interface AgentAccess {
@@ -158,6 +172,10 @@ export interface Task {
   position: number;
   attachment_count?: number;
   owner_user_id?: string | null;
+  /** 本任务开始前必须完成的任务 ID。 */
+  predecessor_task_ids?: string[];
+  /** 完成本任务后可解锁的任务 ID。 */
+  unlock_task_ids?: string[];
 }
 
 export interface Project {

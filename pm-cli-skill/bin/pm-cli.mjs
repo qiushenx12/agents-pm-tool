@@ -464,8 +464,10 @@ const COMMANDS = [
   ["attachments <任务ID>", "列出任务附件（只读）"],
   ["download <附件ID>", "下载附件（只读）"],
   ["projects", "列出可见项目（只读）"],
+  ["permissions", "查看当前 token 的有效项目与字段权限"],
   ["create", "创建任务（项目/类型/描述三必填）"],
-  ["status <任务ID>", "推进任务状态（进行中/待验证/已完成）"],
+  ["update <任务ID>", "按授权修改任务的可编辑字段"],
+  ["status <任务ID>", "修改任务状态（默认可设进行中/待验证/已完成）"],
   ["priority <任务ID>", "调整任务优先级（高/中/低）"],
   ["describe <任务ID>", "修改描述（仅限 Agent 自己创建的任务）"],
   ["doctor", "诊断连接配置与连通性（排障第一步）"],
@@ -532,16 +534,26 @@ const COMMAND_HELP = {
     usage: "pm-cli projects [--json]",
     details: [],
   },
+  permissions: {
+    summary: "查看当前 token 在各可见项目中真正能创建、修改哪些字段及枚举值。",
+    usage: "pm-cli permissions [--json]",
+    details: ["结果是 Agent 权限与账号项目/字段授权的交集；修改描述还受 description_scope 约束。"],
+  },
   create: {
-    summary: "创建任务。项目、类型、描述三必填；状态固定为「未开始」，优先级默认「中」。",
+    summary: "创建任务。项目、类型、描述三必填；其它字段按当前权限设置，优先级默认「中」。",
     usage:
-      'pm-cli create --project <项目> --type <新增需求|优化|BUG> --description <描述> [--priority <高|中|低>] [--json]',
-    details: ["创建者固定为该 token 所属账号的 Agent 身份。"],
+      'pm-cli create --project <项目> --type <类型> --description <描述> [--note <备注>] [--status <状态>] [--priority <优先级>] [--predecessor-task-ids <ID,ID>] [--unlock-task-ids <ID,ID>] [--json]',
+    details: ["创建者固定为该 token 所属账号的 Agent 身份；依赖任务 ID 用英文逗号分隔。", "先运行 pm-cli permissions 查看哪些可选字段已获授权。"],
+  },
+  update: {
+    summary: "一次修改一个或多个任务字段；仅授权、合法的参数会生效。",
+    usage: "pm-cli update <任务ID> [--project <项目>] [--type <类型>] [--description <描述>] [--note <备注>] [--status <状态>] [--priority <优先级>] [--predecessor-task-ids <ID,ID>] [--unlock-task-ids <ID,ID>] [--json]",
+    details: ["至少指定一个待修改字段；给依赖 ID 选项传空字符串可清空关联。", "ID、提交人、创建/完成时间等不可变字段不支持修改。"],
   },
   status: {
-    summary: "推进任务状态。只能切到进行中、待验证、已完成。",
-    usage: "pm-cli status <任务ID> --to <进行中|待验证|已完成> [--json]",
-    details: ["验收类状态（验收通过 / 验收未通过）只能由用户在网页端设置。"],
+    summary: "修改任务状态；默认只可切到进行中、待验证、已完成，管理员可调整。",
+    usage: "pm-cli status <任务ID> --to <状态> [--json]",
+    details: ["实际可设状态请运行 pm-cli permissions 查看。"],
   },
   priority: {
     summary: "调整任务优先级。",
@@ -549,7 +561,7 @@ const COMMAND_HELP = {
     details: [],
   },
   describe: {
-    summary: "修改任务描述。只能修改由 Agent 创建的任务，且描述不能为空。",
+    summary: "修改任务描述。默认仅限自己 Agent 创建的任务，管理员可调整；描述不能为空。",
     usage: "pm-cli describe <任务ID> --description <描述> [--json]",
     details: [],
   },
@@ -579,7 +591,7 @@ ${locateBlock()}
 ${commandLines}
 
 通用选项：
-  --json                         输出结构化 JSON（便于程序解析）
+  --json                         成功时输出结构化 JSON；失败仍向标准错误输出文本
   -h, --help                     显示帮助；写成 "pm-cli <命令> --help" 查看单个命令
   -V, --version                  显示版本
 
@@ -587,18 +599,19 @@ ${commandLines}
 用户级位置，pm-cli 自动读取）；远程使用时配置一次即可。发现顺序为
 环境变量 PM_SERVER_URL/PM_AGENT_TOKEN（必须成对）> 用户配置 cli.json > 本机运行信息。
 
-退出码：0 成功；2 参数或鉴权失败；3 未配置或连接失败。
+退出码：0 成功；1 服务端故障等其它失败；2 参数、鉴权或业务校验失败；3 未配置或连接失败。
 
-权限边界：可以只读查看/筛选任务与项目、查看和下载已授权项目中的任务附件、创建任务；
-只能把状态推进到进行中/待验证/已完成，只能调整优先级；只能修改由 Agent 创建的任务描述。
-不能设置验收状态，不能改项目/类型或用户创建的任务描述，不能删除任务、上传或删除附件，
-也不能直接读写数据库。
+权限边界：读取限于已授权项目；任务创建和字段修改由管理员设置的 Agent 权限与网页
+项目/字段权限共同决定。运行 pm-cli permissions 查看当前有效权限。任务删除、附件上传或删除
+仍仅限网页端；ID、提交人、时间戳等不可变字段不能由 Agent 修改，也不能直接读写数据库。
 
 典型用法：
   pm-cli get 202609021050340001 --json
   pm-cli attachments 202609021050340001 --json
   pm-cli status 202609021050340001 --to 待验证
   pm-cli create --project default-project --type BUG --description "登录页白屏" --priority 高
+  pm-cli permissions --json
+  pm-cli update 202609021050340001 --note "已复查" --predecessor-task-ids 202609021050340000
   pm-cli doctor`;
 }
 
@@ -635,7 +648,9 @@ const COMMAND_OPTIONS = {
   attachments: { json: true },
   download: { output: "value", o: "value", force: true, json: true },
   projects: { json: true },
-  create: { project: "value", type: "value", description: "value", priority: "value", json: true },
+  permissions: { json: true },
+  create: { project: "value", type: "value", description: "value", note: "value", status: "value", priority: "value", "predecessor-task-ids": "value", "unlock-task-ids": "value", json: true },
+  update: { project: "value", type: "value", description: "value", note: "value", status: "value", priority: "value", "predecessor-task-ids": "value", "unlock-task-ids": "value", json: true },
   status: { to: "value", json: true },
   priority: { to: "value", json: true },
   describe: { description: "value", json: true },
@@ -649,7 +664,9 @@ const POSITIONAL_RANGE = {
   attachments: [1, 1],
   download: [1, 1],
   projects: [0, 0],
+  permissions: [0, 0],
   create: [0, 0],
+  update: [1, 1],
   status: [1, 1],
   priority: [1, 1],
   describe: [1, 1],
@@ -732,8 +749,11 @@ function validateRequiredOptions(name, options) {
     requireOption(options, "type", hint);
     requireOption(options, "description", hint);
   }
+  if (name === "update" && !Object.keys(options).some((key) => key !== "json")) {
+    throw new UsageError("pm-cli update 至少需要一个待修改字段");
+  }
   if (name === "status") {
-    requireOption(options, "to", "可切到：进行中/待验证/已完成");
+    requireOption(options, "to", "可设状态见 pm-cli permissions；默认进行中/待验证/已完成");
   }
   if (name === "priority") {
     requireOption(options, "to", "可设为：高/中/低");
@@ -741,6 +761,20 @@ function validateRequiredOptions(name, options) {
   if (name === "describe") {
     requireOption(options, "description", "要写入的新描述");
   }
+}
+
+function taskBodyFromOptions(options) {
+  const body = {};
+  for (const field of ["project", "type", "description", "note", "status", "priority"]) {
+    if (options[field] !== undefined) body[field] = options[field];
+  }
+  for (const field of ["predecessor_task_ids", "unlock_task_ids"]) {
+    const option = field.replaceAll("_", "-");
+    if (options[option] !== undefined) {
+      body[field] = options[option] === "" ? [] : options[option].split(",").map((id) => id.trim());
+    }
+  }
+  return body;
 }
 
 // -------------------------------------------------------------------- 命令实现
@@ -846,12 +880,10 @@ async function runTaskCommand(name, options, positionals, client) {
 
   if (name === "create") {
     const hint = "Agent 创建任务时项目/类型/描述三必填";
-    const body = {
-      project: requireOption(options, "project", hint),
-      type: requireOption(options, "type", hint),
-      description: requireOption(options, "description", hint),
-    };
-    if (options.priority !== undefined) body.priority = options.priority;
+    requireOption(options, "project", hint);
+    requireOption(options, "type", hint);
+    requireOption(options, "description", hint);
+    const body = taskBodyFromOptions(options);
     const { status, value: payload } = await client.send("POST", "/tasks", body);
     if (status >= 400) throw failFromServer(status, payload);
     if (json) {
@@ -863,12 +895,23 @@ async function runTaskCommand(name, options, positionals, client) {
     return;
   }
 
+  if (name === "update") {
+    const id = positionals[0];
+    const { status, value: payload } = await client.send(
+      "PATCH", `/tasks/${encodeURIComponent(id)}`, taskBodyFromOptions(options),
+    );
+    if (status >= 400) throw failFromServer(status, payload);
+    if (json) printJson(payload);
+    else process.stdout.write(`任务 ${payload?.id ?? id} 已更新\n`);
+    return;
+  }
+
   if (name === "status" || name === "priority") {
     const id = positionals[0];
     const to = requireOption(
       options,
       "to",
-      name === "status" ? "可切到：进行中/待验证/已完成" : "可设为：高/中/低",
+      name === "status" ? "可设状态见 pm-cli permissions；默认进行中/待验证/已完成" : "可设为：高/中/低",
     );
     const body = name === "status" ? { status: to } : { priority: to };
     const { status, value: payload } = await client.send(
@@ -915,6 +958,24 @@ async function runTaskCommand(name, options, positionals, client) {
         if (project?.local_path) process.stdout.write(`  本地路径：${project.local_path}\n`);
         if (project?.git_url) process.stdout.write(`  Git 地址：${project.git_url}\n`);
       }
+    }
+    return;
+  }
+
+  if (name === "permissions") {
+    const { status, value: payload } = await client.send("GET", "/permissions");
+    if (status >= 400) throw failFromServer(status, payload);
+    if (json) {
+      printJson(payload);
+    } else {
+      for (const project of payload?.projects ?? []) {
+        process.stdout.write(`${text(project.project)}：${project.can_create ? "可创建" : "不可创建"}\n`);
+        process.stdout.write(`  创建字段：${(project.create_fields ?? []).join("、") || "无"}\n`);
+        process.stdout.write(`  修改字段：${(project.edit_fields ?? []).join("、") || "无"}\n`);
+        process.stdout.write(`  状态值：${(project.allowed_values?.status ?? []).join("、") || "无"}\n`);
+        process.stdout.write(`  描述范围：${project.description_scope === "any" ? "任意可见任务" : "自己 Agent 创建的任务"}\n`);
+      }
+      if (!payload?.projects?.length) process.stdout.write("（无可见项目）\n");
     }
     return;
   }

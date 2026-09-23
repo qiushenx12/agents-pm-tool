@@ -6,6 +6,7 @@ import UiDialog from "@/shared/UiDialog.vue";
 import UiIcon from "@/shared/UiIcon.vue";
 import UiPopover from "@/shared/UiPopover.vue";
 import TaskField from "./TaskField.vue";
+import TaskMultiSelect from "./TaskMultiSelect.vue";
 import DescriptionEditor from "./DescriptionEditor.vue";
 import AttachmentUploader from "./AttachmentUploader.vue";
 import AttachmentPreviewDialog from "./AttachmentPreviewDialog.vue";
@@ -13,7 +14,9 @@ import { useUploadQueue, formatSize } from "./useUploadQueue";
 import { attachmentKind } from "../attachmentKind";
 import { askConfirm, copyText, errorText, notify } from "@/shared/feedback";
 import { formatDateTime, type Task, type Attachment } from "@/shared/types";
-const props = defineProps<{ task: Task }>();
+const props = withDefaults(defineProps<{ task: Task; navigation?: boolean }>(), {
+  navigation: true,
+});
 const emit = defineEmits<{ close: []; navigate: [task: Task] }>();
 const tasks = useTaskStore(),
   queue = useUploadQueue();
@@ -27,6 +30,30 @@ const preview = ref<Attachment | null>(null);
 const missing = ref(false),
   detailError = ref("");
 const current = computed(() => tasks.records[props.task.id] ?? props.task);
+const dependencyOptions = ref<Task[]>([]);
+const dependencyOptionsLoading = ref(false);
+async function loadDependencyOptions() {
+  if (dependencyOptionsLoading.value) return;
+  dependencyOptionsLoading.value = true;
+  try {
+    dependencyOptions.value = await api.listTasks();
+  } catch (e) {
+    notify("加载关联任务失败：" + errorText(e), "error");
+  } finally {
+    dependencyOptionsLoading.value = false;
+  }
+}
+async function updateDependencies(
+  field: "predecessor_task_ids" | "unlock_task_ids",
+  ids: string[],
+) {
+  try {
+    await tasks.updateTask(current.value.id, { [field]: ids });
+    void loadDependencyOptions();
+  } catch (e) {
+    notify(errorText(e), "error");
+  }
+}
 const index = computed(() =>
   tasks.tasks.findIndex((t) => t.id === props.task.id),
 );
@@ -173,6 +200,7 @@ async function removeTask() {
   <UiDialog title="任务详情" drawer :busy="busy" @close="close">
     <template #header-actions
       ><button
+        v-if="navigation"
         class="icon-btn"
         aria-label="上一条任务"
         title="上一条任务"
@@ -181,6 +209,7 @@ async function removeTask() {
       >
         <UiIcon name="up" /></button
       ><button
+        v-if="navigation"
         class="icon-btn"
         aria-label="下一条任务"
         title="下一条任务"
@@ -239,7 +268,7 @@ async function removeTask() {
       {{ detailError
       }}<button class="btn btn-sm" @click="refreshCurrent">重试</button>
     </div>
-    <div v-if="index < 0" class="info-banner detail-outside-filter">
+    <div v-if="navigation && index < 0" class="info-banner detail-outside-filter">
       此任务不在当前页中，仍可在这里查看和编辑。
     </div>
     <div class="detail-properties">
@@ -258,6 +287,40 @@ async function removeTask() {
       <div class="property-row">
         <span><UiIcon name="circle" />当前状态</span
         ><TaskField :task="current" field="status" :editable="!missing" form />
+      </div>
+      <div class="property-row">
+        <span><UiIcon name="git" />前置任务 ID</span>
+        <TaskMultiSelect
+          :model-value="current.predecessor_task_ids ?? []"
+          :options="
+            dependencyOptions.filter(
+              (task) => !(current.unlock_task_ids ?? []).includes(task.id),
+            )
+          "
+          label="前置任务 ID"
+          :exclude-id="current.id"
+          :disabled="missing || busy"
+          :loading="dependencyOptionsLoading"
+          @open="loadDependencyOptions"
+          @update:model-value="updateDependencies('predecessor_task_ids', $event)"
+        />
+      </div>
+      <div class="property-row">
+        <span><UiIcon name="git" />解锁任务 ID</span>
+        <TaskMultiSelect
+          :model-value="current.unlock_task_ids ?? []"
+          :options="
+            dependencyOptions.filter(
+              (task) => !(current.predecessor_task_ids ?? []).includes(task.id),
+            )
+          "
+          label="解锁任务 ID"
+          :exclude-id="current.id"
+          :disabled="missing || busy"
+          :loading="dependencyOptionsLoading"
+          @open="loadDependencyOptions"
+          @update:model-value="updateDependencies('unlock_task_ids', $event)"
+        />
       </div>
       <div class="property-row">
         <span><UiIcon name="user" />提交人</span>

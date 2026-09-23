@@ -25,6 +25,20 @@ export const DEFAULT_COLUMNS = [
     visible: true,
   },
   {
+    key: "predecessor_task_ids",
+    label: "前置任务 ID",
+    icon: "git",
+    width: 240,
+    visible: true,
+  },
+  {
+    key: "unlock_task_ids",
+    label: "解锁任务 ID",
+    icon: "git",
+    width: 240,
+    visible: true,
+  },
+  {
     key: "submitter",
     label: "提交人",
     icon: "user",

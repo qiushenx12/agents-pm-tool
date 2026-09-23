@@ -195,6 +195,10 @@ fn build_router(core: CoreState) -> Router {
             "/users/{id}/permissions",
             get(api_users::get_permissions).put(api_users::put_permissions),
         )
+        .route(
+            "/users/{id}/agent-permissions",
+            get(api_users::get_agent_permissions).put(api_users::put_agent_permissions),
+        )
         .route("/auth/me", get(api_auth::me))
         .route("/auth/logout", axum::routing::post(api_auth::logout))
         // 分组/排序/筛选按账号存在服务端：网页端与应用内窗口读的是同一份
@@ -239,7 +243,7 @@ fn build_router(core: CoreState) -> Router {
             "/tasks",
             get(api_agent::list_tasks).post(api_agent::create_task),
         )
-        .route("/tasks/{id}", get(api_agent::get_task))
+        .route("/tasks/{id}", get(api_agent::get_task).patch(api_agent::patch_task))
         .route("/tasks/{id}/attachments", get(api_agent::list_attachments))
         .route("/attachments/{id}", get(api_agent::download_attachment))
         .route(
@@ -255,6 +259,7 @@ fn build_router(core: CoreState) -> Router {
             axum::routing::patch(api_agent::patch_description),
         )
         .route("/projects", get(api_agent::list_projects))
+        .route("/permissions", get(api_agent::get_permissions))
         .route_layer(middleware::from_fn_with_state(
             core.clone(),
             auth::require_agent_token,

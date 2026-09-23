@@ -1,6 +1,6 @@
 ---
 name: pm-cli
-description: 使用 Agents PM Tool 的受限 pm-cli 查看、创建和推进项目任务；当用户提供 Agents PM Tool 任务 ID、要求通过 pm-cli 工作或需要远程连接该工具时使用。
+description: 使用 Agents PM Tool 的 pm-cli 查询项目、任务和当前 Agent 权限，并在授权范围内创建或修改任务；当用户提供 Agents PM Tool 任务 ID、要求通过 pm-cli 工作或需要远程连接该工具时使用。
 ---
 
 # Agents PM Tool pm-cli
@@ -84,9 +84,11 @@ pm-cli config show
 1. 运行 `pm-cli get <任务ID> --json` 读取完整任务。
 2. 若 `attachment_count` 大于 0，运行 `pm-cli attachments <任务ID> --json` 查看附件，再用 `pm-cli download <附件ID>` 按需下载。
 3. 运行 `pm-cli projects --json` 获取项目、本地路径与 Git 地址。
-4. 开始实现时运行 `pm-cli status <任务ID> --to 进行中 --json`。
-5. 在任务对应仓库内实现并验证；保留用户已有改动。
-6. 完成且自测通过后运行 `pm-cli status <任务ID> --to 待验证 --json`。
+4. 检查任务返回的 `predecessor_task_ids`。这些前置任务必须处于`已完成`或`验收通过`；否则不要绕过约束开始当前任务，应先按用户交付范围处理前置任务，或向用户报告阻塞。
+5. 运行 `pm-cli permissions --json` 查看当前 token 对目标项目的有效权限。
+6. 开始实现时运行 `pm-cli status <任务ID> --to 进行中 --json`（无权限时报告给用户）。
+7. 在任务对应仓库内实现并验证；保留用户已有改动。
+8. 完成且自测通过后运行 `pm-cli status <任务ID> --to 待验证 --json`（无权限时报告给用户）。
 
 ## 命令
 
@@ -98,8 +100,10 @@ pm-cli get <任务ID> [--json]
 pm-cli attachments <任务ID> [--json]
 pm-cli download <附件ID> [--output <文件路径>] [--force] [--json]
 pm-cli projects [--json]
-pm-cli create --project <项目> --type <新增需求|优化|BUG> --description <描述> [--priority <高|中|低>] [--json]
-pm-cli status <任务ID> --to <进行中|待验证|已完成> [--json]
+pm-cli permissions [--json]
+pm-cli create --project <项目> --type <类型> --description <描述> [--note <备注>] [--status <状态>] [--priority <优先级>] [--predecessor-task-ids <ID,ID>] [--unlock-task-ids <ID,ID>] [--json]
+pm-cli update <任务ID> [--project <项目>] [--type <类型>] [--description <描述>] [--note <备注>] [--status <状态>] [--priority <优先级>] [--predecessor-task-ids <ID,ID>] [--unlock-task-ids <ID,ID>] [--json]
+pm-cli status <任务ID> --to <状态> [--json]
 pm-cli priority <任务ID> --to <高|中|低> [--json]
 pm-cli describe <任务ID> --description <描述> [--json]
 pm-cli doctor [--json]
@@ -109,15 +113,19 @@ pm-cli --help
 pm-cli <命令> --help
 ```
 
+`permissions --json` 中先找到目标项目：`can_create` 决定能否创建；`create_fields` 是创建时可额外传入的字段，`edit_fields` 是修改已有任务时可传入的字段，二者可能不同；`allowed_values` 限定类型、状态、优先级取值；`description_scope: own_agent` 表示只能改当前 token 用户创建的 Agent 任务描述。创建时仍必须给出项目、类型、非空描述。按这份有效权限选命令参数，不要把 CLI 帮助列出的全部参数当成当前账号已获授权。
+
+如需给已有任务设置前置任务，可在有 `predecessor_task_ids` 修改权时运行 `pm-cli update <任务ID> --predecessor-task-ids <ID,ID>`；仅当用户要求或允许新增任务，且有 `unlock_task_ids` 创建权时，才可用 `pm-cli create ... --unlock-task-ids <已有任务ID>` 建立反向关系。先检查依赖是否会阻止任务启动；不要仅为测试命令而创建无业务意义的任务。
+
 ## 权限边界
 
-可以：查看与筛选任务、只读查看项目、创建任务、列出并下载已授权项目中任务的附件。
+可以：查看与筛选已授权项目中的任务、只读查看项目、列出并下载任务附件；创建和修改任务字段须同时满足单独配置的 Agent 权限与账号项目/字段授权。运行 `pm-cli permissions --json` 查看当前有效权限。
 
-只能：把任务状态切到 `进行中`、`待验证`、`已完成`；把优先级改为高/中/低；修改**由 Agent 创建**的任务描述（且不能清空）。
+默认设置与旧版一致：可创建任务；可把状态切到 `进行中`、`待验证`、`已完成`，改优先级；只能修改**当前 token 用户的 Agent 创建**任务描述（且不能清空）。管理员可在用户管理中调整 Agent 的创建字段、修改字段、状态值和描述范围；CLI 的 `create`/`update` 可传可编辑字段，但越权或非法值会被服务端拒绝。依赖 ID 用英文逗号分隔，传空字符串可清空。前置任务未完成时，服务端会拒绝当前任务开始。
 
-不可以：设置验收状态；修改项目、类型，或用户创建任务的描述；删除任务；上传或删除附件；管理项目；直接读写数据库。
+始终不可以：客户端指定 ID、提交人、创建/完成时间等不可变字段；删除任务；上传或删除附件；管理项目；直接读写数据库。即使 Agent 权限允许某个字段，普通用户仍不能越过网页侧的项目/字段/枚举授权。
 
-用户的项目与字段授权会进一步收窄上述能力。以上限制由服务端强制执行，不因客户端不同而放宽。
+以上限制由服务端强制执行，不因客户端不同而放宽。
 
 ## 排障
 
@@ -127,7 +135,7 @@ pm-cli <命令> --help
 - 连通性与 HTTP 状态，以及当前 token 可见的项目数；
 - 针对结论的下一步命令。
 
-退出码与其它命令一致：`0` 正常，`2` 参数或鉴权失败，`3` 未配置或连不上。据此分支处理。
+退出码与其它命令一致：`0` 正常，`1` 服务端故障等其它失败，`2` 参数、鉴权或业务校验失败，`3` 未配置或连不上。据此分支处理。`--json` 用于成功响应；失败时错误和提示仍以文本写入标准错误。
 
 遇 401 检查 token 是否已吊销；遇 403 检查网页端的项目/字段授权，以及账号是否被停用；连不上时确认服务监听的地址和端口正确、防火墙放行。「环境变量必须成对设置」说明 `PM_SERVER_URL` / `PM_AGENT_TOKEN` 只设了其一或其一为空，按提示补齐另一个，或清掉已设的那个改走用户配置。
 

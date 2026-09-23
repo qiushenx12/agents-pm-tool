@@ -95,8 +95,8 @@ it("keeps only description pinned while persisting movable notes and migrating o
   const persisted = JSON.parse(localStorage.getItem("pm-table-view-v1")!);
   expect(persisted.columns[1].key).toBe("project");
   expect(view.columns.some((c) => c.key === "obsolete")).toBe(false);
-  // description + project/type/priority/status/submitter/attachments/created_at/finished_at/id/note
-  expect(view.columns).toHaveLength(11);
+  // description + project/type/priority/status/dependencies/submitter/attachments/created_at/finished_at/id/note
+  expect(view.columns).toHaveLength(13);
   expect(view.columns[2]).toMatchObject({
     key: "note",
     label: "备注",
