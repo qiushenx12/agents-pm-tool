@@ -5,6 +5,7 @@ import { createPinia, disposePinia, type Pinia } from "pinia";
 import GridApp from "@/grid-app/GridApp.vue";
 import { api } from "@/grid-app/api/client";
 import { useTaskStore } from "@/grid-app/stores/taskStore";
+import type { Task } from "@/shared/types";
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => false,
@@ -143,7 +144,7 @@ vi.mock("@/grid-app/components/TaskGrid.vue", async () => {
   return {
     default: defineComponent({
       props: { quickCreating: Boolean },
-      emits: ["quick-create"],
+      emits: ["quick-create", "show-relation-graph"],
       setup(props, { emit, expose }) {
         expose({ reveal });
         return () =>
@@ -157,6 +158,11 @@ vi.mock("@/grid-app/components/TaskGrid.vue", async () => {
               },
               "快捷新增",
             ),
+            h(
+              "button",
+              { "data-testid": "show-graph", onClick: () => emit("show-relation-graph", createdTask) },
+              "展示关联图",
+            ),
           ]);
       },
     }),
@@ -167,16 +173,43 @@ vi.mock("@/grid-app/components/TaskDetailDrawer.vue", async () => {
   const { defineComponent, h } = await import("vue");
   return {
     default: defineComponent({
-      setup() {
-        return () => h("div", { "data-testid": "task-detail-drawer" });
+      props: { task: Object },
+      setup(props) {
+        return () => h("div", { "data-testid": "task-detail-drawer", "data-task-id": (props.task as Task | undefined)?.id ?? "" });
       },
     }),
   };
 });
 
 vi.mock("@/grid-app/components/SavedViews.vue", async () => {
-  const { defineComponent } = await import("vue");
-  return { default: defineComponent({ template: "<div />" }) };
+  const { defineComponent, h } = await import("vue");
+  return {
+    default: defineComponent({
+      props: { mode: String },
+      emits: ["update:mode"],
+      setup(_, { emit }) {
+        return () => h("div", [
+          h("button", { "data-testid": "table-tab", onClick: () => emit("update:mode", "table") }, "任务表"),
+          h("button", { "data-testid": "graph-tab", onClick: () => emit("update:mode", "graph") }, "关联图"),
+        ]);
+      },
+    }),
+  };
+});
+
+vi.mock("@/grid-app/components/TaskRelationGraph.vue", async () => {
+  const { defineComponent, h } = await import("vue");
+  return {
+    default: defineComponent({
+      props: { taskId: String },
+      emits: ["clear-detail"],
+      setup(props, { emit }) {
+        return () => h("div", { "data-testid": "graph-mode", "data-task-id": props.taskId ?? "" }, [
+          h("button", { "data-testid": "clear-graph-selection", onClick: () => emit("clear-detail") }, "取消选中"),
+        ]);
+      },
+    }),
+  };
 });
 
 vi.mock("@/grid-app/components/BulkActions.vue", async () => {
@@ -374,4 +407,37 @@ it("keeps only the sidebar toggle beside the workspace breadcrumb", async () => 
   );
   expect(expandButtons).toHaveLength(1);
   expect(expandButtons[0].closest(".breadcrumb")).not.toBeNull();
+});
+
+it("opens a focused relation graph from a row but leaves the direct graph tab empty", async () => {
+  localStorage.setItem("pm-theme", "light");
+  window.history.replaceState(null, "", "/");
+  pinia = createPinia();
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp(GridApp);
+  app.use(pinia);
+  app.mount(host);
+  await vi.waitFor(() => expect(host.querySelector('[data-testid="task-grid"]')).not.toBeNull());
+
+  host.querySelector<HTMLButtonElement>('[data-testid="graph-tab"]')!.click();
+  await nextTick();
+  expect(host.querySelector('[data-testid="graph-mode"]')?.getAttribute("data-task-id")).toBe("");
+  expect(host.querySelector('[data-testid="task-detail-drawer"]')).toBeNull();
+
+  host.querySelector<HTMLButtonElement>('[data-testid="table-tab"]')!.click();
+  await nextTick();
+  host.querySelector<HTMLButtonElement>('[data-testid="show-graph"]')!.click();
+  await nextTick();
+  expect(host.querySelector('[data-testid="graph-mode"]')?.getAttribute("data-task-id")).toBe(createdTask.id);
+  expect(host.querySelector('[data-testid="task-detail-drawer"]')?.getAttribute("data-task-id")).toBe(createdTask.id);
+  host.querySelector<HTMLButtonElement>('[data-testid="clear-graph-selection"]')!.click();
+  await nextTick();
+  expect(host.querySelector('[data-testid="task-detail-drawer"]')).toBeNull();
+
+  host.querySelector<HTMLButtonElement>('[data-testid="table-tab"]')!.click();
+  await nextTick();
+  host.querySelector<HTMLButtonElement>('[data-testid="graph-tab"]')!.click();
+  await nextTick();
+  expect(host.querySelector('[data-testid="graph-mode"]')?.getAttribute("data-task-id")).toBe("");
 });

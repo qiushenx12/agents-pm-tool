@@ -192,8 +192,19 @@ pub struct PatchTaskBody {
     pub note: Option<String>,
     pub status: Option<String>,
     pub priority: Option<String>,
+    /// 负责人：缺省不动；显式 null 清空；用户 ID 改派给该账号的 Agent。
+    /// 双层 Option 区分「未传」与「显式 null」，serde 默认会把显式 null 也收成 None，需要自定义反序列化。
+    #[serde(default, deserialize_with = "deserialize_optional_assignee")]
+    pub assignee_user_id: Option<Option<String>>,
     pub predecessor_task_ids: Option<Vec<String>>,
     pub unlock_task_ids: Option<Vec<String>>,
+}
+
+fn deserialize_optional_assignee<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<String>::deserialize(deserializer)?))
 }
 
 pub async fn patch_task(
@@ -222,6 +233,9 @@ pub async fn patch_task(
     }
     if let Some(value) = body.priority.as_deref() {
         fields.push(("priority", Some(value)));
+    }
+    if body.assignee_user_id.is_some() {
+        fields.push(("assignee", None));
     }
     if body.predecessor_task_ids.is_some() {
         fields.push(("predecessor_task_ids", None));
@@ -261,6 +275,7 @@ pub async fn patch_task(
             note: body.note,
             status: body.status,
             priority: body.priority,
+            assignee_user_id: body.assignee_user_id,
             predecessor_task_ids: body.predecessor_task_ids,
             unlock_task_ids: body.unlock_task_ids,
         },

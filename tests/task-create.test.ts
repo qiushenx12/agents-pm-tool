@@ -83,6 +83,8 @@ it("creates the task only once when retrying an attachment failure in the new-ta
   app = createApp({ render: () => h(TaskCreateModal, { onCreated }) });
   app.use(pinia);
   app.mount(host);
+  expect(document.body.textContent).toContain("子任务 ID");
+  expect(document.body.textContent).toContain("父级任务 ID");
   const input = document.querySelector<HTMLInputElement>('input[type="file"]')!;
   Object.defineProperty(input, "files", {
     configurable: true,

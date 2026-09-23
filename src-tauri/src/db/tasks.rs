@@ -31,6 +31,8 @@ pub struct TaskFilter {
 pub(super) fn row_to_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
     let submitter: String = r.get("submitter")?;
     let owner_username: Option<String> = r.get("owner_username")?;
+    let assignee_user_id: Option<String> = r.get("assignee_user_id")?;
+    let assignee_username: Option<String> = r.get("assignee_username")?;
     Ok(Task {
         id: r.get("id")?,
         seq: r.get("seq")?,
@@ -48,13 +50,15 @@ pub(super) fn row_to_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
         position: r.get("position")?,
         attachment_count: r.get("attachment_count")?,
         owner_user_id: r.get("owner_user_id")?,
+        assignee_name: task::assignee_name(assignee_user_id.as_deref(), assignee_username.as_deref()),
+        assignee_user_id,
         predecessor_task_ids: split_dependency_ids(r.get("predecessor_task_ids")?),
         unlock_task_ids: split_dependency_ids(r.get("unlock_task_ids")?),
     })
 }
 
 pub(super) const SELECT_TASKS: &str = r#"
-SELECT t.*, u.username AS owner_username,
+SELECT t.*, u.username AS owner_username, au.username AS assignee_username,
        (SELECT COUNT(*) FROM attachments a WHERE a.task_id = t.id) AS attachment_count,
        COALESCE((
          SELECT group_concat(predecessor_task_id, ',') FROM (
@@ -76,6 +80,7 @@ SELECT t.*, u.username AS owner_username,
        ), '') AS unlock_task_ids
 FROM tasks t
 LEFT JOIN users u ON u.id = t.owner_user_id
+LEFT JOIN users au ON au.id = t.assignee_user_id
 "#;
 
 pub(super) fn filter_sql(f: &TaskFilter) -> (String, Vec<String>) {
@@ -361,6 +366,50 @@ fn unfinished_predecessors(conn: &Connection, id: &str) -> ApiResult<Vec<String>
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+fn children_not_ready_for_completion(conn: &Connection, id: &str) -> ApiResult<bool> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM task_dependencies dependency
+           JOIN tasks child ON child.id = dependency.predecessor_task_id
+           WHERE dependency.task_id=?1
+             AND child.status NOT IN ('待验证','已完成','验收通过')
+         )",
+        [id],
+        |row| row.get(0),
+    )?;
+    Ok(exists)
+}
+
+fn require_ready_children(conn: &Connection, id: &str) -> ApiResult<()> {
+    if children_not_ready_for_completion(conn, id)? {
+        return Err(ApiError::unprocessable(
+            "子任务须全部处于待验证、已完成或验收通过，才能将本任务设为待验证、已完成或验收通过",
+        ));
+    }
+    Ok(())
+}
+
+/// 从发生变化的任务或新添子任务的父级出发，逐级恢复所有已进入完成流程的任务。
+/// 调用方必须在同一事务内先写入任务状态和最终关系，再调用此函数。
+fn reopen_ready_ancestors(conn: &Connection, roots: &[String], now: &str) -> ApiResult<()> {
+    for root in roots {
+        conn.execute(
+            "WITH RECURSIVE ancestors(id) AS (
+               SELECT ?1
+               UNION
+               SELECT dependency.task_id
+               FROM task_dependencies dependency
+               JOIN ancestors ON dependency.predecessor_task_id = ancestors.id
+             )
+             UPDATE tasks SET status='进行中', updated_at=?2
+             WHERE id IN (SELECT id FROM ancestors)
+               AND status IN ('待验证','已完成','验收通过')",
+            params![root, now],
+        )?;
+    }
+    Ok(())
+}
+
 /// 校验 + 创建（ID 生成与插入在同一事务，规划 §4.2）
 pub fn create(conn: &mut Connection, n: &NewTask) -> ApiResult<Task> {
     create_with_status(conn, n, None)
@@ -427,9 +476,17 @@ pub fn create_with_status(
         Some(&predecessor_task_ids),
         Some(&unlock_task_ids),
     )?;
-    if status != "未开始" && status != "取消" && !unfinished_predecessors(&tx, &id)?.is_empty() {
-        return Err(ApiError::unprocessable("前置任务尚未完成，暂时不能开始本任务"));
+    if task::ready_for_parent_completion(status) {
+        require_ready_children(&tx, &id)?;
     }
+    if status != "未开始"
+        && status != "取消"
+        && !task::ready_for_parent_completion(status)
+        && !unfinished_predecessors(&tx, &id)?.is_empty()
+    {
+        return Err(ApiError::unprocessable("子任务尚未完成，暂时不能开始本任务"));
+    }
+    reopen_ready_ancestors(&tx, &unlock_task_ids, &now)?;
     tx.commit()?;
     get(conn, &id)
 }
@@ -459,6 +516,8 @@ pub struct TaskPatch {
     pub note: Option<String>,
     pub status: Option<String>,
     pub priority: Option<String>,
+    /// None = 不动；Some(None) = 清空负责人；Some(Some(uid)) = 改派给该账号的 Agent。
+    pub assignee_user_id: Option<Option<String>>,
     pub predecessor_task_ids: Option<Vec<String>>,
     pub unlock_task_ids: Option<Vec<String>>,
 }
@@ -494,6 +553,16 @@ pub fn patch(conn: &mut Connection, id: &str, p: &TaskPatch) -> ApiResult<Task> 
             )));
         }
     }
+    if let Some(Some(assignee)) = &p.assignee_user_id {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE id=?1)",
+            [assignee],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(ApiError::unprocessable("负责人指定的用户不存在"));
+        }
+    }
     let predecessor_task_ids = p
         .predecessor_task_ids
         .as_deref()
@@ -511,7 +580,7 @@ pub fn patch(conn: &mut Connection, id: &str, p: &TaskPatch) -> ApiResult<Task> 
             .as_deref()
             .is_some_and(|ids| ids.iter().any(|candidate| candidate == id))
     {
-        return Err(ApiError::unprocessable("任务不能依赖或解锁自身"));
+        return Err(ApiError::unprocessable("任务不能将自身设为子任务或父级任务"));
     }
     if let Some(ids) = predecessor_task_ids.as_deref() {
         validate_dependency_targets(conn, ids)?;
@@ -526,13 +595,37 @@ pub fn patch(conn: &mut Connection, id: &str, p: &TaskPatch) -> ApiResult<Task> 
     let note = p.note.as_deref().unwrap_or(&current.note);
     let status = p.status.as_deref().unwrap_or(&current.status);
     let priority = p.priority.as_deref().unwrap_or(&current.priority);
-    let finished_at = task::transition(status, current.finished_at.clone());
+    let assignee_user_id = match &p.assignee_user_id {
+        Some(value) => value.clone(),
+        None => current.assignee_user_id.clone(),
+    };
+    let finished_at = if p.status.as_deref().is_some_and(|value| value != current.status) {
+        task::transition(status, current.finished_at.clone())
+    } else {
+        current.finished_at.clone()
+    };
+    let mut reopen_roots = Vec::new();
+    if predecessor_task_ids.as_ref().is_some_and(|children| {
+        children.iter().any(|child| !current.predecessor_task_ids.contains(child))
+    }) {
+        reopen_roots.push(id.to_string());
+    }
+    if let Some(parents) = unlock_task_ids.as_ref() {
+        reopen_roots.extend(
+            parents.iter().filter(|parent| !current.unlock_task_ids.contains(parent)).cloned(),
+        );
+    }
+    if p.status.as_deref().is_some_and(|new_status| {
+        new_status != current.status && !task::ready_for_parent_completion(new_status)
+    }) {
+        reopen_roots.push(id.to_string());
+    }
     let now = task::now_str();
 
     let tx = conn.transaction()?;
     tx.execute(
         "UPDATE tasks SET project = ?2, type = ?3, description = ?4, note = ?5, status = ?6,
-            priority = ?7, finished_at = ?8, updated_at = ?9 WHERE id = ?1",
+            priority = ?7, finished_at = ?8, updated_at = ?9, assignee_user_id = ?10 WHERE id = ?1",
         params![
             id,
             project,
@@ -542,7 +635,8 @@ pub fn patch(conn: &mut Connection, id: &str, p: &TaskPatch) -> ApiResult<Task> 
             status,
             priority,
             finished_at,
-            now
+            now,
+            assignee_user_id,
         ],
     )?;
     replace_dependencies(
@@ -551,19 +645,25 @@ pub fn patch(conn: &mut Connection, id: &str, p: &TaskPatch) -> ApiResult<Task> 
         predecessor_task_ids.as_deref(),
         unlock_task_ids.as_deref(),
     )?;
+    if p.status.as_deref().is_some_and(|new_status| {
+        new_status != current.status && task::ready_for_parent_completion(new_status)
+    }) {
+        require_ready_children(&tx, id)?;
+    }
     let starts_task = matches!(current.status.as_str(), "未开始" | "取消")
         && p
             .status
             .as_deref()
             .is_some_and(|status| status != "未开始" && status != "取消");
-    if starts_task {
+    if starts_task && !task::ready_for_parent_completion(status) {
         let unfinished = unfinished_predecessors(&tx, id)?;
         if !unfinished.is_empty() {
             return Err(ApiError::unprocessable(
-                "前置任务尚未完成，暂时不能开始本任务",
+                "子任务尚未完成，暂时不能开始本任务",
             ));
         }
     }
+    reopen_ready_ancestors(&tx, &reopen_roots, &now)?;
     tx.commit()?;
     get(conn, id)
 }
@@ -783,6 +883,13 @@ mod tests {
         .unwrap()
     }
 
+    fn set_status(conn: &mut Connection, id: &str, status: &str) -> ApiResult<Task> {
+        patch(conn, id, &TaskPatch {
+            status: Some(status.into()),
+            ..Default::default()
+        })
+    }
+
     fn manual_order(conn: &Connection) -> Vec<String> {
         list(
             conn,
@@ -810,7 +917,7 @@ mod tests {
     #[test]
     fn dependencies_are_bidirectional_and_block_start_until_complete() {
         let mut conn = db::open_memory().unwrap();
-        let predecessor = add(&mut conn, "前置");
+        let predecessor = add(&mut conn, "子任务");
         let task = add(&mut conn, "当前");
         let unlocked = add(&mut conn, "后续");
 
@@ -839,7 +946,7 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, "validation_failed");
-        assert!(error.message.contains("前置任务尚未完成"));
+        assert!(error.message.contains("子任务尚未完成"));
         assert_eq!(get(&conn, &task.id).unwrap().status, "未开始");
         assert!(patch(
             &mut conn,
@@ -849,7 +956,7 @@ mod tests {
                 ..Default::default()
             },
         )
-        .is_err(), "不能通过直接跳到完成状态绕过前置任务");
+        .is_err(), "不能通过直接跳到完成状态绕过子任务");
 
         patch(
             &mut conn,
@@ -876,9 +983,167 @@ mod tests {
     }
 
     #[test]
+    fn parent_review_and_completion_require_ready_children() {
+        let mut conn = db::open_memory().unwrap();
+        let child = add(&mut conn, "子任务");
+        let parent = add(&mut conn, "父级任务");
+        set_status(&mut conn, &child.id, "已完成").unwrap();
+        patch(&mut conn, &parent.id, &TaskPatch {
+            predecessor_task_ids: Some(vec![child.id.clone()]),
+            ..Default::default()
+        }).unwrap();
+        set_status(&mut conn, &parent.id, "进行中").unwrap();
+        set_status(&mut conn, &child.id, "进行中").unwrap();
+
+        for status in ["待验证", "已完成", "验收通过"] {
+            let error = set_status(&mut conn, &parent.id, status).unwrap_err();
+            assert_eq!(error.code, "validation_failed");
+            assert!(error.message.contains("子任务"));
+            let unchanged = get(&conn, &parent.id).unwrap();
+            assert_eq!(unchanged.status, "进行中");
+            assert_eq!(unchanged.finished_at, None);
+        }
+
+        set_status(&mut conn, &child.id, "待验证").unwrap();
+        let direct_parent = add(&mut conn, "直接进入待验证的父级任务");
+        patch(&mut conn, &direct_parent.id, &TaskPatch {
+            predecessor_task_ids: Some(vec![child.id.clone()]),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(set_status(&mut conn, &direct_parent.id, "待验证").unwrap().status, "待验证");
+        assert_eq!(set_status(&mut conn, &parent.id, "待验证").unwrap().status, "待验证");
+        set_status(&mut conn, &child.id, "验收通过").unwrap();
+        assert_eq!(set_status(&mut conn, &parent.id, "已完成").unwrap().status, "已完成");
+    }
+
+    #[test]
+    fn rejected_completion_with_new_child_rolls_back_relationship() {
+        let mut conn = db::open_memory().unwrap();
+        let child = add(&mut conn, "未完成子任务");
+        let parent = add(&mut conn, "父级任务");
+        let result = patch(&mut conn, &parent.id, &TaskPatch {
+            status: Some("待验证".into()),
+            predecessor_task_ids: Some(vec![child.id.clone()]),
+            ..Default::default()
+        });
+        assert_eq!(result.unwrap_err().code, "validation_failed");
+        let parent_after = get(&conn, &parent.id).unwrap();
+        assert_eq!(parent_after.status, "未开始");
+        assert!(parent_after.predecessor_task_ids.is_empty());
+        assert!(get(&conn, &child.id).unwrap().unlock_task_ids.is_empty());
+    }
+
+    #[test]
+    fn child_regression_reopens_every_ready_ancestor() {
+        let mut conn = db::open_memory().unwrap();
+        let child = add(&mut conn, "子任务");
+        let parent = add(&mut conn, "父级任务");
+        let grandparent = add(&mut conn, "上级任务");
+        set_status(&mut conn, &child.id, "已完成").unwrap();
+        patch(&mut conn, &parent.id, &TaskPatch {
+            predecessor_task_ids: Some(vec![child.id.clone()]),
+            ..Default::default()
+        }).unwrap();
+        set_status(&mut conn, &parent.id, "已完成").unwrap();
+        patch(&mut conn, &grandparent.id, &TaskPatch {
+            predecessor_task_ids: Some(vec![parent.id.clone()]),
+            ..Default::default()
+        }).unwrap();
+        set_status(&mut conn, &grandparent.id, "验收通过").unwrap();
+        for id in [&parent.id, &grandparent.id] {
+            conn.execute(
+                "UPDATE tasks SET finished_at='2000-01-01 00:00:00' WHERE id=?1",
+                [id],
+            ).unwrap();
+        }
+        let old_parent_finish = get(&conn, &parent.id).unwrap().finished_at;
+        let old_grandparent_finish = get(&conn, &grandparent.id).unwrap().finished_at;
+
+        set_status(&mut conn, &child.id, "进行中").unwrap();
+        assert_eq!(get(&conn, &parent.id).unwrap().status, "进行中");
+        assert_eq!(get(&conn, &grandparent.id).unwrap().status, "进行中");
+        assert_eq!(get(&conn, &parent.id).unwrap().finished_at, old_parent_finish);
+        assert_eq!(get(&conn, &grandparent.id).unwrap().finished_at, old_grandparent_finish);
+
+        set_status(&mut conn, &child.id, "待验证").unwrap();
+        set_status(&mut conn, &parent.id, "待验证").unwrap();
+        set_status(&mut conn, &grandparent.id, "验收通过").unwrap();
+        set_status(&mut conn, &child.id, "验收未通过").unwrap();
+        assert_eq!(get(&conn, &parent.id).unwrap().status, "进行中");
+        assert_eq!(get(&conn, &grandparent.id).unwrap().status, "进行中");
+    }
+
+    #[test]
+    fn new_child_reopens_ancestors_but_repeating_same_relation_does_not() {
+        let mut conn = db::open_memory().unwrap();
+        let parent = add(&mut conn, "父级任务");
+        let grandparent = add(&mut conn, "上级任务");
+        set_status(&mut conn, &parent.id, "已完成").unwrap();
+        patch(&mut conn, &grandparent.id, &TaskPatch {
+            predecessor_task_ids: Some(vec![parent.id.clone()]),
+            ..Default::default()
+        }).unwrap();
+        set_status(&mut conn, &grandparent.id, "验收通过").unwrap();
+        for id in [&parent.id, &grandparent.id] {
+            conn.execute(
+                "UPDATE tasks SET finished_at='2000-01-01 00:00:00' WHERE id=?1",
+                [id],
+            ).unwrap();
+        }
+
+        let parents = vec![parent.id.clone()];
+        let child = create(&mut conn, &NewTask {
+            project: "default-project",
+            task_type: "优化",
+            description: "新建子任务",
+            note: "",
+            submitter: "用户",
+            owner_user_id: None,
+            priority: None,
+            predecessor_task_ids: &[],
+            unlock_task_ids: &parents,
+        }).unwrap();
+        assert_eq!(get(&conn, &parent.id).unwrap().status, "进行中");
+        assert_eq!(get(&conn, &grandparent.id).unwrap().status, "进行中");
+        assert_eq!(get(&conn, &parent.id).unwrap().finished_at.as_deref(), Some("2000-01-01 00:00:00"));
+        assert_eq!(get(&conn, &grandparent.id).unwrap().finished_at.as_deref(), Some("2000-01-01 00:00:00"));
+        set_status(&mut conn, &child.id, "已完成").unwrap();
+        set_status(&mut conn, &parent.id, "已完成").unwrap();
+        set_status(&mut conn, &grandparent.id, "已完成").unwrap();
+
+        patch(&mut conn, &parent.id, &TaskPatch {
+            predecessor_task_ids: Some(vec![child.id.clone()]),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(get(&conn, &parent.id).unwrap().status, "已完成");
+        assert_eq!(get(&conn, &grandparent.id).unwrap().status, "已完成");
+
+        let extra = add(&mut conn, "额外子任务");
+        patch(&mut conn, &parent.id, &TaskPatch {
+            status: Some("已完成".into()),
+            predecessor_task_ids: Some(vec![child.id, extra.id.clone()]),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(get(&conn, &parent.id).unwrap().status, "进行中");
+        assert_eq!(get(&conn, &grandparent.id).unwrap().status, "进行中");
+
+        set_status(&mut conn, &extra.id, "已完成").unwrap();
+        set_status(&mut conn, &parent.id, "已完成").unwrap();
+        set_status(&mut conn, &grandparent.id, "已完成").unwrap();
+        let via_child = add(&mut conn, "从子任务一侧新增关系");
+        set_status(&mut conn, &via_child.id, "已完成").unwrap();
+        patch(&mut conn, &via_child.id, &TaskPatch {
+            unlock_task_ids: Some(vec![parent.id.clone()]),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(get(&conn, &parent.id).unwrap().status, "进行中");
+        assert_eq!(get(&conn, &grandparent.id).unwrap().status, "进行中");
+    }
+
+    #[test]
     fn create_with_status_rolls_back_when_predecessor_is_unfinished() {
         let mut conn = db::open_memory().unwrap();
-        let predecessor = add(&mut conn, "前置未完成");
+        let predecessor = add(&mut conn, "子任务未完成");
         let ids = vec![predecessor.id.clone()];
         let before: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0)).unwrap();
         let result = create_with_status(&mut conn, &NewTask {
@@ -895,6 +1160,34 @@ mod tests {
         assert_eq!(result.unwrap_err().code, "validation_failed");
         let after: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0)).unwrap();
         assert_eq!(after, before, "失败创建不能留下任务或依赖关系");
+    }
+
+    #[test]
+    fn create_with_ready_status_checks_children_and_allows_reviewing_children() {
+        let mut conn = db::open_memory().unwrap();
+        let child = add(&mut conn, "子任务");
+        let ids = vec![child.id.clone()];
+        let new_parent = NewTask {
+            project: "default-project",
+            task_type: "优化",
+            description: "创建时进入待验证的父级任务",
+            note: "",
+            submitter: "Agent",
+            owner_user_id: Some("host"),
+            priority: None,
+            predecessor_task_ids: &ids,
+            unlock_task_ids: &[],
+        };
+        assert_eq!(
+            create_with_status(&mut conn, &new_parent, Some("待验证"))
+                .unwrap_err()
+                .code,
+            "validation_failed"
+        );
+        set_status(&mut conn, &child.id, "待验证").unwrap();
+        let parent = create_with_status(&mut conn, &new_parent, Some("待验证")).unwrap();
+        assert_eq!(parent.status, "待验证");
+        assert_eq!(parent.predecessor_task_ids, ids);
     }
 
     #[test]
@@ -926,6 +1219,68 @@ mod tests {
 
         remove(&conn, &b.id).unwrap();
         assert!(get(&conn, &a.id).unwrap().unlock_task_ids.is_empty());
+    }
+
+    #[test]
+    fn patch_assignee_set_clear_keep_and_unknown_user() {
+        let mut conn = db::open_memory().unwrap();
+        let task = add(&mut conn, "负责人");
+        assert_eq!(task.assignee_user_id, None);
+        assert_eq!(task.assignee_name, None);
+
+        // 未提及负责人字段：保持不变
+        let kept = patch(
+            &mut conn,
+            &task.id,
+            &TaskPatch {
+                note: Some("不动负责人".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(kept.assignee_user_id, None);
+
+        // 指派给主机账号的 Agent；展示名与提交人的 Agent 形态一致
+        let assigned = patch(
+            &mut conn,
+            &task.id,
+            &TaskPatch {
+                assignee_user_id: Some(Some("host".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(assigned.assignee_user_id.as_deref(), Some("host"));
+        assert_eq!(assigned.assignee_name.as_deref(), Some("Agent（主机）"));
+
+        // 不存在的用户 → 422，且不改写负责人
+        let error = patch(
+            &mut conn,
+            &task.id,
+            &TaskPatch {
+                assignee_user_id: Some(Some("ghost".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "validation_failed");
+        assert_eq!(
+            get(&conn, &task.id).unwrap().assignee_user_id.as_deref(),
+            Some("host")
+        );
+
+        // 显式清空
+        let cleared = patch(
+            &mut conn,
+            &task.id,
+            &TaskPatch {
+                assignee_user_id: Some(None),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cleared.assignee_user_id, None);
+        assert_eq!(cleared.assignee_name, None);
     }
 
     #[test]

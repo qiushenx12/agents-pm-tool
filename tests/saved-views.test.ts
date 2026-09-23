@@ -65,7 +65,33 @@ it("never claims a saved view after storage failure", () => {
   expect(() => saved.save("不能保存")).toThrow("无法保存");
   expect(saved.views).toHaveLength(0);
 });
-it("keeps only description pinned while persisting movable notes and migrating old preferences", async () => {
+it("default columns follow the task field order and are all visible", () => {
+  const view = useViewStore();
+  // 任务 202609231148520000：新装用户的默认列顺序；操作列固定最后，不在此列表内
+  expect(view.columns.map((column) => column.key)).toEqual([
+    "description",
+    "project",
+    "type",
+    "priority",
+    "status",
+    "submitter",
+    "assignee",
+    "attachments",
+    "created_at",
+    "finished_at",
+    "note",
+    "id",
+    "predecessor_task_ids",
+    "unlock_task_ids",
+  ]);
+  expect(view.columns.every((column) => column.visible)).toBe(true);
+  expect(view.columns.slice(-2).map((column) => column.label)).toEqual([
+    "子任务 ID",
+    "父级任务 ID",
+  ]);
+});
+
+it("preserves saved order while allowing description to move and migrating old preferences", async () => {
   localStorage.setItem(
     "pm-table-view-v1",
     JSON.stringify({
@@ -73,31 +99,34 @@ it("keeps only description pinned while persisting movable notes and migrating o
         { key: "status", visible: true, width: 130 },
         null,
         { key: "project", visible: true, width: 150 },
+        // 用户手动隐藏的列不受「默认全部展示」影响
+        { key: "finished_at", visible: false, width: 172 },
         { key: "obsolete" },
       ],
     }),
   );
   const view = useViewStore();
+  expect(view.columns[0].key).toBe("status");
+  expect(view.columns[1].key).toBe("project");
+  expect(view.columns[3].key).toBe("description");
+  expect(view.columns.find((c) => c.key === "finished_at")!.visible).toBe(
+    false,
+  );
+  view.moveBefore("description", "status");
   expect(view.columns[0].key).toBe("description");
-  expect(view.columns[1].key).toBe("status");
-  view.moveBefore("project", "status");
   view.moveColumn("description", 1);
-  view.moveBefore("status", "description");
-  view.moveColumn("note", -1);
-  view.moveBefore("note", "status");
+  expect(view.columns[0].key).toBe("status");
+  view.moveBefore("project", "status");
+  view.moveBefore("description", "actions");
   await nextTick();
-  expect(view.columns.slice(0, 4).map((c) => c.key)).toEqual([
-    "description",
-    "project",
-    "note",
-    "status",
-  ]);
+  expect(view.columns[0].key).toBe("project");
+  expect(view.columns.at(-1)?.key).toBe("description");
   const persisted = JSON.parse(localStorage.getItem("pm-table-view-v1")!);
-  expect(persisted.columns[1].key).toBe("project");
+  expect(persisted.columns[0].key).toBe("project");
+  expect(persisted.columns.at(-1).key).toBe("description");
   expect(view.columns.some((c) => c.key === "obsolete")).toBe(false);
-  // description + project/type/priority/status/dependencies/submitter/attachments/created_at/finished_at/id/note
-  expect(view.columns).toHaveLength(13);
-  expect(view.columns[2]).toMatchObject({
+  expect(view.columns).toHaveLength(14);
+  expect(view.columns.find((c) => c.key === "note")).toMatchObject({
     key: "note",
     label: "备注",
     visible: true,

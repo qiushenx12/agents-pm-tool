@@ -41,10 +41,17 @@ pub struct Task {
     #[serde(default)]
     pub attachment_count: i64,
     pub owner_user_id: Option<String>,
-    /// 本任务开始前必须完成的任务 ID，按任务序号排序。
+    /// 负责人：Agent 把任务从「未开始」推进到其它任意状态时自动认领（记录 token 所属用户）。
+    /// 认领后其它 Agent 不能再修改该任务；网页端用户仍按自身权限修改，也可改派或清空。
+    #[serde(default)]
+    pub assignee_user_id: Option<String>,
+    /// 展示用：`Agent（用户名）`；无负责人时为 None。
+    #[serde(default)]
+    pub assignee_name: Option<String>,
+    /// 本任务的子任务 ID；进入进行中或完成流程的门槛不同，按任务序号排序。
     #[serde(default)]
     pub predecessor_task_ids: Vec<String>,
-    /// 完成本任务后可解锁的任务 ID，按任务序号排序。
+    /// 本任务的父级任务 ID；子任务回退或新增时父级可能回到进行中，按任务序号排序。
     #[serde(default)]
     pub unlock_task_ids: Vec<String>,
 }
@@ -78,9 +85,14 @@ pub fn is_agent_status(s: &str) -> bool {
     AGENT_STATUSES.contains(&s)
 }
 
-/// 只有明确完成或验收通过才满足后续任务的前置条件；待验证尚未完成验收流程。
+/// 只有明确完成或验收通过才满足父级任务的开始条件；待验证尚未完成验收流程。
 pub fn satisfies_predecessor(status: &str) -> bool {
     status == "已完成" || status == "验收通过"
+}
+
+/// 子任务进入这些状态后，父级任务才可以进入待验证、已完成或验收通过。
+pub fn ready_for_parent_completion(status: &str) -> bool {
+    matches!(status, "待验证" | "已完成" | "验收通过")
 }
 
 pub fn submitter_name(submitter: &str, owner_username: Option<&str>) -> String {
@@ -95,8 +107,18 @@ pub fn submitter_name(submitter: &str, owner_username: Option<&str>) -> String {
     }
 }
 
-/// 状态迁移统一入口（规划 §7）：返回新的 finished_at。
-/// 规则：每次进入「待验证」「已完成」或「验收通过」刷新为当前时间（latest-wins）；
+/// 负责人展示名：与 `submitter_name` 的 Agent 形态一致（`Agent（用户名）`）。
+/// assignee_user_id 为 None 时返回 None；账号已删除（外键置空外的异常情况）回退「未知用户」。
+pub fn assignee_name(assignee_user_id: Option<&str>, username: Option<&str>) -> Option<String> {
+    assignee_user_id?;
+    let username = username
+        .map(str::trim)
+        .filter(|username| !username.is_empty())
+        .unwrap_or("未知用户");
+    Some(format!("Agent（{username}）"))
+}
+
+/// 状态迁移统一入口（规划 §7）：返回新的 finished_at。/// 规则：每次进入「待验证」「已完成」或「验收通过」刷新为当前时间（latest-wins）；
 /// 离开这几个状态不清空。「验收通过」是终态，必须记完成时间。
 /// 「取消」不刷新也不清空 finished_at。
 pub fn transition(new_status: &str, current_finished_at: Option<String>) -> Option<String> {
@@ -110,6 +132,19 @@ pub fn transition(new_status: &str, current_finished_at: Option<String>) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assignee_display_mirrors_agent_submitter_form() {
+        assert_eq!(assignee_name(None, Some("主机")), None);
+        assert_eq!(
+            assignee_name(Some("u1"), Some("alice")).as_deref(),
+            Some("Agent（alice）")
+        );
+        assert_eq!(
+            assignee_name(Some("gone"), None).as_deref(),
+            Some("Agent（未知用户）")
+        );
+    }
 
     #[test]
     fn transition_refreshes_on_review_and_done() {

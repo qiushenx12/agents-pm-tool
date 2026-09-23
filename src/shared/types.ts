@@ -172,9 +172,13 @@ export interface Task {
   position: number;
   attachment_count?: number;
   owner_user_id?: string | null;
-  /** 本任务开始前必须完成的任务 ID。 */
+  /** 负责人账号：Agent 把任务从「未开始」推进到其它状态时自动认领；空表示未认领。 */
+  assignee_user_id?: string | null;
+  /** 负责人展示名：`Agent（用户名）`；无负责人时为空。 */
+  assignee_name?: string | null;
+  /** 本任务的子任务 ID；进入进行中或完成流程的门槛不同。 */
   predecessor_task_ids?: string[];
-  /** 完成本任务后可解锁的任务 ID。 */
+  /** 本任务的父级任务 ID；子任务回退或新增时父级可能回到进行中。 */
   unlock_task_ids?: string[];
 }
 

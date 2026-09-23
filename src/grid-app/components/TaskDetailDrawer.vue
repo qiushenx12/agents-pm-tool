@@ -195,6 +195,22 @@ async function removeTask() {
     notify(errorText(e), "error");
   }
 }
+async function clearAssignee() {
+  if (
+    !(await askConfirm(
+      "清除负责人",
+      "清除后任意 Agent 都可以继续修改该任务，确认清除负责人？",
+      "清除",
+    ))
+  )
+    return;
+  try {
+    await tasks.updateTask(props.task.id, { assignee_user_id: null });
+    notify("负责人已清除");
+  } catch (e) {
+    notify(errorText(e), "error");
+  }
+}
 </script>
 <template>
   <UiDialog title="任务详情" drawer :busy="busy" @close="close">
@@ -289,7 +305,7 @@ async function removeTask() {
         ><TaskField :task="current" field="status" :editable="!missing" form />
       </div>
       <div class="property-row">
-        <span><UiIcon name="git" />前置任务 ID</span>
+        <span><UiIcon name="git" />子任务 ID</span>
         <TaskMultiSelect
           :model-value="current.predecessor_task_ids ?? []"
           :options="
@@ -297,7 +313,7 @@ async function removeTask() {
               (task) => !(current.unlock_task_ids ?? []).includes(task.id),
             )
           "
-          label="前置任务 ID"
+          label="子任务 ID"
           :exclude-id="current.id"
           :disabled="missing || busy"
           :loading="dependencyOptionsLoading"
@@ -306,7 +322,7 @@ async function removeTask() {
         />
       </div>
       <div class="property-row">
-        <span><UiIcon name="git" />解锁任务 ID</span>
+        <span><UiIcon name="git" />父级任务 ID</span>
         <TaskMultiSelect
           :model-value="current.unlock_task_ids ?? []"
           :options="
@@ -314,7 +330,7 @@ async function removeTask() {
               (task) => !(current.predecessor_task_ids ?? []).includes(task.id),
             )
           "
-          label="解锁任务 ID"
+          label="父级任务 ID"
           :exclude-id="current.id"
           :disabled="missing || busy"
           :loading="dependencyOptionsLoading"
@@ -333,6 +349,26 @@ async function removeTask() {
               :name="current.submitter === 'Agent' ? 'bot' : 'user'"
               :size="12" /></span
           >{{ current.submitter_name || current.submitter }}
+        </div>
+      </div>
+      <div class="property-row">
+        <span><UiIcon name="bot" />负责人</span>
+        <div class="assignee-value">
+          <div v-if="current.assignee_name" class="submitter-tag agent">
+            <span class="submitter-avatar"
+              ><UiIcon name="bot" :size="12" /></span
+            >{{ current.assignee_name }}
+          </div>
+          <span v-else class="detail-date">—</span>
+          <button
+            v-if="current.assignee_user_id && !missing"
+            class="btn btn-ghost btn-sm"
+            :disabled="busy"
+            title="清除后任意 Agent 都可以继续修改该任务"
+            @click="clearAssignee"
+          >
+            清除
+          </button>
         </div>
       </div>
       <div class="property-row">

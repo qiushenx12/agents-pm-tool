@@ -123,6 +123,48 @@ fn native_title_bar_theme(theme: Option<&str>) -> Option<tauri::Theme> {
     }
 }
 
+/// Windows 11 的原生标题栏在失焦时，单靠 set_theme 可能只更新文字色。
+/// 显式设置 DWM caption 背景；未选择主题时恢复系统默认色。
+#[cfg(windows)]
+fn workspace_caption_color(theme: Option<&str>) -> u32 {
+    match theme {
+        Some("dark") => 0x0028_2320,  // --card: #202328, COLORREF = 0x00BBGGRR
+        Some("light") => 0x00ff_ffff, // --card: #ffffff
+        _ => 0xffff_ffff,             // DWMWA_COLOR_DEFAULT
+    }
+}
+
+#[cfg(windows)]
+fn set_workspace_caption_color<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    theme: Option<&str>,
+) {
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR};
+
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let color = workspace_caption_color(theme);
+    // Windows 10 不支持 DWMWA_CAPTION_COLOR；失败时仍保留 Tauri 的主题处理。
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            (&color as *const u32).cast(),
+            std::mem::size_of_val(&color) as u32,
+        );
+    }
+}
+
+fn apply_workspace_title_bar_theme<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    theme: Option<&str>,
+) {
+    let _ = window.set_theme(native_title_bar_theme(theme));
+    #[cfg(windows)]
+    set_workspace_caption_color(window, theme);
+}
+
 /// 让已打开的应用窗口跟上服务端口——端口变更会重启服务，旧地址随即失效。
 /// 只比较 origin：网页端自身可能改过路径，不该被强行拉回首页。
 fn sync_app_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>, port: u16) {
@@ -189,6 +231,7 @@ pub fn focus_or_create_app_window<R: tauri::Runtime>(
     let window = builder
         .build()
         .map_err(|e| format!("打开应用窗口失败：{e}"))?;
+    apply_workspace_title_bar_theme(&window, theme.as_deref());
     if let (Some(state), Some(geometry)) = (app.try_state::<AppState>(), geometry) {
         let fitted = window_state::apply_geometry(&window, geometry);
         // 先按这份几何预热：用户什么都没动就关窗时，也能原样存回去
@@ -653,8 +696,12 @@ pub fn run() {
                         let _ = app.emit("theme-changed", theme.clone());
                         // 应用窗口的原生顶栏也跟着换（DWM 沉浸式深色模式）
                         if let Some(window) = app.get_webview_window(APP_WINDOW_LABEL) {
-                            let _ =
-                                window.set_theme(native_title_bar_theme(theme.as_deref()));
+                            // Tauri 从后台线程排队 set_theme；在主线程连续更新 DWM 背景，
+                            // 避免失焦窗口只换了文字色、背景留在上一个主题。
+                            let target = window.clone();
+                            let _ = window.run_on_main_thread(move || {
+                                apply_workspace_title_bar_theme(&target, theme.as_deref());
+                            });
                         }
                     }
                 });
@@ -826,6 +873,17 @@ pub fn run() {
 mod tests {
     use super::{native_title_bar_theme, view_for_window, window_close_action, WindowCloseAction};
     use crate::window_state::ActiveView;
+
+    #[cfg(windows)]
+    #[test]
+    fn inactive_workspace_caption_uses_the_selected_theme_color() {
+        use super::workspace_caption_color;
+
+        // COLORREF is 0x00BBGGRR. Match the workspace's --card color in each theme.
+        assert_eq!(workspace_caption_color(Some("dark")), 0x0028_2320);
+        assert_eq!(workspace_caption_color(Some("light")), 0x00ff_ffff);
+        assert_eq!(workspace_caption_color(None), 0xffff_ffff);
+    }
 
     #[test]
     fn maps_global_theme_to_native_title_bar() {

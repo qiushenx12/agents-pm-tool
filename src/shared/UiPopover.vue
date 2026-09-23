@@ -17,9 +17,13 @@ const position = ref({
 });
 let layer = 0;
 let previous: HTMLElement | null = null;
+let contextPoint: { x: number; y: number } | null = null;
+let openEpoch = 0;
 function place() {
   if (!anchor.value || !panel.value) return;
-  const r = anchor.value.getBoundingClientRect();
+  const r = contextPoint
+    ? { left: contextPoint.x, right: contextPoint.x, top: contextPoint.y, bottom: contextPoint.y }
+    : anchor.value.getBoundingClientRect();
   const width = Math.min(props.width, window.innerWidth - 24);
   const below = window.innerHeight - r.bottom - 16;
   const above = r.top - 16;
@@ -31,7 +35,7 @@ function place() {
       Math.max(
         12,
         Math.min(
-          props.align === "right" ? r.right - width : r.left,
+          contextPoint ? r.left : props.align === "right" ? r.right - width : r.left,
           window.innerWidth - width - 12,
         ),
       ) + "px",
@@ -44,6 +48,8 @@ function place() {
 function close(restore = true) {
   if (!open.value) return;
   open.value = false;
+  openEpoch++;
+  contextPoint = null;
   leaveLayer(layer);
   window.removeEventListener("resize", place);
   window.removeEventListener("scroll", place, true);
@@ -62,7 +68,9 @@ async function toggle() {
   previous = document.activeElement as HTMLElement;
   layer = enterLayer();
   open.value = true;
+  const epoch = ++openEpoch;
   await nextTick();
+  if (!open.value || epoch !== openEpoch) return;
   place();
   const selected = panel.value?.querySelector<HTMLElement>(
     '[aria-selected="true"]',
@@ -74,6 +82,11 @@ async function toggle() {
   window.addEventListener("scroll", place, true);
   document.addEventListener("pointerdown", outside, true);
   document.addEventListener("keydown", keyboard, true);
+}
+async function openAt(x: number, y: number) {
+  if (open.value) close(false);
+  contextPoint = { x, y };
+  await toggle();
 }
 function outside(e: PointerEvent) {
   if (!isTopLayer(layer)) return;
@@ -108,7 +121,7 @@ function keyboard(e: KeyboardEvent) {
   }
 }
 onBeforeUnmount(() => close(false));
-defineExpose({ toggle, close });
+defineExpose({ toggle, openAt, close });
 </script>
 <template>
   <span ref="anchor" class="popover-anchor" @click.stop @keydown.stop

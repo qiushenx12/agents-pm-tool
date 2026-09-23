@@ -271,6 +271,16 @@ async fn apply_patch(
     }
     let mut conn = core.db.lock().unwrap();
     let current = tasks::get(&conn, &id)?;
+    // 负责人锁定：任务被某个 Agent 认领后，其它 Agent 一律不能再修改（含状态/优先级/描述等所有字段）；
+    // 只有网页端用户可按自身权限继续修改或改派。负责人账号被删除时外键置空，任务自动重新开放。
+    if let Some(assignee) = current.assignee_user_id.as_deref() {
+        if assignee != user.id {
+            return Err(ApiError::forbidden(format!(
+                "该任务的负责人是{}，其它 Agent 不能修改",
+                current.assignee_name.as_deref().unwrap_or("其他 Agent")
+            )));
+        }
+    }
     let agent = agent_permissions::get(&conn, &user.id)?;
     let mut fields = Vec::new();
     for (field, present, value) in [
@@ -317,6 +327,17 @@ async fn apply_patch(
     super::api_web::preserve_hidden_relationships(
         &conn, &user, &current.unlock_task_ids, &mut patch.unlock_task_ids,
     )?;
+    // 认领规则：Agent 把任务从「未开始」推进到其它任意状态时，自动成为该任务负责人。
+    // 已有负责人时上面已通过锁定校验（只可能是自己），此处不重复写入。
+    let agent_claims = current.status == "未开始"
+        && current.assignee_user_id.is_none()
+        && patch
+            .status
+            .as_deref()
+            .is_some_and(|status| status != "未开始");
+    if agent_claims {
+        patch.assignee_user_id = Some(Some(user.id.clone()));
+    }
     let mut task = tasks::patch(&mut conn, &id, &patch)?;
     let visible = permissions::visible_projects(&conn, &user)?;
     tasks::retain_visible_dependencies(&conn, std::slice::from_mut(&mut task), visible.as_deref())?;
@@ -341,6 +362,8 @@ pub async fn patch_task(
         note: body.note,
         status: body.status,
         priority: body.priority,
+        // 负责人不开放给 Agent 直接修改：只能由认领规则或网页端写入。
+        assignee_user_id: None,
         predecessor_task_ids: body.predecessor_task_ids,
         unlock_task_ids: body.unlock_task_ids,
     }).await
@@ -465,7 +488,7 @@ pub async fn get_permissions(
     }
     Ok(Json(serde_json::json!({
         "projects": result,
-        "immutable_fields": ["id", "seq", "submitter", "submitter_name", "created_at", "finished_at", "updated_at", "position", "owner_user_id", "attachment_count"],
+        "immutable_fields": ["id", "seq", "submitter", "submitter_name", "created_at", "finished_at", "updated_at", "position", "owner_user_id", "assignee_user_id", "assignee_name", "attachment_count"],
         "read_access": "已授权项目中的任务、项目与附件可读；附件上传/删除和任务删除仍仅限网页端",
     })))
 }
@@ -562,8 +585,9 @@ pub async fn help(State(core): State<CoreState>, headers: HeaderMap) -> Json<ser
             "可以查看/筛选已授权项目中的任务和项目，并查看或下载其附件。",
             "创建与修改能力由管理员配置的 Agent 权限和账号项目/字段授权共同决定；GET /api/agent/permissions 返回当前 token 的有效权限。",
             "默认权限与旧版一致：可创建任务、改状态为进行中/待验证/已完成、改优先级、修改自己 Agent 创建任务的非空描述。管理员可以额外授予其它可编辑字段或状态值。",
-            "存在 predecessor_task_ids 时，只有这些任务处于已完成或验收通过，当前任务才能开始。",
-            "ID、提交人、时间戳等不可变字段不能由客户端设置；删除任务、上传或删除附件、管理项目、直接读写 SQLite 始终不开放给 Agent。"
+            "任务关系：predecessor_task_ids=本任务的子任务；unlock_task_ids=本任务的父级任务。从未开始或取消启动为进行中时，子任务须全部已完成或验收通过；进入待验证、已完成或验收通过时，子任务须全部待验证、已完成或验收通过。子任务回退或新增时，处于待验证、已完成、验收通过的各级父任务会回到进行中。",
+            "负责人：Agent 把任务从「未开始」推进到其它任意状态时自动成为该任务的负责人；已有负责人的任务只能被该负责人（同一账号的 Agent）修改，其它 Agent 的修改会被拒绝（HTTP 403），网页端用户不受此限制。",
+            "ID、提交人、时间戳、负责人等不可变字段不能由客户端设置；删除任务、上传或删除附件、管理项目、直接读写 SQLite 始终不开放给 Agent。"
         ]
     }))
 }

@@ -360,6 +360,7 @@ function printTaskDetail(task) {
     `状态：     ${text(task?.status)}`,
     `优先级：   ${text(task?.priority ?? "中")}`,
     `提交人：   ${text(task?.submitter_name ?? task?.submitter)}`,
+    `负责人：   ${task?.assignee_name ? text(task.assignee_name) : "—"}`,
     `创建时间： ${text(task?.created_at)}`,
     `完成时间： ${task?.finished_at ? text(task.finished_at) : "—"}`,
     `描述：     ${text(task?.description)}`,
@@ -543,12 +544,12 @@ const COMMAND_HELP = {
     summary: "创建任务。项目、类型、描述三必填；其它字段按当前权限设置，优先级默认「中」。",
     usage:
       'pm-cli create --project <项目> --type <类型> --description <描述> [--note <备注>] [--status <状态>] [--priority <优先级>] [--predecessor-task-ids <ID,ID>] [--unlock-task-ids <ID,ID>] [--json]',
-    details: ["创建者固定为该 token 所属账号的 Agent 身份；依赖任务 ID 用英文逗号分隔。", "先运行 pm-cli permissions 查看哪些可选字段已获授权。"],
+    details: ["创建者固定为该 token 所属账号的 Agent 身份；关联任务 ID 用英文逗号分隔。", "先运行 pm-cli permissions 查看哪些可选字段已获授权。", "关系：predecessor_task_ids=本任务的子任务；unlock_task_ids=本任务的父级任务。", "进入待验证、已完成或验收通过前，子任务须全部待验证、已完成或验收通过；新增子任务会让已进入这些状态的各级父任务回到进行中。"],
   },
   update: {
     summary: "一次修改一个或多个任务字段；仅授权、合法的参数会生效。",
     usage: "pm-cli update <任务ID> [--project <项目>] [--type <类型>] [--description <描述>] [--note <备注>] [--status <状态>] [--priority <优先级>] [--predecessor-task-ids <ID,ID>] [--unlock-task-ids <ID,ID>] [--json]",
-    details: ["至少指定一个待修改字段；给依赖 ID 选项传空字符串可清空关联。", "ID、提交人、创建/完成时间等不可变字段不支持修改。"],
+    details: ["至少指定一个待修改字段；给关联任务 ID 选项传空字符串可清空关联。", "ID、提交人、创建/完成时间等不可变字段不支持修改。", "关系：predecessor_task_ids=本任务的子任务；unlock_task_ids=本任务的父级任务。"],
   },
   status: {
     summary: "修改任务状态；默认只可切到进行中、待验证、已完成，管理员可调整。",

@@ -14,7 +14,7 @@ use rusqlite::Connection;
 
 use crate::error::ApiResult;
 
-const USER_VERSION: i32 = 13;
+const USER_VERSION: i32 = 14;
 
 fn configure(conn: &Connection) -> ApiResult<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -34,8 +34,10 @@ fn configure(conn: &Connection) -> ApiResult<()> {
 /// v9：历史任务回填主机归属；新任务由创建入口写入实际 owner_user_id
 /// v10：user_view_state（按用户保存的分组/排序/筛选，供网页端与应用内窗口共用）
 /// v11：tasks 增加 priority（高/中/低，默认中；含 CHECK，新列按 NOT NULL DEFAULT 追加）
-/// v12：task_dependencies（前置任务与解锁任务的规范化关系）
+/// v12：task_dependencies（子任务与父级任务的规范化关系）
 /// v13：agent_permission_profiles（按用户配置 Agent 能力；缺失行沿用旧版默认权限）
+/// v14：tasks 增加 assignee_user_id（负责人：Agent 把任务从「未开始」推进时自动认领，
+///      认领后其它 Agent 不能再修改；网页端按授权改派或清空）
 fn migrate(conn: &Connection) -> ApiResult<()> {
     let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version < 1 {
@@ -207,6 +209,17 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
              COMMIT;",
         )?;
     }
+    if version < 14 {
+        // 默认 NULL（无负责人），新列加常量默认值之外的引用约束允许直接 ALTER 追加；
+        // 账号删除时 ON DELETE SET NULL 自动清空负责人，任务重新对所有 Agent 开放。
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE tasks ADD COLUMN assignee_user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+             CREATE INDEX idx_tasks_assignee ON tasks(assignee_user_id);
+             PRAGMA user_version = 14;
+             COMMIT;",
+        )?;
+    }
     debug_assert!(version <= USER_VERSION);
     Ok(())
 }
@@ -344,9 +357,14 @@ mod tests {
                ('owned-user', 2, 'default-project', '优化', '已有归属', '未开始', '用户', '2026-01-02', '2026-01-02', 2, '', 'alice');",
         )
         .unwrap();
-        // 回退到 v8 之前；v11 列已存在，需一并去掉以模拟旧库
-        conn.execute_batch("PRAGMA user_version = 8; ALTER TABLE tasks DROP COLUMN priority;")
-            .unwrap();
+        // 回退到 v8 之前；v11 与 v14 的列已存在，需一并去掉以模拟旧库
+        conn.execute_batch(
+            "PRAGMA user_version = 8;
+             ALTER TABLE tasks DROP COLUMN priority;
+             DROP INDEX idx_tasks_assignee;
+             ALTER TABLE tasks DROP COLUMN assignee_user_id;",
+        )
+        .unwrap();
 
         migrate(&conn).unwrap();
 
@@ -375,9 +393,15 @@ mod tests {
     #[test]
     fn version_nine_database_gains_user_view_state_table() {
         let conn = open_memory().unwrap();
-        // 模拟 v9 旧库：没有按用户保存的视图设置，也没有 v11 的 priority 列
-        conn.execute_batch("DROP TABLE user_view_state; PRAGMA user_version = 9; ALTER TABLE tasks DROP COLUMN priority;")
-            .unwrap();
+        // 模拟 v9 旧库：没有按用户保存的视图设置，也没有 v11 的 priority、v14 的负责人列
+        conn.execute_batch(
+            "DROP TABLE user_view_state;
+             PRAGMA user_version = 9;
+             ALTER TABLE tasks DROP COLUMN priority;
+             DROP INDEX idx_tasks_assignee;
+             ALTER TABLE tasks DROP COLUMN assignee_user_id;",
+        )
+        .unwrap();
 
         migrate(&conn).unwrap();
 
@@ -453,8 +477,14 @@ mod tests {
     #[test]
     fn version_eleven_database_gains_empty_dependency_table() {
         let conn = open_memory().unwrap();
-        conn.execute_batch("DROP TABLE task_dependencies; PRAGMA user_version = 11;")
-            .unwrap();
+        // 模拟 v11 旧库：没有任务依赖表，也没有 v14 的负责人列
+        conn.execute_batch(
+            "DROP TABLE task_dependencies;
+             PRAGMA user_version = 11;
+             DROP INDEX idx_tasks_assignee;
+             ALTER TABLE tasks DROP COLUMN assignee_user_id;",
+        )
+        .unwrap();
 
         migrate(&conn).unwrap();
 
@@ -471,14 +501,70 @@ mod tests {
     #[test]
     fn version_twelve_database_gains_agent_permissions_with_old_defaults() {
         let conn = open_memory().unwrap();
-        conn.execute_batch("DROP TABLE agent_permission_profiles; PRAGMA user_version = 12;")
-            .unwrap();
+        // 模拟 v12 旧库：没有 Agent 权限配置表，也没有 v14 的负责人列
+        conn.execute_batch(
+            "DROP TABLE agent_permission_profiles;
+             PRAGMA user_version = 12;
+             DROP INDEX idx_tasks_assignee;
+             ALTER TABLE tasks DROP COLUMN assignee_user_id;",
+        )
+        .unwrap();
 
         migrate(&conn).unwrap();
 
         let profile = agent_permissions::get(&conn, "host").unwrap();
         assert_eq!(profile, agent_permissions::AgentPermissions::default());
         assert_eq!(profile.edit_fields, ["status", "priority", "description"]);
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, USER_VERSION);
+    }
+
+    #[test]
+    fn version_thirteen_database_gains_empty_assignee_column() {
+        let conn = open_memory().unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, seq, project, type, description, status, submitter, created_at, updated_at, position, note, owner_user_id)
+             VALUES ('legacy-assignee', 7, 'default-project', '优化', '存量任务', '未开始', '用户', '2026-01-01', '2026-01-01', 7, '', 'host')",
+            [],
+        )
+        .unwrap();
+        // 模拟 v13 旧库：tasks 表还没有负责人列
+        conn.execute_batch(
+            "DROP INDEX idx_tasks_assignee;
+             ALTER TABLE tasks DROP COLUMN assignee_user_id;
+             PRAGMA user_version = 13;",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        assert!(task_columns(&conn).iter().any(|column| column == "assignee_user_id"));
+        // 存量任务负责人为空
+        let assignee: Option<String> = conn
+            .query_row(
+                "SELECT assignee_user_id FROM tasks WHERE id='legacy-assignee'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(assignee, None);
+        // 负责人账号被删除时外键置空，任务重新对所有 Agent 开放
+        conn.execute(
+            "UPDATE tasks SET assignee_user_id='host' WHERE id='legacy-assignee'",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM users WHERE id='host'", []).unwrap();
+        let cleared: Option<String> = conn
+            .query_row(
+                "SELECT assignee_user_id FROM tasks WHERE id='legacy-assignee'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cleared, None);
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();

@@ -171,6 +171,7 @@ agents-pm-tool/
 - Web 创建任务时提交人固定为“用户”；Agent API 创建时固定为“Agent”。
 - `tasks.submitter` 只表示不可变的提交来源枚举；`owner_user_id` 记录实际创建账号，任务 DTO 的 `submitter_name` 显示用户名或 `Agent（用户名）`。无法追溯账号的历史记录显示“未知用户”。
 - Web 创建状态固定为“未开始”；Agent 创建也默认“未开始”，仅在单独获得创建时设置状态的权限、且目标值合法并经账号字段授权时可指定其它状态。
+- `tasks.assignee_user_id` 是负责人（认领该任务的 Agent 所属账号），默认为空：Agent 通过 `/api/agent/*` 把任务状态从「未开始」推进到其它任意状态时自动认领为当前 token 用户；此后其它账号的 Agent 对任务的任何修改都被服务端拒绝（403），网页端用户不受此限制，可在授权下（字段 `assignee`）改派或清空；负责人账号删除时外键 `ON DELETE SET NULL` 自动清空。Agent 不能直接读写负责人字段，DTO 的 `assignee_name` 显示为 `Agent（用户名）`。
 - ID、提交人、创建时间和完成时间均不可由客户端直接修改。
 
 枚举在以下位置保持一致：

@@ -171,6 +171,10 @@ afterAll(async () => {
 describe("帮助与参数", () => {
   it("默认帮助先说明如何找到 pm-cli", async () => {
     const result = await run(["--help"]);
+    const createHelp = await run(["create", "--help"]);
+    expect(createHelp.stdout).toContain("本任务的子任务");
+    expect(createHelp.stdout).toContain("本任务的父级任务");
+    expect(createHelp.stdout).toContain("新增子任务会让已进入这些状态的各级父任务回到进行中");
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("先找到 pm-cli");
     expect(result.stdout).toContain("脚本在 skill 目录的 bin/ 下");

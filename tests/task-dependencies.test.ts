@@ -31,7 +31,7 @@ afterEach(() => {
 
 it("displays selected task IDs with commas and supports multiple selections", async () => {
   const selected = ref(["1", "2"]);
-  const options = [task("1", "前置一"), task("2", "前置二"), task("3", "前置三")];
+  const options = [task("1", "子任务一"), task("2", "子任务二"), task("3", "子任务三")];
   host = document.createElement("div");
   document.body.append(host);
   app = createApp({
@@ -39,7 +39,7 @@ it("displays selected task IDs with commas and supports multiple selections", as
       h(TaskMultiSelect, {
         modelValue: selected.value,
         options,
-        label: "前置任务 ID",
+        label: "子任务 ID",
         "onUpdate:modelValue": (value: string[]) => (selected.value = value),
       }),
   });

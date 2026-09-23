@@ -300,23 +300,28 @@
   font-size: 13px;
   font-weight: 600;
 }
+.relation-toolbar-copy {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 10px;
+  min-width: 0;
+}
 .relation-count {
-  margin-left: 10px;
   color: var(--text-tertiary);
   font-size: 12px;
 }
+.relation-hint {
+  flex-basis: 100%;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
 .relation-actions {
   display: flex;
+  flex: none;
   align-items: center;
   gap: 12px;
-}
-.relation-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  cursor: pointer;
 }
 .relation-message {
   padding: 28px;
@@ -324,28 +329,26 @@
   font-size: 13px;
 }
 .relation-scroll {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  position: relative;
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   background-color: var(--sidebar-bg);
   background-image: radial-gradient(var(--separator) 0.8px, transparent 0.8px);
   background-size: 20px 20px;
 }
 .relation-canvas {
-  position: relative;
-  flex: 0 0 auto;
-  min-width: 100%;
-  margin-top: auto;
-  margin-bottom: auto;
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
 }
 .relation-lines {
   position: absolute;
   inset: 0;
   overflow: visible;
   pointer-events: none;
+  z-index: 1;
 }
 .relation-line {
   fill: none;
@@ -354,6 +357,7 @@
 }
 .relation-card {
   position: absolute;
+  z-index: 2;
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -367,13 +371,33 @@
   color: var(--text-primary);
   text-align: left;
   box-shadow: var(--shadow);
-  cursor: pointer;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
 .relation-card:hover,
 .relation-card:focus-visible {
   box-shadow: 0 4px 22px color-mix(in srgb, var(--primary) 25%, transparent);
   outline: 2px solid var(--primary);
   outline-offset: 2px;
+}
+.relation-card-selected,
+.relation-card-selected:hover,
+.relation-card-selected:focus-visible {
+  border-color: var(--primary);
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  box-shadow: 0 4px 22px color-mix(in srgb, var(--primary) 35%, transparent);
+}
+.relation-scroll-panning {
+  cursor: grabbing;
+  user-select: none;
+}
+.relation-scroll-panning .relation-card {
+  pointer-events: none;
+}
+.relation-scroll-dragging .relation-card {
+  cursor: grabbing;
 }
 .relation-card[data-status="进行中"] { border-color: var(--tag-blue-fg); }
 .relation-card[data-status="待验证"] { border-color: var(--tag-orange-fg); }
@@ -476,6 +500,29 @@
 .table-search .icon-btn {
   width: 18px;
   height: 20px;
+}
+.freeze-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px 2px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.freeze-setting input {
+  width: 42px;
+  height: 28px;
+  border: 1px solid var(--separator);
+  border-radius: 5px;
+  background: var(--card);
+  color: var(--text-primary);
+  text-align: center;
+  font: inherit;
+}
+.freeze-setting input:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
 }
 .menu-title {
   padding: 8px;
@@ -719,14 +766,15 @@ th:focus-within .column-menu {
   z-index: 3;
   border-right: 0;
 }
-.task-grid .pinned-description {
+.task-grid .pinned-column {
   position: sticky;
-  left: 56px;
   z-index: 2;
+}
+.task-grid .pinned-edge {
   box-shadow: 1px 0 0 var(--separator);
 }
 .task-grid th.pinned-index,
-.task-grid th.pinned-description {
+.task-grid th.pinned-column {
   z-index: 7;
 }
 .task-grid .task-actions-column {
@@ -1273,6 +1321,12 @@ th:focus-within .column-menu {
   font-size: 12px;
   padding-left: 7px;
 }
+.assignee-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 .detail-outside-filter {
   margin-bottom: 18px;
 }
@@ -1707,6 +1761,7 @@ th:focus-within .column-menu {
   white-space: nowrap;
 }
 .column-option {
+  position: relative;
   display: flex;
   gap: 2px;
   align-items: center;
@@ -1728,9 +1783,26 @@ th:focus-within .column-menu {
 .column-option[draggable="true"] {
   cursor: grab;
 }
-.column-option.dragging,
-.column-dragging {
+.column-option.dragging {
   opacity: 0.4;
+}
+.column-option.column-drop-before::before {
+  content: "";
+  position: absolute;
+  top: -2px;
+  left: 4px;
+  right: 4px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--primary);
+  pointer-events: none;
+}
+.column-insertion-line {
+  position: absolute;
+  z-index: 8;
+  width: 2px;
+  background: var(--primary);
+  pointer-events: none;
 }
 .column-option .icon-btn {
   width: 23px;
@@ -1840,9 +1912,6 @@ th:focus-within .column-menu {
 .group-toggle > span {
   color: var(--text-tertiary);
   font-size: 11px;
-}
-.task-grid .pinned-description {
-  left: var(--index-width, 64px);
 }
 .task-grid th.row-index {
   text-align: right;

@@ -20,12 +20,30 @@ import { formatDateTime, type Attachment, type Task } from "@/shared/types";
 defineProps<{ quickCreating?: boolean }>();
 const emit = defineEmits<{
   "open-detail": [task: Task];
+  "show-relation-graph": [task: Task];
   create: [];
   "quick-create": [];
 }>();
 const tasks = useTaskStore(),
   view = useViewStore();
 const root = ref<HTMLElement>();
+const rowMenus = new Map<string, InstanceType<typeof UiPopover>>();
+function setRowMenu(id: string, menu: unknown) {
+  if (menu) rowMenus.set(id, menu as InstanceType<typeof UiPopover>);
+  else rowMenus.delete(id);
+}
+function closeOtherRowMenus(id: string) {
+  for (const [otherId, menu] of rowMenus) {
+    if (otherId !== id) menu.close(false);
+  }
+}
+function openRowMenu(event: MouseEvent, task: Task) {
+  closeOtherRowMenus(task.id);
+  void rowMenus.get(task.id)?.openAt(event.clientX, event.clientY);
+}
+function hasRelations(task: Task) {
+  return !!(task.predecessor_task_ids?.length || task.unlock_task_ids?.length);
+}
 const active = ref<{ id: string; key: string } | null>(null);
 const editingId = ref<string | null>(null);
 const editingKey = ref<"description" | "note">("description");
@@ -134,16 +152,65 @@ watch(
   },
 );
 const draggingColumn = ref("");
+const columnDropBefore = ref("");
+const columnDropLine = ref<{ left: number; top: number; height: number } | null>(
+  null,
+);
+function positionColumnDropLine(key: string, header?: HTMLElement) {
+  const grid = root.value;
+  const table = grid?.querySelector<HTMLTableElement>(".task-grid");
+  const target =
+    header ??
+    [...(table?.querySelectorAll<HTMLElement>("thead th[data-column]") ?? [])].find(
+      (cell) => cell.dataset.column === key,
+    );
+  if (!grid || !table || !target) return;
+  const gridRect = grid.getBoundingClientRect();
+  const tableRect = table.getBoundingClientRect();
+  columnDropLine.value = {
+    left: target.getBoundingClientRect().left - gridRect.left + grid.scrollLeft,
+    top: tableRect.top - gridRect.top + grid.scrollTop,
+    height: table.offsetHeight,
+  };
+}
 function dragColumn(event: DragEvent, key: string) {
-  if (
-    key === "description" ||
-    (event.target as HTMLElement).closest("button,.col-resize,.popover-anchor")
-  ) {
+  if ((event.target as HTMLElement).closest("button,.col-resize,.popover-anchor")) {
     event.preventDefault();
     return;
   }
   draggingColumn.value = key;
+  columnDropBefore.value = "";
+  columnDropLine.value = null;
   event.dataTransfer?.setData("application/x-pm-column", key);
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+}
+function dragOverColumn(event: DragEvent, key: string) {
+  if (!draggingColumn.value || key === draggingColumn.value) {
+    columnDropBefore.value = "";
+    columnDropLine.value = null;
+    return;
+  }
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  columnDropBefore.value = key;
+  positionColumnDropLine(key, event.currentTarget as HTMLElement);
+}
+function leaveColumn(event: DragEvent, key: string) {
+  const next = event.relatedTarget;
+  if (next instanceof Node && (event.currentTarget as HTMLElement).contains(next))
+    return;
+  if (columnDropBefore.value === key) {
+    columnDropBefore.value = "";
+    columnDropLine.value = null;
+  }
+}
+function scrollColumnDropLine() {
+  if (columnDropBefore.value) positionColumnDropLine(columnDropBefore.value);
+}
+function endColumnDrag() {
+  draggingColumn.value = "";
+  columnDropBefore.value = "";
+  columnDropLine.value = null;
 }
 function dropColumn(event: DragEvent, key: string) {
   view.moveBefore(
@@ -151,7 +218,7 @@ function dropColumn(event: DragEvent, key: string) {
       draggingColumn.value,
     key,
   );
-  draggingColumn.value = "";
+  endColumnDrag();
 }
 // ── 行拖拽（手动排序） ──────────────────────────────────
 const draggingTask = ref("");
@@ -371,9 +438,27 @@ watch(
   },
 );
 const ACTION_COLUMN_WIDTH = 116;
+const INDEX_COLUMN_WIDTH = 64;
+const MIN_SCROLLABLE_WIDTH = 120;
+const gridWidth = ref(0);
+const frozenOffsets = computed(() => {
+  const offsets: number[] = [];
+  let left = INDEX_COLUMN_WIDTH;
+  const available = gridWidth.value
+    ? gridWidth.value - ACTION_COLUMN_WIDTH - MIN_SCROLLABLE_WIDTH
+    : Infinity;
+  const count = Math.min(view.frozenColumns, view.visibleColumns.length);
+  for (let index = 0; index < count; index++) {
+    const column = view.visibleColumns[index];
+    if (left + column.width > available) break;
+    offsets.push(left);
+    left += column.width;
+  }
+  return offsets;
+});
 const widths = computed(
   () =>
-    view.visibleColumns.reduce((n, c) => n + c.width, 64) +
+    view.visibleColumns.reduce((n, c) => n + c.width, INDEX_COLUMN_WIDTH) +
     ACTION_COLUMN_WIDTH,
 );
 const currentEditingTask = computed(() =>
@@ -484,7 +569,9 @@ function keyboard(e: KeyboardEvent, index: number, key: string) {
     void copyText(
       key === "attachments"
         ? String(task.attachment_count ?? 0)
-        : String(task[key as keyof Task] ?? ""),
+        : key === "assignee"
+          ? (task.assignee_name ?? "")
+          : String(task[key as keyof Task] ?? ""),
     );
     return;
   }
@@ -540,9 +627,23 @@ function resize(e: PointerEvent, key: string) {
   e.preventDefault();
   e.stopPropagation();
 }
-onMounted(() => document.addEventListener("click", clearActiveCellOnOutsideClick));
+let gridResizeObserver: ResizeObserver | undefined;
+function measureGridWidth() {
+  gridWidth.value = root.value?.clientWidth ?? 0;
+}
+onMounted(() => {
+  document.addEventListener("click", clearActiveCellOnOutsideClick);
+  window.addEventListener("resize", measureGridWidth);
+  measureGridWidth();
+  if (typeof ResizeObserver !== "undefined" && root.value) {
+    gridResizeObserver = new ResizeObserver(measureGridWidth);
+    gridResizeObserver.observe(root.value);
+  }
+});
 onBeforeUnmount(() => {
   stopResize?.();
+  gridResizeObserver?.disconnect();
+  window.removeEventListener("resize", measureGridWidth);
   document.removeEventListener("click", clearActiveCellOnOutsideClick);
 });
 async function remove(task: Task) {
@@ -600,8 +701,9 @@ defineExpose({ reveal });
   <div
     ref="root"
     class="grid-wrap"
-    :style="{ '--row-height': view.density + 'px', '--index-width': '64px' }"
+    :style="{ '--row-height': view.density + 'px' }"
     :aria-busy="tasks.loading"
+    @scroll="scrollColumnDropLine"
   >
     <table
       class="task-grid"
@@ -610,7 +712,7 @@ defineExpose({ reveal });
       :style="{ width: widths + 'px' }"
     >
       <colgroup>
-        <col style="width: 64px" />
+        <col :style="{ width: INDEX_COLUMN_WIDTH + 'px' }" />
         <col
           v-for="column in view.visibleColumns"
           :key="column.key"
@@ -636,18 +738,25 @@ defineExpose({ reveal });
             />
           </th>
           <th
-            v-for="column in view.visibleColumns"
+            v-for="(column, colIndex) in view.visibleColumns"
             :key="column.key"
             :data-column="column.key"
             :class="{
-              'pinned-description': column.key === 'description',
-              'column-dragging': draggingColumn === column.key,
+              'pinned-column': colIndex < frozenOffsets.length,
+              'pinned-first-column': colIndex === 0 && frozenOffsets.length > 0,
+              'pinned-edge': colIndex === frozenOffsets.length - 1,
             }"
-            :draggable="column.key !== 'description'"
+            :style="
+              colIndex < frozenOffsets.length
+                ? { left: frozenOffsets[colIndex] + 'px' }
+                : undefined
+            "
+            draggable="true"
             @dragstart="dragColumn($event, column.key)"
-            @dragover.prevent
+            @dragover="dragOverColumn($event, column.key)"
+            @dragleave="leaveColumn($event, column.key)"
             @drop.prevent="dropColumn($event, column.key)"
-            @dragend="draggingColumn = ''"
+            @dragend="endColumnDrag"
           >
             <div class="column-heading">
               <UiIcon :name="column.icon" :size="14" /><span>{{
@@ -698,32 +807,31 @@ defineExpose({ reveal });
                   >
                     <UiIcon name="layers" :size="14" />按此字段分组
                   </button>
-                  <template v-if="column.key !== 'description'"
-                    ><button
-                      class="menu-item"
-                      :disabled="
-                        view.columns.findIndex((c) => c.key === column.key) <= 1
-                      "
-                      @click="
-                        view.moveColumn(column.key, -1);
-                        close();
-                      "
-                    >
-                      <UiIcon name="left" :size="14" />向前移动</button
-                    ><button
-                      class="menu-item"
-                      :disabled="
-                        view.columns.findIndex((c) => c.key === column.key) ===
-                        view.columns.length - 1
-                      "
-                      @click="
-                        view.moveColumn(column.key, 1);
-                        close();
-                      "
-                    >
-                      <UiIcon name="right" :size="14" />向后移动
-                    </button></template
+                  <button
+                    class="menu-item"
+                    :disabled="
+                      view.columns.findIndex((c) => c.key === column.key) === 0
+                    "
+                    @click="
+                      view.moveColumn(column.key, -1);
+                      close();
+                    "
                   >
+                    <UiIcon name="left" :size="14" />向前移动
+                  </button>
+                  <button
+                    class="menu-item"
+                    :disabled="
+                      view.columns.findIndex((c) => c.key === column.key) ===
+                      view.columns.length - 1
+                    "
+                    @click="
+                      view.moveColumn(column.key, 1);
+                      close();
+                    "
+                  >
+                    <UiIcon name="right" :size="14" />向后移动
+                  </button>
                   <template
                     v-if="sorts.includes(column.key as (typeof sorts)[number])"
                     ><button
@@ -778,7 +886,8 @@ defineExpose({ reveal });
           <th
             class="task-actions-column"
             data-column="actions"
-            @dragover.prevent
+            @dragover="dragOverColumn($event, 'actions')"
+            @dragleave="leaveColumn($event, 'actions')"
             @drop.prevent="dropColumn($event, 'actions')"
           >
             <div class="column-heading task-actions-heading">
@@ -825,6 +934,7 @@ defineExpose({ reveal });
               }"
               @dragover="dragOverRow($event, task)"
               @drop="dropRow($event, task)"
+              @contextmenu.prevent.stop="openRowMenu($event, task)"
             >
               <td class="row-index pinned-index">
                 <span
@@ -847,12 +957,12 @@ defineExpose({ reveal });
                   "
                   @change="tasks.toggleSelection(task)"
                 /><span class="row-number">{{ ordinal(task.id) }}</span
-                ><UiPopover :width="190" label="任务操作"
+                ><UiPopover :ref="(menu) => setRowMenu(task.id, menu)" :width="190" label="任务操作"
                   ><template #trigger="{ toggle }"
                     ><button
                       class="icon-btn row-menu"
                       :aria-label="'任务操作：' + task.id"
-                      @click="toggle"
+                      @click="closeOtherRowMenus(task.id); toggle()"
                     >
                       <UiIcon name="more" /></button></template
                   ><template #default="{ close }"
@@ -864,6 +974,15 @@ defineExpose({ reveal });
                       "
                     >
                       <UiIcon name="expand" />展开详情</button
+                    ><button
+                      v-if="hasRelations(task)"
+                      class="menu-item"
+                      @click="
+                        emit('show-relation-graph', task);
+                        close();
+                      "
+                    >
+                      <UiIcon name="git" />展示关联图</button
                     ><button
                       class="menu-item"
                       @click="
@@ -905,7 +1024,9 @@ defineExpose({ reveal });
                     : -1
                 "
                 :class="{
-                  'pinned-description': column.key === 'description',
+                  'pinned-column': colIndex < frozenOffsets.length,
+                  'pinned-first-column': colIndex === 0 && frozenOffsets.length > 0,
+                  'pinned-edge': colIndex === frozenOffsets.length - 1,
                   'cell-selected': selected(task, column.key),
                   'cell-editing':
                     editingId === task.id && column.key === editingKey,
@@ -916,6 +1037,11 @@ defineExpose({ reveal });
                     column.key === 'attachments' &&
                     !!attachmentUploads[task.id],
                 }"
+                :style="
+                  colIndex < frozenOffsets.length
+                    ? { left: frozenOffsets[colIndex] + 'px' }
+                    : undefined
+                "
                 @click="
                   column.key === 'description'
                     ? startEdit(task, 'description')
@@ -1026,6 +1152,19 @@ defineExpose({ reveal });
                   }}</span></span
                 >
                 <span
+                  v-else-if="column.key === 'assignee'"
+                  class="submitter-tag assignee-tag"
+                  :class="{ agent: !!task.assignee_name, subtle: !task.assignee_name }"
+                  :title="task.assignee_name || '尚未认领'"
+                  ><template v-if="task.assignee_name"
+                    ><span class="submitter-avatar"
+                      ><UiIcon name="bot" :size="12" /></span
+                    ><span class="submitter-label">{{
+                      task.assignee_name
+                    }}</span></template
+                  ><template v-else>—</template></span
+                >
+                <span
                   v-else-if="column.key === 'attachments'"
                   class="attachment-cell"
                   :class="{ subtle: !task.attachment_count }"
@@ -1129,6 +1268,16 @@ defineExpose({ reveal });
         >
       </tbody>
     </table>
+    <div
+      v-if="columnDropLine"
+      class="column-insertion-line"
+      :style="{
+        left: columnDropLine.left + 'px',
+        top: columnDropLine.top + 'px',
+        height: columnDropLine.height + 'px',
+      }"
+      aria-hidden="true"
+    ></div>
     <div v-if="!tasks.tasks.length" class="grid-empty">
       <span v-if="tasks.loading" class="spinner"></span
       ><span v-else class="empty-icon"

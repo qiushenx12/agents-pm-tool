@@ -1,5 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
+// 新装用户的默认列：顺序即任务字段的默认排布（操作列固定最后，不在此列表内），
+// 全部默认展示。老用户已保存的列顺序/显隐由下面的合并逻辑保留，不受此处调整影响。
 export const DEFAULT_COLUMNS = [
   {
     key: "description",
@@ -25,23 +27,16 @@ export const DEFAULT_COLUMNS = [
     visible: true,
   },
   {
-    key: "predecessor_task_ids",
-    label: "前置任务 ID",
-    icon: "git",
-    width: 240,
-    visible: true,
-  },
-  {
-    key: "unlock_task_ids",
-    label: "解锁任务 ID",
-    icon: "git",
-    width: 240,
-    visible: true,
-  },
-  {
     key: "submitter",
     label: "提交人",
     icon: "user",
+    width: 150,
+    visible: true,
+  },
+  {
+    key: "assignee",
+    label: "负责人",
+    icon: "bot",
     width: 150,
     visible: true,
   },
@@ -64,15 +59,30 @@ export const DEFAULT_COLUMNS = [
     label: "完成时间",
     icon: "clock",
     width: 172,
-    visible: false,
+    visible: true,
   },
-  { key: "id", label: "ID", icon: "text", width: 200, visible: false },
   { key: "note", label: "备注", icon: "edit", width: 240, visible: true },
+  { key: "id", label: "ID", icon: "text", width: 200, visible: true },
+  {
+    key: "predecessor_task_ids",
+    label: "子任务 ID",
+    icon: "git",
+    width: 240,
+    visible: true,
+  },
+  {
+    key: "unlock_task_ids",
+    label: "父级任务 ID",
+    icon: "git",
+    width: 240,
+    visible: true,
+  },
 ];
 export const useViewStore = defineStore("view", () => {
   let saved: {
     columns?: { key: string; width: number; visible: boolean }[];
     density?: number;
+    frozenColumns?: number;
     collapsed?: boolean;
     projectsOpen?: boolean;
   } = {};
@@ -86,10 +96,7 @@ export const useViewStore = defineStore("view", () => {
     : [];
   const order = [
     ...new Set([
-      "description",
-      ...previousColumns
-        .map((p) => p.key)
-        .filter((key) => key !== "description"),
+      ...previousColumns.map((p) => p.key),
       ...DEFAULT_COLUMNS.map((c) => c.key),
     ]),
   ];
@@ -118,6 +125,13 @@ export const useViewStore = defineStore("view", () => {
   const density = ref(
     [32, 36, 44].includes(saved.density ?? 0) ? saved.density! : 36,
   );
+  const frozenColumns = ref(
+    Number.isInteger(saved.frozenColumns) &&
+      saved.frozenColumns! >= 0 &&
+      saved.frozenColumns! <= 7
+      ? saved.frozenColumns!
+      : 1,
+  );
   const collapsed = ref(saved.collapsed ?? window.innerWidth < 1100);
   /** 侧栏「Agents PM」模块的展开状态：收起只留模块标题，展开显示项目列表。 */
   const projectsOpen = ref(saved.projectsOpen ?? true);
@@ -125,24 +139,20 @@ export const useViewStore = defineStore("view", () => {
   function reset() {
     columns.value = DEFAULT_COLUMNS.map((c) => ({ ...c }));
     density.value = 36;
+    frozenColumns.value = 1;
   }
   function moveColumn(key: string, direction: -1 | 1) {
     const index = columns.value.findIndex((c) => c.key === key),
       target = index + direction;
-    if (index <= 0 || target <= 0 || target >= columns.value.length) return;
+    if (index < 0 || target < 0 || target >= columns.value.length) return;
     const [column] = columns.value.splice(index, 1);
     columns.value.splice(target, 0, column);
   }
   function moveBefore(source: string, target: string) {
-    if (
-      source === target ||
-      source === "description" ||
-      target === "description"
-    )
-      return;
+    if (source === target) return;
     const index = columns.value.findIndex((c) => c.key === source);
     if (
-      index < 1 ||
+      index < 0 ||
       (target !== "actions" && !columns.value.some((c) => c.key === target))
     )
       return;
@@ -158,7 +168,7 @@ export const useViewStore = defineStore("view", () => {
     );
   }
   watch(
-    [columns, density, collapsed, projectsOpen],
+    [columns, density, frozenColumns, collapsed, projectsOpen],
     () => {
       try {
         localStorage.setItem(
@@ -166,6 +176,7 @@ export const useViewStore = defineStore("view", () => {
           JSON.stringify({
             columns: columns.value,
             density: density.value,
+            frozenColumns: frozenColumns.value,
             collapsed: collapsed.value,
             projectsOpen: projectsOpen.value,
           }),
@@ -180,6 +191,7 @@ export const useViewStore = defineStore("view", () => {
     columns,
     visibleColumns,
     density,
+    frozenColumns,
     collapsed,
     projectsOpen,
     reset,

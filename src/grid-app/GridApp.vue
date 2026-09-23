@@ -47,6 +47,7 @@ const currentUser = ref<User | null>(null);
 const authLoading = ref(true);
 const detailTask = ref<Task | null>(null);
 const activeMode = ref<"table" | "graph">("table");
+const graphTaskId = ref<string | null>(null);
 const desktop = isTauri();
 const theme = ref(currentTheme());
 /** 全局主题传输层：网页端走 HTTP（GET 公开、PUT 需登录） */
@@ -95,6 +96,18 @@ function onCreated(task: Task) {
   const latest = tasks.records[task.id] ?? task;
   tasks.acceptTask(latest);
   table.value?.reveal(task.id);
+}
+function switchMode(mode: "table" | "graph") {
+  activeMode.value = mode;
+  if (mode === "graph") {
+    graphTaskId.value = null;
+    detailTask.value = null;
+  }
+}
+function openRelationGraph(task: Task) {
+  graphTaskId.value = task.id;
+  detailTask.value = tasks.records[task.id] ?? task;
+  activeMode.value = "graph";
 }
 async function quickCreate() {
   if (quickCreating.value) return;
@@ -169,6 +182,8 @@ function keyboard(e: KeyboardEvent) {
   }
 }
 async function startWorkspace(user: User) {
+  activeMode.value = "table";
+  graphTaskId.value = null;
   currentUser.value = user;
   void meta.refresh();
   // 登录后再对账一次主题：未登录时 PUT 被拦，迁移在这里补齐
@@ -231,6 +246,8 @@ async function logout() {
     showAgentAccess.value = false;
     showHostSettings.value = false;
     setAgentPromptAccess();
+    activeMode.value = "table";
+    graphTaskId.value = null;
   }
 }
 
@@ -343,7 +360,7 @@ onBeforeUnmount(() => {
             title
           }}</span>
         </div>
-        <SavedViews v-model:mode="activeMode" />
+        <SavedViews :mode="activeMode" @update:mode="switchMode" />
       </header>
       <FilterBar v-if="activeMode === 'table'" @create="showCreate = true" />
       <BulkActions v-if="activeMode === 'table'" />
@@ -375,14 +392,17 @@ onBeforeUnmount(() => {
         ref="table"
         :quick-creating="quickCreating"
         @open-detail="detailTask = $event"
+        @show-relation-graph="openRelationGraph"
         @create="showCreate = true"
         @quick-create="quickCreate"
       />
       <TaskRelationGraph
         v-else
-        :projects="tasks.filters.project"
+        :task-id="graphTaskId"
         :revision="tasks.externalRevision"
+        :selected-task-id="detailTask?.id ?? null"
         @open-detail="detailTask = $event"
+        @clear-detail="detailTask = null"
       />
     </main>
     <TaskCreateModal

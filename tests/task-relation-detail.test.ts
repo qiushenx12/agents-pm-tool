@@ -54,6 +54,8 @@ it("reuses the full task detail dialog from the graph without table pagination c
   app.mount(host);
   await nextTick();
   expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain(task.description);
+  expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain("子任务 ID");
+  expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain("父级任务 ID");
   expect(document.body.querySelector('[aria-label="上一条任务"]')).toBeNull();
   expect(document.body.querySelector('[aria-label="下一条任务"]')).toBeNull();
   expect(document.body.querySelector(".detail-outside-filter")).toBeNull();

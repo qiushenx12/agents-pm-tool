@@ -1,11 +1,11 @@
 """Agents PM Tool 正式打包脚本（Windows / NSIS，macOS / DMG）。
 
 功能与 cc-launcher/build.py 对齐：
-- version.json 驱动的版本管理（发布后自动递增 patch，0.0.9 → 0.1.0）
+- version.json 驱动的版本管理（打包前可手动输入更高版本，回车沿用当前版本）
 - 版本号同步 package.json / package-lock.json / tauri.conf.json / Cargo.toml / Cargo.lock / pm-cli-skill/VERSION
 - npm run tauri build（beforeBuildCommand = npm run build，只构建前端；pm-cli 是内嵌的 Node 脚本，无需单独编译）
 - 产物归档到 src-tauri/release-bundle/<nsis|dmg>/，bundle 目录里保留历史安装包
-- 打包完成后交互确认测试是否通过，通过则记录为已发布
+- 新版本打包成功后自动归档并记录为已发布；重复打包已发布版本不新增记录
 
 注意：Cargo.lock 在 .gitignore 里（binary 项目惯例可提交，本项目选择忽略），
 脚本会在打包后自动生成/同步它，无需纳入版本管理。
@@ -107,17 +107,14 @@ def parse_version(version: str) -> tuple[int, int, int]:
     match = VERSION_PATTERN.fullmatch(version)
     if match is None:
         raise VersionStateError(f"版本号必须使用 major.minor.patch 格式：{version!r}")
+    if any(len(part) > 20 for part in match.groups()):
+        raise VersionStateError(f"版本号超出允许范围：{version!r}")
     major, minor, patch = (int(part) for part in match.groups())
+    if major > 2**64 - 1 or minor > 2**64 - 1:
+        raise VersionStateError(f"版本号超出允许范围：{version!r}")
     if patch > 9:
         raise VersionStateError(f"修订版本号只能是 0 到 9：{version!r}")
     return major, minor, patch
-
-
-def next_version(version: str) -> str:
-    major, minor, patch = parse_version(version)
-    if patch < 9:
-        return f"{major}.{minor}.{patch + 1}"
-    return f"{major}.{minor + 1}.0"
 
 
 # ── version.json 状态 ────────────────────────────────────────
@@ -255,17 +252,49 @@ def sync_project_versions(version: str) -> None:
         replace_cargo_package_version(cargo_lock, version)
 
 
-def prepare_build_version() -> tuple[str, dict[str, Any]]:
-    state = load_version_state()
+def validate_new_version(version: str, state: dict[str, Any]) -> None:
+    candidate = parse_version(version)
+    current = parse_version(state["currentVersion"])
+    if candidate <= current:
+        raise VersionStateError(f"新版本号必须高于当前版本 {state['currentVersion']}")
+    if any(release["version"] == version for release in state["releases"]):
+        raise VersionStateError(f"版本 {version} 已有发布记录")
+    if state["releases"] and candidate <= max(
+        parse_version(release["version"]) for release in state["releases"]
+    ):
+        raise VersionStateError("新版本号必须高于所有已发布版本")
+
+
+def prompt_build_version(state: dict[str, Any]) -> str | None:
+    current = state["currentVersion"]
+    while True:
+        version = input(
+            f"\n当前版本 {current}。升版本请输入新版本号（x.y.z，修订号 0–9）；"
+            "不升版本号直接回车："
+        ).strip()
+        if not version:
+            return None
+        try:
+            validate_new_version(version, state)
+        except VersionStateError as error:
+            print(f"版本号无效：{error}。请重新输入。")
+            continue
+        return version
+
+
+def prepare_build_version(
+    state: dict[str, Any], requested_version: str | None
+) -> tuple[str, dict[str, Any]]:
     version = state["currentVersion"]
-    if state["published"]:
-        version = next_version(version)
-        state["currentVersion"] = version
-        state["published"] = False
-        print(f"上一个版本已发布，本次打包版本自动更新为 {version}。")
+    prepared = state
+    if requested_version is not None:
+        validate_new_version(requested_version, state)
+        version = requested_version
+        prepared = {**state, "currentVersion": version, "published": False}
     sync_project_versions(version)
-    save_version_state(state)
-    return version, state
+    if prepared is not state:
+        save_version_state(prepared)
+    return version, prepared
 
 
 # ── 环境检查 ─────────────────────────────────────────────────
@@ -457,7 +486,7 @@ def run_build(version: str, product_name: str) -> bool:
     if kept:
         print(f"已保留 {kept} 个历史安装包。")
     if result.returncode != 0:
-        print(f"\n{PLATFORM_LABEL} 版本 {version} 打包失败；版本号不会递增。")
+        print(f"\n{PLATFORM_LABEL} 版本 {version} 打包失败；发布记录不会更新。")
         return False
     return True
 
@@ -521,9 +550,21 @@ def pause_on_error() -> None:
     input("\n按回车键退出……")
 
 
+def pause_on_success() -> None:
+    input("\n打包成功，按回车键退出……")
+
+
 def main() -> int:
     if PLATFORM_KEY is None:
         print(f"当前系统不支持正式打包（仅 Windows / macOS）：{sys.platform}")
+        pause_on_error()
+        return 1
+
+    try:
+        state = load_version_state()
+        requested_version = prompt_build_version(state)
+    except (OSError, VersionStateError) as error:
+        print(f"版本选择失败：{error}")
         pause_on_error()
         return 1
 
@@ -536,18 +577,30 @@ def main() -> int:
         return 1
 
     try:
-        version, _state = prepare_build_version()
+        version, state = prepare_build_version(state, requested_version)
         product_name = load_product_name()
     except (OSError, VersionStateError) as error:
         print(f"版本准备失败：{error}")
         pause_on_error()
         return 1
 
-    if not run_build(version, product_name):
+    try:
+        built = run_build(version, product_name)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"{PLATFORM_LABEL} {version} 打包执行失败：{error}")
+        pause_on_error()
+        return 1
+    if not built:
+        print(f"{PLATFORM_LABEL} {version} 打包失败，请查看上方构建日志。")
         pause_on_error()
         return 1
 
-    artifacts = find_built_artifacts(version, product_name)
+    try:
+        artifacts = find_built_artifacts(version, product_name)
+    except OSError as error:
+        print(f"检查安装包失败：{error}")
+        pause_on_error()
+        return 1
     if not artifacts:
         print(f"打包命令已结束，但没有找到 {PLATFORM_LABEL} 版本 {version} 的安装包。")
         pause_on_error()
@@ -557,13 +610,9 @@ def main() -> int:
     for artifact in artifacts:
         print(f"  {artifact}")
 
-    test_input = (
-        input(f"\n{PLATFORM_LABEL} {version} 测试通过请输入 r 后回车；测试未通过请直接回车：")
-        .strip()
-        .lower()
-    )
-    if test_input != "r":
-        print(f"{PLATFORM_LABEL} {version} 保持待发布；下一次打包仍使用该版本号。")
+    if state["published"]:
+        print(f"版本 {version} 已有发布记录，本次重复打包不新增记录。")
+        pause_on_success()
         return 0
 
     try:
@@ -573,7 +622,8 @@ def main() -> int:
         pause_on_error()
         return 1
 
-    print(f"版本 {version} 已记录为发布；下一次打包将自动使用 {next_version(version)}。")
+    print(f"版本 {version} 已记录为发布；下一次打包可选择新版本号或沿用当前版本。")
+    pause_on_success()
     return 0
 
 

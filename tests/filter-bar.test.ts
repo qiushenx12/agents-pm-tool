@@ -5,6 +5,7 @@ import { createPinia, disposePinia, type Pinia } from "pinia";
 import FilterBar from "@/grid-app/components/FilterBar.vue";
 import { useTaskStore } from "@/grid-app/stores/taskStore";
 import { useMetaStore } from "@/grid-app/stores/metaStore";
+import { useViewStore } from "@/grid-app/stores/viewStore";
 
 let pinia: Pinia;
 let host: HTMLElement;
@@ -40,6 +41,45 @@ function buttonWithText(root: ParentNode, text: string) {
     (button) => button.textContent?.trim() === text,
   );
 }
+
+it("accepts only 0–7 frozen columns and keeps the preference", async () => {
+  mountBar();
+  const toolbar = host.querySelector(".table-toolbar")!;
+  const labels = [...toolbar.querySelectorAll("button")].map((button) =>
+    button.textContent?.trim(),
+  );
+  expect(labels.indexOf("冻结")).toBeGreaterThan(labels.indexOf("分组"));
+  expect(labels.indexOf("冻结")).toBeLessThan(labels.indexOf("行高"));
+
+  buttonWithText(toolbar, "冻结")!.click();
+  await nextTick();
+  const input = popover("冻结列设置")!.querySelector<HTMLInputElement>(
+    '[aria-label="冻结左侧列数"]',
+  )!;
+  const view = useViewStore(pinia);
+  expect(input.value).toBe("1");
+  for (const value of ["7", "0"]) {
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    expect(view.frozenColumns).toBe(Number(value));
+    expect(input.value).toBe(value);
+  }
+  for (const value of ["8", "-1", "1.5", "a", "", "10"]) {
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+    expect(view.frozenColumns).toBe(0);
+    expect(input.value).toBe("0");
+  }
+  expect(JSON.parse(localStorage.getItem("pm-table-view-v1")!).frozenColumns).toBe(0);
+});
+
+it("ignores invalid saved frozen column counts", () => {
+  localStorage.setItem("pm-table-view-v1", '{"frozenColumns":99}');
+  mountBar();
+  expect(useViewStore(pinia).frozenColumns).toBe(1);
+});
 
 async function openFilterMenu() {
   const filterButton = Array.from(host.querySelectorAll("button")).find((button) =>

@@ -146,6 +146,20 @@ async function chooseSort(value: (typeof sorts)[number]["value"]) {
   }
   tasks.filters.sort_by = value;
 }
+function frozenInput(event: Event) {
+  const input = event.target as HTMLInputElement;
+  if (/^[0-7]$/.test(input.value)) view.frozenColumns = Number(input.value);
+  else input.value = String(view.frozenColumns);
+}
+function frozenBeforeInput(event: InputEvent) {
+  const input = event.target as HTMLInputElement;
+  if (event.data === null) return;
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? input.value.length;
+  const next = input.value.slice(0, start) + event.data + input.value.slice(end);
+  if (!/^[0-7]$/.test(next))
+    event.preventDefault();
+}
 </script>
 <template>
   <div class="table-toolbar">
@@ -457,6 +471,34 @@ async function chooseSort(value: (typeof sorts)[number]["value"]) {
           />
         </button> </template
     ></UiPopover>
+    <UiPopover :width="220" label="冻结列设置"
+      ><template #trigger="{ toggle, open }"
+        ><button
+          class="btn btn-ghost btn-sm"
+          :aria-expanded="open"
+          @click="toggle"
+        >
+          <UiIcon name="columns" :size="15" />冻结
+        </button></template
+      ><template #default>
+        <label class="freeze-setting" for="frozen-column-count">
+          <span>冻结左侧列数</span>
+          <input
+            id="frozen-column-count"
+            type="text"
+            inputmode="numeric"
+            pattern="[0-7]"
+            maxlength="1"
+            autocomplete="off"
+            aria-label="冻结左侧列数"
+            :value="view.frozenColumns"
+            @focus="($event.target as HTMLInputElement).select()"
+            @beforeinput="frozenBeforeInput"
+            @input="frozenInput"
+          />
+        </label>
+        <div class="menu-empty">0–7 列；宽度不足时自动减少实际冻结列数</div>
+      </template></UiPopover>
     <UiPopover :width="180" label="行高设置"
       ><template #trigger="{ toggle, open }"
         ><button

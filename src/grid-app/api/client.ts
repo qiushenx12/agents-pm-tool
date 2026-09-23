@@ -138,6 +138,8 @@ export const api = {
       note: string;
       status: TaskStatus;
       priority: Priority;
+      /** 负责人：传用户 ID 改派给该账号的 Agent；传 null 清空。 */
+      assignee_user_id: string | null;
       predecessor_task_ids: string[];
       unlock_task_ids: string[];
     }>,

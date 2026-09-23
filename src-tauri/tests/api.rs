@@ -342,6 +342,12 @@ async fn agent_help_and_skill_distribution_are_versioned() {
         .unwrap()
         .iter()
         .any(|command| command["path"] == "/api/agent/permissions"));
+    assert!(help["permissions"].as_array().unwrap().iter().any(|item| {
+        let text = item.as_str().unwrap_or_default();
+        text.contains("本任务的子任务")
+            && text.contains("本任务的父级任务")
+            && text.contains("验收通过的各级父任务会回到进行中")
+    }));
 
     // 文件清单：网页端「选择目录」与安装脚本共用这一份，必须包含全部 skill 文件。
     let payload = app
@@ -500,6 +506,20 @@ async fn remote_cli_uses_environment_connection() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("提交人：   Agent（主机）"));
+    // 未认领的任务负责人显示占位符
+    assert!(String::from_utf8_lossy(&output.stdout).contains("负责人：   —"));
+
+    // Agent 推进状态后自动认领，CLI 详情显示负责人
+    let claim = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{task_id}/status"))
+        .json(&json!({"status": "进行中"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(claim.status(), 200);
+    let output = run_pm_cli(&["get", task_id], &env);
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("负责人：   Agent（主机）"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1126,6 +1146,239 @@ async fn agent_permissions_intersect_ordinary_user_fields_and_values() {
     assert_eq!(denied_note.status(), 403);
 }
 
+// ── 负责人：Agent 认领 + 锁定（任务 202609231147000000） ──────────
+
+#[tokio::test]
+async fn agent_claims_task_on_start_and_other_agents_are_locked_out() {
+    let app = spawn_app().await;
+    let task = create_task(&app, false, "负责人认领").await;
+    let task_id = task["id"].as_str().unwrap().to_string();
+    // 新任务负责人默认为空
+    assert_eq!(task["assignee_user_id"], Value::Null);
+    assert_eq!(task["assignee_name"], Value::Null);
+
+    // 网页端推进「未开始 → 进行中」不会写入负责人
+    let web_started = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{task_id}"))
+        .json(&json!({"status":"进行中"}))
+        .send().await.unwrap();
+    assert_eq!(web_started.status(), 200);
+    assert_eq!(web_started.json::<Value>().await.unwrap()["assignee_user_id"], Value::Null);
+    // 退回「未开始」，交给 Agent 认领
+    let back = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{task_id}"))
+        .json(&json!({"status":"未开始"}))
+        .send().await.unwrap();
+    assert_eq!(back.status(), 200);
+
+    // 未开始任务上不改状态（仅优先级）不会认领
+    let not_claimed = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{task_id}/priority"))
+        .json(&json!({"priority":"高"}))
+        .send().await.unwrap();
+    assert_eq!(not_claimed.status(), 200);
+    assert_eq!(not_claimed.json::<Value>().await.unwrap()["assignee_user_id"], Value::Null);
+
+    // 主机 Agent 把状态从「未开始」推进到「进行中」→ 自动认领为负责人
+    let claimed = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{task_id}/status"))
+        .json(&json!({"status":"进行中"}))
+        .send().await.unwrap();
+    assert_eq!(claimed.status(), 200);
+    let claimed = claimed.json::<Value>().await.unwrap();
+    assert_eq!(claimed["assignee_user_id"], "host");
+    assert_eq!(claimed["assignee_name"], "Agent（主机）");
+
+    // 另一个 Agent（alice 的 token）：项目与状态都已授权，仍被负责人锁定
+    let (alice, alice_http) = register_user(&app, "alice-claim").await;
+    let alice_id = alice["id"].as_str().unwrap().to_string();
+    let grant = app
+        .web(reqwest::Method::PUT, &format!("/users/{alice_id}/permissions"))
+        .json(&json!({"permissions":[
+            {"project":"default-project","field":"project_access","allowed_values":null},
+            {"project":"default-project","field":"status","allowed_values":["进行中","待验证","已完成"]},
+            {"project":"default-project","field":"priority","allowed_values":null}
+        ]}))
+        .send().await.unwrap();
+    assert_eq!(grant.status(), 200);
+    let token_response = alice_http
+        .post(format!("{}/api/web/me/agent-token", app.base))
+        .send().await.unwrap();
+    assert_eq!(token_response.status(), 200);
+    let alice_token = token_response.json::<Value>().await.unwrap()["token"]
+        .as_str().unwrap().to_string();
+    let alice_agent = reqwest::Client::new();
+
+    // 其它 Agent 不能修改该任务的任何字段（状态/优先级/通用 PATCH 一律 403）
+    for (path, body) in [
+        (format!("/tasks/{task_id}/status"), json!({"status":"待验证"})),
+        (format!("/tasks/{task_id}/priority"), json!({"priority":"低"})),
+        (format!("/tasks/{task_id}"), json!({"status":"待验证","priority":"低"})),
+    ] {
+        let denied = alice_agent
+            .patch(format!("{}/api/agent{path}", app.base))
+            .bearer_auth(&alice_token)
+            .json(&body)
+            .send().await.unwrap();
+        assert_eq!(denied.status(), 403, "其它 Agent 修改应被拒绝：{path} {body}");
+        assert!(denied.json::<Value>().await.unwrap()["error"]["message"]
+            .as_str().unwrap().contains("负责人"));
+    }
+    // 读取不受锁定影响
+    let read = alice_agent
+        .get(format!("{}/api/agent/tasks/{task_id}", app.base))
+        .bearer_auth(&alice_token)
+        .send().await.unwrap();
+    assert_eq!(read.status(), 200);
+    assert_eq!(read.json::<Value>().await.unwrap()["assignee_name"], "Agent（主机）");
+
+    // 负责人本人可以继续推进
+    let own = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{task_id}/status"))
+        .json(&json!({"status":"待验证"}))
+        .send().await.unwrap();
+    assert_eq!(own.status(), 200);
+
+    // 网页端用户不受负责人锁定限制
+    let web_edit = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{task_id}"))
+        .json(&json!({"status":"进行中","note":"网页端继续修改"}))
+        .send().await.unwrap();
+    assert_eq!(web_edit.status(), 200);
+
+    // 普通网页用户没有 assignee 字段授权 → 不能改派
+    let denied_assign = alice_http
+        .patch(format!("{}/api/web/tasks/{task_id}", app.base))
+        .json(&json!({"assignee_user_id": alice_id}))
+        .send().await.unwrap();
+    assert_eq!(denied_assign.status(), 403);
+
+    // 不存在的负责人 → 422
+    let bad_assignee = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{task_id}"))
+        .json(&json!({"assignee_user_id":"ghost"}))
+        .send().await.unwrap();
+    assert_eq!(bad_assignee.status(), 422);
+
+    // 网页端改派给 alice 的 Agent → 主机 Agent 被锁，alice 的 Agent 可以修改
+    let reassigned = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{task_id}"))
+        .json(&json!({"assignee_user_id": alice_id}))
+        .send().await.unwrap();
+    assert_eq!(reassigned.status(), 200);
+    let reassigned = reassigned.json::<Value>().await.unwrap();
+    assert_eq!(reassigned["assignee_user_id"], json!(alice_id));
+    assert_eq!(reassigned["assignee_name"], "Agent（alice-claim）");
+    let host_denied = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{task_id}/status"))
+        .json(&json!({"status":"已完成"}))
+        .send().await.unwrap();
+    assert_eq!(host_denied.status(), 403);
+    let alice_allowed = alice_agent
+        .patch(format!("{}/api/agent/tasks/{task_id}/status", app.base))
+        .bearer_auth(&alice_token)
+        .json(&json!({"status":"已完成"}))
+        .send().await.unwrap();
+    assert_eq!(alice_allowed.status(), 200);
+
+    // 网页端清空负责人 → 任意 Agent 恢复修改权；任务已不在「未开始」，不会再自动认领
+    let cleared = app
+        .web(reqwest::Method::PATCH, &format!("/tasks/{task_id}"))
+        .json(&json!({"assignee_user_id": null}))
+        .send().await.unwrap();
+    assert_eq!(cleared.status(), 200);
+    assert_eq!(cleared.json::<Value>().await.unwrap()["assignee_user_id"], Value::Null);
+    let host_again = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{task_id}/priority"))
+        .json(&json!({"priority":"中"}))
+        .send().await.unwrap();
+    assert_eq!(host_again.status(), 200);
+    assert_eq!(host_again.json::<Value>().await.unwrap()["assignee_user_id"], Value::Null);
+
+    // Agent 不能直接指定负责人（字段不在 Agent 可编辑集合内，请求体直接拒绝）
+    let direct = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{task_id}"))
+        .json(&json!({"assignee_user_id":"host"}))
+        .send().await.unwrap();
+    assert!(direct.status().is_client_error());
+
+    // permissions 自述中负责人属于不可变字段
+    let permissions = app.agent(reqwest::Method::GET, "/permissions").send().await.unwrap();
+    let permissions = permissions.json::<Value>().await.unwrap();
+    let immutable = permissions["immutable_fields"].as_array().unwrap();
+    assert!(immutable.contains(&json!("assignee_user_id")));
+    assert!(immutable.contains(&json!("assignee_name")));
+}
+
+#[tokio::test]
+async fn assignee_claim_also_covers_cancel_and_description_routes() {
+    let app = spawn_app().await;
+    let (alice, alice_http) = register_user(&app, "alice-claim2").await;
+    let alice_id = alice["id"].as_str().unwrap().to_string();
+    let grant = app
+        .web(reqwest::Method::PUT, &format!("/users/{alice_id}/permissions"))
+        .json(&json!({"permissions":[
+            {"project":"default-project","field":"project_access","allowed_values":null},
+            {"project":"default-project","field":"task_create","allowed_values":null},
+            {"project":"default-project","field":"type","allowed_values":["BUG"]},
+            {"project":"default-project","field":"description","allowed_values":null},
+            {"project":"default-project","field":"status","allowed_values":["进行中","待验证"]}
+        ]}))
+        .send().await.unwrap();
+    assert_eq!(grant.status(), 200);
+    let alice_token = alice_http
+        .post(format!("{}/api/web/me/agent-token", app.base))
+        .send().await.unwrap()
+        .json::<Value>().await.unwrap()["token"].as_str().unwrap().to_string();
+    let alice_agent = reqwest::Client::new();
+
+    // alice 的 Agent 创建任务（未开始），随后推进到「进行中」→ 认领
+    let created = alice_agent
+        .post(format!("{}/api/agent/tasks", app.base))
+        .bearer_auth(&alice_token)
+        .json(&json!({"project":"default-project","type":"BUG","description":"alice 认领"}))
+        .send().await.unwrap();
+    assert_eq!(created.status(), 201);
+    let task = created.json::<Value>().await.unwrap();
+    assert_eq!(task["assignee_user_id"], Value::Null);
+    let task_id = task["id"].as_str().unwrap().to_string();
+    let started = alice_agent
+        .patch(format!("{}/api/agent/tasks/{task_id}", app.base))
+        .bearer_auth(&alice_token)
+        .json(&json!({"status":"进行中"}))
+        .send().await.unwrap();
+    assert_eq!(started.status(), 200);
+    assert_eq!(started.json::<Value>().await.unwrap()["assignee_user_id"], json!(alice_id));
+
+    // 描述路由（旧版兼容入口）同样被负责人锁定拦住
+    let host_desc = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{task_id}/description"))
+        .json(&json!({"description":"其它 Agent 改描述"}))
+        .send().await.unwrap();
+    assert_eq!(host_desc.status(), 403);
+    let own_desc = alice_agent
+        .patch(format!("{}/api/agent/tasks/{task_id}/description", app.base))
+        .bearer_auth(&alice_token)
+        .json(&json!({"description":"负责人自己改"}))
+        .send().await.unwrap();
+    assert_eq!(own_desc.status(), 200);
+
+    // 负责人账号被删除 → 负责人置空，任务重新对所有 Agent 开放
+    let delete = app
+        .web(reqwest::Method::DELETE, &format!("/users/{alice_id}"))
+        .send().await.unwrap();
+    assert_eq!(delete.status(), 204);
+    let reopened = app
+        .web(reqwest::Method::GET, &format!("/tasks/{task_id}"))
+        .send().await.unwrap().json::<Value>().await.unwrap();
+    assert_eq!(reopened["assignee_user_id"], Value::Null);
+    let host_ok = app
+        .agent(reqwest::Method::PATCH, &format!("/tasks/{task_id}/status"))
+        .json(&json!({"status":"待验证"}))
+        .send().await.unwrap();
+    assert_eq!(host_ok.status(), 200);
+}
+
 #[tokio::test]
 async fn host_agent_token_persists_across_restart() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1272,8 +1525,8 @@ async fn web_crud_and_filter() {
 #[tokio::test]
 async fn task_dependencies_round_trip_and_gate_agent_start() {
     let app = spawn_app().await;
-    let predecessor = create_task(&app, false, "前置任务").await;
-    let unlocked = create_task(&app, false, "后续任务").await;
+    let predecessor = create_task(&app, false, "子任务").await;
+    let unlocked = create_task(&app, false, "父级任务").await;
     let predecessor_id = predecessor["id"].as_str().unwrap();
     let unlocked_id = unlocked["id"].as_str().unwrap();
 
@@ -1282,7 +1535,7 @@ async fn task_dependencies_round_trip_and_gate_agent_start() {
         .json(&json!({
             "project": "default-project",
             "type": "新增需求",
-            "description": "受前置约束的任务",
+            "description": "受子任务约束的任务",
             "predecessor_task_ids": [predecessor_id],
             "unlock_task_ids": [unlocked_id]
         }))
@@ -1324,7 +1577,7 @@ async fn task_dependencies_round_trip_and_gate_agent_start() {
     assert!(blocked.json::<Value>().await.unwrap()["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("前置任务尚未完成"));
+        .contains("子任务尚未完成"));
 
     let pending_review = app
         .web(reqwest::Method::PATCH, &format!("/tasks/{predecessor_id}"))
@@ -1434,6 +1687,77 @@ async fn task_dependencies_round_trip_and_gate_agent_start() {
         .await
         .unwrap();
     assert_eq!(host_view["unlock_task_ids"], json!([unlocked_id, secret_id]));
+}
+
+#[tokio::test]
+async fn child_progress_gates_completion_and_reopens_ancestors_through_web_agent_and_batch() {
+    let app = spawn_app().await;
+    let child = create_task(&app, false, "子任务").await;
+    let parent = create_task(&app, false, "父级任务").await;
+    let grandparent = create_task(&app, false, "上级任务").await;
+    let child_id = child["id"].as_str().unwrap().to_string();
+    let parent_id = parent["id"].as_str().unwrap().to_string();
+    let grandparent_id = grandparent["id"].as_str().unwrap().to_string();
+
+    for (id, child) in [(&parent_id, &child_id), (&grandparent_id, &parent_id)] {
+        let linked = app.web(reqwest::Method::PATCH, &format!("/tasks/{id}"))
+            .json(&json!({"predecessor_task_ids":[child]})).send().await.unwrap();
+        assert_eq!(linked.status(), 200);
+    }
+    for id in [&child_id, &parent_id] {
+        let completed = app.web(reqwest::Method::PATCH, &format!("/tasks/{id}"))
+            .json(&json!({"status":"已完成"})).send().await.unwrap();
+        assert_eq!(completed.status(), 200);
+    }
+    let accepted = app.web(reqwest::Method::PATCH, &format!("/tasks/{grandparent_id}"))
+        .json(&json!({"status":"验收通过"})).send().await.unwrap();
+    assert_eq!(accepted.status(), 200);
+
+    let regressed = app.agent(reqwest::Method::PATCH, &format!("/tasks/{child_id}/status"))
+        .json(&json!({"status":"进行中"})).send().await.unwrap();
+    assert_eq!(regressed.status(), 200);
+    for id in [&parent_id, &grandparent_id] {
+        let after: Value = app.web(reqwest::Method::GET, &format!("/tasks/{id}"))
+            .send().await.unwrap().json().await.unwrap();
+        assert_eq!(after["status"], "进行中");
+    }
+
+    let rejected = app.agent(reqwest::Method::PATCH, &format!("/tasks/{parent_id}/status"))
+        .json(&json!({"status":"待验证"})).send().await.unwrap();
+    assert_eq!(rejected.status(), 422);
+    let after: Value = app.web(reqwest::Method::GET, &format!("/tasks/{parent_id}"))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(after["status"], "进行中");
+
+    let batch = app.web(reqwest::Method::POST, "/tasks/batch")
+        .json(&json!({"action":"update","ids":[parent_id,grandparent_id],"patch":{"status":"已完成"}}))
+        .send().await.unwrap();
+    assert_eq!(batch.status(), 200);
+    let batch: Value = batch.json().await.unwrap();
+    assert_eq!(batch["failed"], 2);
+    assert_eq!(batch["succeeded"], 0);
+    assert!(batch["results"].as_array().unwrap().iter().all(|item| {
+        item["error"]["message"].as_str().unwrap_or_default().contains("子任务")
+    }));
+
+    for (id, status) in [(&child_id, "待验证"), (&parent_id, "待验证"), (&grandparent_id, "验收通过")] {
+        let ready = app.web(reqwest::Method::PATCH, &format!("/tasks/{id}"))
+            .json(&json!({"status":status})).send().await.unwrap();
+        assert_eq!(ready.status(), 200);
+    }
+    let added = app.web(reqwest::Method::POST, "/tasks")
+        .json(&json!({
+            "project":"default-project",
+            "type":"优化",
+            "description":"后来增加的子任务",
+            "unlock_task_ids":[parent_id]
+        })).send().await.unwrap();
+    assert_eq!(added.status(), 201);
+    for id in [&parent_id, &grandparent_id] {
+        let after: Value = app.web(reqwest::Method::GET, &format!("/tasks/{id}"))
+            .send().await.unwrap().json().await.unwrap();
+        assert_eq!(after["status"], "进行中");
+    }
 }
 
 // ── 优先级字段（高/中/低，默认中） ──────────────────────

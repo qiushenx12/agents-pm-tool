@@ -110,6 +110,7 @@ pub async fn batch_tasks(
                             priority: patch.priority.clone(),
                             description: None,
                             note: None,
+                            assignee_user_id: None,
                             predecessor_task_ids: None,
                             unlock_task_ids: None,
                         },

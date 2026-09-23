@@ -211,11 +211,11 @@ async function submit() {
     </div>
     <div class="form-grid">
       <div class="form-field">
-        <label>前置任务 ID</label>
+        <label>子任务 ID</label>
         <TaskMultiSelect
           :model-value="predecessorTaskIds"
           :options="dependencyOptions.filter((task) => !unlockTaskIds.includes(task.id))"
-          label="前置任务 ID"
+          label="子任务 ID"
           :disabled="busy || !!createdTask"
           :loading="dependencyOptionsLoading"
           @open="loadDependencyOptions"
@@ -223,11 +223,11 @@ async function submit() {
         />
       </div>
       <div class="form-field">
-        <label>解锁任务 ID</label>
+        <label>父级任务 ID</label>
         <TaskMultiSelect
           :model-value="unlockTaskIds"
           :options="dependencyOptions.filter((task) => !predecessorTaskIds.includes(task.id))"
-          label="解锁任务 ID"
+          label="父级任务 ID"
           :disabled="busy || !!createdTask"
           :loading="dependencyOptionsLoading"
           @open="loadDependencyOptions"

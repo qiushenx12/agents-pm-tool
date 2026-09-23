@@ -9,35 +9,21 @@ description: 使用 Agents PM Tool 的 pm-cli 查询项目、任务和当前 Age
 
 ## 第一步：先找到 pm-cli
 
-`pm-cli` 就在本 skill 目录里，**不在系统 PATH 上**，所以先确认它在哪里、再调用。目录结构固定为：
+`pm-cli` 就在本 skill 目录里，**不在系统 PATH 上**，直接用本目录的相对路径即可。目录结构固定为：
 
 ```text
-<前端 skills 根目录>/
-└─ pm-cli/
-   ├─ SKILL.md          本文件
-   ├─ VERSION           版本号
-   └─ bin/
-      ├─ pm-cli.mjs     实现本体
-      ├─ pm-cli.cmd     Windows 便捷入口
-      └─ pm-cli         macOS / Linux 便捷入口
+pm-cli/
+├─ SKILL.md          本文件
+├─ VERSION           版本号
+└─ bin/
+   ├─ pm-cli.mjs     实现本体
+   ├─ pm-cli.cmd     Windows 便捷入口
+   └─ pm-cli         macOS / Linux 便捷入口
 ```
 
-各前端的 skills 根目录（Windows / macOS 两种写法）：
+如果不知道 skill 装在哪，运行 `pm-cli doctor`（或 `pm-cli --help`）会打印实际脚本路径；也可以查「我的 Agent 访问」面板里显示的本前端 skills 根目录。
 
-| 前端 | Windows | macOS |
-| --- | --- | --- |
-| Codex | `%USERPROFILE%\.agents\skills` | `~/.agents/skills` |
-| Codex（旧版目录） | `%USERPROFILE%\.codex\skills` | `~/.codex/skills` |
-| Claude Code | `%USERPROFILE%\.claude\skills` | `~/.claude/skills` |
-| WorkBuddy | `%USERPROFILE%\.workbuddy\skills` | `~/.workbuddy/skills` |
-| OpenCode | `%USERPROFILE%\.config\opencode\skills` | `~/.config/opencode/skills` |
-| Cursor | `%USERPROFILE%\.cursor\skills` | `~/.cursor/skills` |
-| Pi | `%USERPROFILE%\.pi\agent\skills` | `~/.pi/agent/skills` |
-| DeepSeek Harness | `%USERPROFILE%\.dsh\skills` | `~/.dsh/skills` |
-
-DeepSeek Harness 设置了 `DSH_HOME` 时，用 `$DSH_HOME/skills`。
-
-确认位置后，用完整路径调用即可（下面示例里的 `pm-cli` 都指这一种调用）：
+调用方式（下面示例里的 `pm-cli` 指本目录的脚本）：
 
 ```text
 Windows：  <skill>\bin\pm-cli.cmd doctor
@@ -84,7 +70,7 @@ pm-cli config show
 1. 运行 `pm-cli get <任务ID> --json` 读取完整任务。
 2. 若 `attachment_count` 大于 0，运行 `pm-cli attachments <任务ID> --json` 查看附件，再用 `pm-cli download <附件ID>` 按需下载。
 3. 运行 `pm-cli projects --json` 获取项目、本地路径与 Git 地址。
-4. 检查任务返回的 `predecessor_task_ids`。这些前置任务必须处于`已完成`或`验收通过`；否则不要绕过约束开始当前任务，应先按用户交付范围处理前置任务，或向用户报告阻塞。
+4. 检查任务返回的 `predecessor_task_ids`。这些子任务必须处于`已完成`或`验收通过`；否则不要绕过约束开始当前任务，应先按用户交付范围处理子任务，或向用户报告阻塞。
 5. 运行 `pm-cli permissions --json` 查看当前 token 对目标项目的有效权限。
 6. 开始实现时运行 `pm-cli status <任务ID> --to 进行中 --json`（无权限时报告给用户）。
 7. 在任务对应仓库内实现并验证；保留用户已有改动。
@@ -115,15 +101,17 @@ pm-cli <命令> --help
 
 `permissions --json` 中先找到目标项目：`can_create` 决定能否创建；`create_fields` 是创建时可额外传入的字段，`edit_fields` 是修改已有任务时可传入的字段，二者可能不同；`allowed_values` 限定类型、状态、优先级取值；`description_scope: own_agent` 表示只能改当前 token 用户创建的 Agent 任务描述。创建时仍必须给出项目、类型、非空描述。按这份有效权限选命令参数，不要把 CLI 帮助列出的全部参数当成当前账号已获授权。
 
-如需给已有任务设置前置任务，可在有 `predecessor_task_ids` 修改权时运行 `pm-cli update <任务ID> --predecessor-task-ids <ID,ID>`；仅当用户要求或允许新增任务，且有 `unlock_task_ids` 创建权时，才可用 `pm-cli create ... --unlock-task-ids <已有任务ID>` 建立反向关系。先检查依赖是否会阻止任务启动；不要仅为测试命令而创建无业务意义的任务。
+任务关系：`predecessor_task_ids` = 本任务的子任务；`unlock_task_ids` = 本任务的父级任务。两者描述同一条边，只是视角相反。给父级任务添加子任务时用 `--predecessor-task-ids`；给子任务指定父级任务时用 `--unlock-task-ids`。本任务从`未开始`或`取消`启动为`进行中`时，子任务须全部`已完成`或`验收通过`；进入`待验证`、`已完成`或`验收通过`时，子任务须全部`待验证`、`已完成`或`验收通过`。子任务回退到其它状态或新增子任务时，处于这三个状态的父级及各级上级任务会自动回到`进行中`。
+
+负责人：Agent 把任务状态从「未开始」推进到其它任意状态时，自动成为该任务的负责人（任务上的 `assignee_name` / `assignee_user_id`）。已有负责人的任务只能被该负责人（同一账号的 Agent）继续修改，其它 Agent 的任何修改都会被服务端拒绝（HTTP 403）；网页端用户不受此限制，可以按授权继续修改、改派或清除负责人。负责人字段本身不开放给 Agent 直接修改。
 
 ## 权限边界
 
 可以：查看与筛选已授权项目中的任务、只读查看项目、列出并下载任务附件；创建和修改任务字段须同时满足单独配置的 Agent 权限与账号项目/字段授权。运行 `pm-cli permissions --json` 查看当前有效权限。
 
-默认设置与旧版一致：可创建任务；可把状态切到 `进行中`、`待验证`、`已完成`，改优先级；只能修改**当前 token 用户的 Agent 创建**任务描述（且不能清空）。管理员可在用户管理中调整 Agent 的创建字段、修改字段、状态值和描述范围；CLI 的 `create`/`update` 可传可编辑字段，但越权或非法值会被服务端拒绝。依赖 ID 用英文逗号分隔，传空字符串可清空。前置任务未完成时，服务端会拒绝当前任务开始。
+默认设置与旧版一致：可创建任务；可把状态切到 `进行中`、`待验证`、`已完成`，改优先级；只能修改**当前 token 用户的 Agent 创建**任务描述（且不能清空）。管理员可在用户管理中调整 Agent 的创建字段、修改字段、状态值和描述范围；CLI 的 `create`/`update` 可传可编辑字段，但越权或非法值会被服务端拒绝。关联任务 ID 用英文逗号分隔，传空字符串可清空。状态与子任务关系由服务端按上述规则校验。
 
-始终不可以：客户端指定 ID、提交人、创建/完成时间等不可变字段；删除任务；上传或删除附件；管理项目；直接读写数据库。即使 Agent 权限允许某个字段，普通用户仍不能越过网页侧的项目/字段/枚举授权。
+始终不可以：客户端指定 ID、提交人、负责人、创建/完成时间等不可变字段；删除任务；上传或删除附件；管理项目；直接读写数据库。即使 Agent 权限允许某个字段，普通用户仍不能越过网页侧的项目/字段/枚举授权。
 
 以上限制由服务端强制执行，不因客户端不同而放宽。
 
