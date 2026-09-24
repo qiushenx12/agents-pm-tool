@@ -171,6 +171,136 @@ it("drags a card and updates its connected line without opening task details", a
   expect(onOpenDetail).not.toHaveBeenCalled();
 });
 
+/** 挂载两张卡的关联树（first 是父级，second 是子级），返回取卡片的工具 */
+async function mountPair() {
+  listTasks.mockResolvedValue([first, second]);
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp(TaskRelationGraph, { taskId: first.id, revision: 0 });
+  app.mount(host);
+  await nextTick();
+  await nextTick();
+  const cards = [...host.querySelectorAll<HTMLButtonElement>(".relation-card")];
+  const canvas = host.querySelector<HTMLElement>(".relation-scroll")!;
+  const find = (id: string) =>
+    cards.find((card) => card.textContent?.includes(id))!;
+  return { canvas, firstCard: find(first.id), secondCard: find(second.id) };
+}
+
+function positionOf(card: HTMLButtonElement) {
+  return {
+    left: Number.parseFloat(card.style.left),
+    top: Number.parseFloat(card.style.top),
+  };
+}
+
+it("snaps a dragged card onto another card's alignment line and draws a guide", async () => {
+  const { canvas, firstCard, secondCard } = await mountPair();
+  const firstAt = positionOf(firstCard);
+  const secondAt = positionOf(secondCard);
+
+  secondCard.dispatchEvent(pointer("pointerdown", 0, 0));
+  // x 差 5px 落在吸附容差内，y 远离所有对齐线
+  canvas.dispatchEvent(
+    pointer("pointermove", firstAt.left - secondAt.left + 5, -300),
+  );
+  await nextTick();
+
+  // x 精确吸到父级卡片的左边缘，y 保持自由拖动
+  expect(positionOf(secondCard)).toEqual({
+    left: firstAt.left,
+    top: secondAt.top - 300,
+  });
+  const guides = host.querySelectorAll<SVGLineElement>(".relation-guide");
+  expect(guides).toHaveLength(1);
+  expect(Number.parseFloat(guides[0].getAttribute("x1")!)).toBe(firstAt.left);
+
+  canvas.dispatchEvent(pointer("pointerup", 0, 0));
+  await nextTick();
+  expect(host.querySelectorAll(".relation-guide")).toHaveLength(0);
+});
+
+it("snaps back exactly onto the original layout position", async () => {
+  const { canvas, secondCard } = await mountPair();
+  const original = positionOf(secondCard);
+
+  secondCard.dispatchEvent(pointer("pointerdown", 0, 0));
+  canvas.dispatchEvent(pointer("pointermove", 250, 180));
+  await nextTick();
+  // 远离任何对齐线：自由移动
+  expect(positionOf(secondCard)).toEqual({
+    left: original.left + 250,
+    top: original.top + 180,
+  });
+
+  // 拖回原位附近（差 3/4px）→ 精确回到自动布局位置
+  canvas.dispatchEvent(pointer("pointermove", 3, 4));
+  await nextTick();
+  expect(positionOf(secondCard)).toEqual(original);
+  expect(host.querySelectorAll(".relation-guide")).toHaveLength(2);
+});
+
+it("keeps a dragged card free when no alignment line is within the tolerance", async () => {
+  const { canvas, firstCard, secondCard } = await mountPair();
+  const firstAt = positionOf(firstCard);
+  const secondAt = positionOf(secondCard);
+
+  secondCard.dispatchEvent(pointer("pointerdown", 0, 0));
+  // x 差 12px，超出吸附容差
+  canvas.dispatchEvent(
+    pointer("pointermove", firstAt.left - secondAt.left + 12, -300),
+  );
+  await nextTick();
+
+  expect(positionOf(secondCard)).toEqual({
+    left: firstAt.left + 12,
+    top: secondAt.top - 300,
+  });
+  expect(host.querySelectorAll(".relation-guide")).toHaveLength(0);
+});
+
+it("lets a card that was dragged back home follow the layout again", async () => {
+  listTasks.mockResolvedValue([first, second]);
+  host = document.createElement("div");
+  document.body.append(host);
+  const revision = ref(0);
+  app = createApp({
+    render: () => h(TaskRelationGraph, { taskId: first.id, revision: revision.value }),
+  });
+  app.mount(host);
+  await nextTick();
+  await nextTick();
+  const cards = [...host.querySelectorAll<HTMLButtonElement>(".relation-card")];
+  const firstCard = cards.find((card) => card.textContent?.includes(first.id))!;
+  const canvas = host.querySelector<HTMLElement>(".relation-scroll")!;
+  const home = positionOf(firstCard);
+
+  // 拖走再拖回原位：手动覆盖应当在回到原位时被撤掉
+  firstCard.dispatchEvent(pointer("pointerdown", 0, 0));
+  canvas.dispatchEvent(pointer("pointermove", 120, 150));
+  await nextTick();
+  canvas.dispatchEvent(pointer("pointermove", 2, 3));
+  await nextTick();
+  expect(positionOf(firstCard)).toEqual(home);
+  canvas.dispatchEvent(pointer("pointerup", 2, 3));
+  await nextTick();
+
+  // 新增一个兄弟节点改变布局：若手动覆盖还在，first 会钉在原处不动
+  const sibling: Task = {
+    ...second,
+    id: "202609230000000009",
+    seq: 9,
+    predecessor_task_ids: [first.id],
+  };
+  listTasks.mockResolvedValue([first, second, sibling]);
+  revision.value = 1;
+  await vi.waitFor(() =>
+    expect(host.textContent).toContain(sibling.id),
+  );
+  await nextTick();
+  expect(Number.parseFloat(firstCard.style.top)).not.toBe(home.top);
+});
+
 it("clears the highlighted card and detail when the canvas background is clicked", async () => {
   listTasks.mockResolvedValue([first, second]);
   host = document.createElement("div");

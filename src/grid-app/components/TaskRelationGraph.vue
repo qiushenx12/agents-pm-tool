@@ -153,6 +153,88 @@ const draggingId = ref<string | null>(null);
 let dragStart: { pointerId: number; taskId: string; startX: number; startY: number; x: number; y: number; element: HTMLElement } | null = null;
 let suppressClick = false;
 
+/** 拖动吸附的容差（屏幕像素，除以缩放换算回画布坐标）。 */
+const SNAP_THRESHOLD = 8;
+/** 卡片间距：拖动时保持这个间距，连线才有走线通道。 */
+const CARD_GAP = 24;
+
+/**
+ * 自动布局位置（不含手动拖动）。吸附的两个用途：
+ * ① 原始位置本身必须是吸附点——否则拖走一点就再也没法精确放回原位；
+ * ② 判断卡片是否回到了原位，是就把手动覆盖删掉，让它重新跟随布局。
+ */
+const autoPositions = computed(() => {
+  const layout = props.taskId
+    ? buildRelationGraph(records.value, props.taskId)
+    : buildRelationForest(records.value);
+  return new Map(layout.nodes.map((node) => [node.task.id, { x: node.x, y: node.y }]));
+});
+
+/** 当前吸附到的对齐线（画布坐标），null 表示该轴没有吸附，用于画参考线。 */
+const snapGuides = ref<{ x: number | null; y: number | null }>({
+  x: null,
+  y: null,
+});
+
+/** 在候选值里找最近的一个，超出容差不吸附。等距时取靠前的候选，所以自带位置放最前。 */
+function snapAxis(value: number, targets: number[], threshold: number) {
+  let best: number | null = null;
+  let bestDistance = Infinity;
+  for (const target of targets) {
+    const distance = Math.abs(target - value);
+    if (distance <= threshold && distance < bestDistance) {
+      best = target;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+/**
+ * 把拖动中的位置吸附到「与其他卡片左边缘对齐」或「与自己的原始位置重合」。
+ * 卡片尺寸一致，所以边缘对齐等价于 x 相同 / y 相同。
+ */
+function snapDrag(taskId: string, raw: { x: number; y: number }) {
+  const own = autoPositions.value.get(taskId);
+  const threshold = SNAP_THRESHOLD / zoom.value;
+  const others = graph.value.nodes.filter((node) => node.task.id !== taskId);
+  const x = snapAxis(
+    raw.x,
+    [...(own ? [own.x] : []), ...others.map((node) => node.x)],
+    threshold,
+  );
+  const y = snapAxis(
+    raw.y,
+    [...(own ? [own.y] : []), ...others.map((node) => node.y)],
+    threshold,
+  );
+  return { x: x ?? raw.x, y: y ?? raw.y, guideX: x, guideY: y };
+}
+
+/** 卡片之间保持 CARD_GAP 的间隙（不含自己）。 */
+function overlapsNode(taskId: string, x: number, y: number) {
+  return graph.value.nodes.some(
+    (node) =>
+      node.task.id !== taskId &&
+      x < node.x + CARD_WIDTH + CARD_GAP &&
+      x + CARD_WIDTH + CARD_GAP > node.x &&
+      y < node.y + CARD_HEIGHT + CARD_GAP &&
+      y + CARD_HEIGHT + CARD_GAP > node.y,
+  );
+}
+
+/** 拖回原位（与自动布局位置重合）时撤掉手动覆盖，卡片重新跟随布局。 */
+function forgetRestoredPosition(taskId: string) {
+  const own = autoPositions.value.get(taskId);
+  const current = nodePositions.value[taskId];
+  if (!own || !current) return;
+  if (Math.abs(current.x - own.x) > 0.5 || Math.abs(current.y - own.y) > 0.5)
+    return;
+  const rest = { ...nodePositions.value };
+  delete rest[taskId];
+  nodePositions.value = rest;
+}
+
 function beginNodeDrag(event: PointerEvent, taskId: string) {
   if (event.button !== 0 || dragStart) return;
   const node = graph.value.nodes.find((item) => item.task.id === taskId);
@@ -187,16 +269,19 @@ function onPointerMove(event: PointerEvent) {
     const dy = event.clientY - dragStart.startY;
     if (Math.hypot(dx, dy) <= 4 && !draggingId.value) return;
     draggingId.value = dragStart.taskId;
-    const x = dragStart.x + dx / zoom.value;
-    const y = dragStart.y + dy / zoom.value;
-    // Keep a gap between cards so every edge has a usable routing channel.
-    if (graph.value.nodes.some((node) => node.task.id !== dragStart!.taskId &&
-      x < node.x + CARD_WIDTH + 24 && x + CARD_WIDTH + 24 > node.x &&
-      y < node.y + CARD_HEIGHT + 24 && y + CARD_HEIGHT + 24 > node.y)) return;
+    const raw = {
+      x: dragStart.x + dx / zoom.value,
+      y: dragStart.y + dy / zoom.value,
+    };
+    // 吸附后若与别的卡片重叠，退回未吸附的原始位置；仍然重叠就整帧不动
+    let next = snapDrag(dragStart.taskId, raw);
+    if (overlapsNode(dragStart.taskId, next.x, next.y)) next = { ...raw, guideX: null, guideY: null };
+    if (overlapsNode(dragStart.taskId, next.x, next.y)) return;
     viewPristine = false;
     const oldCenterX = centerX.value;
     const oldCenterY = centerY.value;
-    nodePositions.value = { ...nodePositions.value, [dragStart.taskId]: { x, y } };
+    nodePositions.value = { ...nodePositions.value, [dragStart.taskId]: { x: next.x, y: next.y } };
+    snapGuides.value = { x: next.guideX, y: next.guideY };
     panX.value += oldCenterX - centerX.value;
     panY.value += oldCenterY - centerY.value;
     return;
@@ -214,10 +299,12 @@ function endPointer(event: PointerEvent) {
     if (draggingId.value) {
       suppressClick = true;
       setTimeout(() => { suppressClick = false; }, 0);
+      forgetRestoredPosition(dragStart.taskId);
     }
     if (dragStart.element.hasPointerCapture?.(event.pointerId)) dragStart.element.releasePointerCapture(event.pointerId);
     dragStart = null;
     draggingId.value = null;
+    snapGuides.value = { x: null, y: null };
     return;
   }
   if (!panStart || event.pointerId !== panStart.pointerId) return;
@@ -287,7 +374,7 @@ onBeforeUnmount(() => {
         <span class="relation-count">{{ taskId ? "当前任务所在的关联树" : "全部未验收通过的关联树" }}</span>
         <template v-if="graph.nodes.length">
           <span class="relation-count">{{ graph.nodes.length }} 个节点 · {{ graph.edges.length }} 条关联</span>
-          <span class="relation-hint">单击查看详情 · 拖动卡片 · 中键平移 · 滚轮缩放</span>
+          <span class="relation-hint">单击查看详情 · 拖动卡片（自动对齐）· 中键平移 · 滚轮缩放</span>
         </template>
       </div>
       <div class="relation-actions">
@@ -329,6 +416,22 @@ onBeforeUnmount(() => {
       >
         <svg class="relation-lines" :width="graph.width" :height="graph.height" aria-hidden="true">
           <path v-for="edge in graph.edges" :key="edge.from + ':' + edge.to" class="relation-line" :d="edge.path" />
+          <line
+            v-if="snapGuides.x !== null"
+            class="relation-guide"
+            :x1="snapGuides.x"
+            :y1="graph.bounds.top"
+            :x2="snapGuides.x"
+            :y2="graph.bounds.bottom"
+          />
+          <line
+            v-if="snapGuides.y !== null"
+            class="relation-guide"
+            :x1="graph.bounds.left"
+            :y1="snapGuides.y"
+            :x2="graph.bounds.right"
+            :y2="snapGuides.y"
+          />
         </svg>
         <button
           v-for="node in graph.nodes"

@@ -1,10 +1,12 @@
-# 「复制 Prompt」模板
+# 「完整Prompt」模板
 
 本文档列出 `buildAgentTaskPrompt()` 实际生成的 Prompt 文本。内容由代码导出，与运行时行为逐字一致；
 **修改 `taskActions.ts` 后需重新导出并同步本文档。**
 
 - 生成入口：`src/grid-app/taskActions.ts::buildAgentTaskPrompt()`
 - 示例任务固定为 `id = 202609101412350000`
+- 触发入口：操作列的「完整Prompt」按钮（一句话版 [`buildAgentOneLinePrompt()`](../src/grid-app/taskActions.ts)
+  走操作列左侧的「Prompt」按钮，不在本文档范围内）
 
 > 模板只有 **一个**，变量只有服务地址。工具介绍、命令清单、权限边界都不在 Prompt 里展开——
 > 已装 pm-cli-skill 的 Agent 会读 `SKILL.md`，未装的按给出的地址请求免 token 的 `/api/agent/help`。
@@ -92,7 +94,7 @@ pm-cli 在 pm-cli-skill 的 bin 目录下，先定位到它再执行（需要 No
 ````
 
 触发时机（`GridApp.vue`）：首屏 `getAgentAccess()` 抛异常（未登录、未授权、请求失败）、
-退出登录（`:179`）、以及接入信息返回前就点「复制 Prompt」。
+退出登录（`:179`）、以及接入信息返回前就点「完整Prompt」。
 
 ## 4. 被移出 Prompt 的内容去哪了
 

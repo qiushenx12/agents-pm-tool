@@ -20,6 +20,11 @@ import {
   writeFiltersToUrl,
   type FilterState,
 } from "./filters";
+import {
+  PAGE_SIZES,
+  readPageSize,
+  rememberPageSize,
+} from "./pageSize";
 export type { FilterState } from "./filters";
 export const useTaskStore = defineStore("tasks", () => {
   const tasks = ref<Task[]>([]),
@@ -72,7 +77,8 @@ export const useTaskStore = defineStore("tasks", () => {
     }, 400);
   }
   const page = ref(1),
-    pageSize = ref(100),
+    // 每页条数沿用上次的选择（见 pageSize.ts）
+    pageSize = ref(readPageSize()),
     total = ref(0),
     groups = ref<TaskGroupCount[]>([]);
   const pages = computed(() =>
@@ -348,10 +354,12 @@ export const useTaskStore = defineStore("tasks", () => {
     return refresh();
   }
   async function setPageSize(value: number) {
-    if (![50, 100, 200].includes(value) || saving.value) return;
+    if (!PAGE_SIZES.includes(value) || saving.value) return;
     generation++;
     pageSize.value = value;
     page.value = 1;
+    // 只记用户显式选择的档位，不回写服务端在响应里回显的值
+    rememberPageSize(value);
     return refresh();
   }
   async function reveal(id: string) {

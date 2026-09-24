@@ -7,14 +7,15 @@ import UiPopover from "@/shared/UiPopover.vue";
 import TaskField from "./TaskField.vue";
 import TaskMultiSelect from "./TaskMultiSelect.vue";
 import TaskActions from "./TaskActions.vue";
+import ActionColumnSettings from "./ActionColumnSettings.vue";
 import DescriptionEditor from "./DescriptionEditor.vue";
 import AttachmentPreviewDialog from "./AttachmentPreviewDialog.vue";
 import { api } from "../api/client";
 import { attachmentKind } from "../attachmentKind";
 import { clipboardFiles } from "../clipboardFiles";
-import { buildAgentIdPrompt } from "../taskActions";
 import { useTaskStore } from "../stores/taskStore";
 import { useViewStore } from "../stores/viewStore";
+import { PAGE_SIZES } from "../stores/pageSize";
 import { askConfirm, copyText, errorText, notify } from "@/shared/feedback";
 import { formatDateTime, type Attachment, type Task } from "@/shared/types";
 defineProps<{ quickCreating?: boolean }>();
@@ -437,7 +438,16 @@ watch(
       active.value.key = "description";
   },
 );
-const ACTION_COLUMN_WIDTH = 116;
+// 操作列宽度 = 表格总宽算式里的余量（最后一列 <col> 不写宽度，吃到的正是这个值），
+// 所以它要跟着实际显示的按钮走：只显示一个按钮时列宽就该收窄，别留一大片空白。
+// 按钮宽度只能量出来（字体/图标/内边距都不好在 JS 里算），量尺是模板里那个
+// 不参与布局的 .action-measure，见 measureActionColumn()。
+const ACTION_BUTTON_GAP = 4; // .task-actions 的 gap
+const ACTION_CELL_PADDING = 16; // 操作列单元格左右内边距
+/** 首次量测前（以及无布局环境如 jsdom）的兜底宽度：放得下「Prompt」「完整Prompt」。 */
+const ACTION_COLUMN_FALLBACK_WIDTH = 196;
+const actionColumnWidth = ref(ACTION_COLUMN_FALLBACK_WIDTH);
+const actionMeasure = ref<HTMLElement | null>(null);
 const INDEX_COLUMN_WIDTH = 64;
 const MIN_SCROLLABLE_WIDTH = 120;
 const gridWidth = ref(0);
@@ -445,7 +455,7 @@ const frozenOffsets = computed(() => {
   const offsets: number[] = [];
   let left = INDEX_COLUMN_WIDTH;
   const available = gridWidth.value
-    ? gridWidth.value - ACTION_COLUMN_WIDTH - MIN_SCROLLABLE_WIDTH
+    ? gridWidth.value - actionColumnWidth.value - MIN_SCROLLABLE_WIDTH
     : Infinity;
   const count = Math.min(view.frozenColumns, view.visibleColumns.length);
   for (let index = 0; index < count; index++) {
@@ -459,8 +469,31 @@ const frozenOffsets = computed(() => {
 const widths = computed(
   () =>
     view.visibleColumns.reduce((n, c) => n + c.width, INDEX_COLUMN_WIDTH) +
-    ACTION_COLUMN_WIDTH,
+    actionColumnWidth.value,
 );
+/** 量出量尺里按钮的自然宽度，换算成操作列应有的宽度。 */
+function measureActionColumn() {
+  const buttons = [
+    ...(actionMeasure.value?.querySelectorAll("button") ?? []),
+  ];
+  if (!buttons.length) return;
+  const measured = buttons.reduce(
+    (sum, button) => sum + button.getBoundingClientRect().width,
+    0,
+  );
+  // 无布局环境（jsdom）量出来全是 0：保留兜底值，别把列宽算成只剩间距
+  if (!measured) return;
+  const next =
+    Math.ceil(measured + ACTION_BUTTON_GAP * (buttons.length - 1)) +
+    ACTION_CELL_PADDING;
+  if (next !== actionColumnWidth.value) actionColumnWidth.value = next;
+}
+// 量尺与可见按钮同步渲染，所以按钮增减后都要重新量。
+// 用 flush: post：回调时量尺已按新的按钮集合渲染完，直接量即可（再套一层 nextTick 会白白晚一帧）。
+watch([actionMeasure, () => view.visibleRowActions], measureActionColumn, {
+  immediate: true,
+  flush: "post",
+});
 const currentEditingTask = computed(() =>
   editingId.value
     ? (tasks.records[editingId.value] ?? editingTask.value)
@@ -901,8 +934,22 @@ defineExpose({ reveal });
             @dragleave="leaveColumn($event, 'actions')"
             @drop.prevent="dropColumn($event, 'actions')"
           >
-            <div class="column-heading task-actions-heading">
-              <UiIcon name="more" :size="14" /><span>操作</span>
+            <!-- 与其它字段同款：悬停显示右侧小箭头，左键展开 -->
+            <div class="column-heading">
+              <UiIcon name="more" :size="14" /><span>操作</span
+              ><UiPopover :width="200" align="right" label="操作列按钮"
+                ><template #trigger="{ toggle }"
+                  ><button
+                    class="icon-btn column-menu"
+                    aria-label="操作列按钮"
+                    title="选择这一列显示哪些按钮"
+                    @click="toggle"
+                  >
+                    <UiIcon name="chevron" :size="12" /></button></template
+                ><template #default>
+                  <ActionColumnSettings />
+                </template>
+              </UiPopover>
             </div>
           </th>
         </tr>
@@ -1254,10 +1301,10 @@ defineExpose({ reveal });
                   <span class="cell-id" :title="task.id">{{ task.id }}</span
                   ><button
                     type="button"
-                    class="icon-btn id-prompt-button"
-                    :aria-label="'复制任务 Prompt：' + task.id"
-                    title="复制任务 Prompt"
-                    @click.stop="copyText(buildAgentIdPrompt(task))"
+                    class="icon-btn id-copy-button"
+                    :aria-label="'复制任务 ID：' + task.id"
+                    title="复制任务 ID"
+                    @click.stop="copyText(task.id)"
                   >
                     <UiIcon name="copy" :size="13" />
                   </button>
@@ -1280,6 +1327,22 @@ defineExpose({ reveal });
         >
       </tbody>
     </table>
+    <!-- 操作列宽度的量尺：与行内按钮同款样式但不参与布局，只为量出它们的自然宽度 -->
+    <div
+      ref="actionMeasure"
+      class="task-actions action-measure"
+      aria-hidden="true"
+    >
+      <button
+        v-for="action in view.visibleRowActions"
+        :key="action.key"
+        type="button"
+        class="btn btn-sm task-action-button"
+        tabindex="-1"
+      >
+        <UiIcon :name="action.icon" :size="13" />{{ action.label }}
+      </button>
+    </div>
     <div
       v-if="columnDropLine"
       class="column-insertion-line"
@@ -1433,7 +1496,7 @@ defineExpose({ reveal });
           /></button></template
       ><template #default="{ close }"
         ><button
-          v-for="size in [50, 100, 200]"
+          v-for="size in PAGE_SIZES"
           :key="size"
           class="menu-item"
           @click="

@@ -9,7 +9,7 @@ export interface TaskRowAction {
   run: (task: Task) => void | Promise<void>;
 }
 
-/** 「复制 Prompt」所需的接入信息。只有服务地址会进入 Prompt。 */
+/** 「完整Prompt」所需的接入信息。只有服务地址会进入 Prompt。 */
 export interface AgentPromptAccess {
   /** 服务端动态计算：主机账号为 loopback，局域网账号为可达地址（见 api_agent_access.rs）。 */
   server_url?: string;
@@ -50,19 +50,27 @@ export function buildAgentTaskPrompt(
   ].join("\n");
 }
 
-/** 生成 ID 单元格复制按钮使用的一句话任务指引。 */
-export function buildAgentIdPrompt(task: Task) {
+/** 一句话任务指引：只给任务 ID，让 Agent 自己去取内容。供操作列的「Prompt」按钮使用。 */
+export function buildAgentOneLinePrompt(task: Task) {
   return `请使用 pm-cli 获取任务id=${task.id}的内容并完成任务`;
 }
 
 /**
  * 表格操作列的扩展入口。新增行级操作时在此注册，表格本身无需增加分支。
+ * 数组顺序即按钮从左到右的顺序。
  */
 export const TASK_ROW_ACTIONS: readonly TaskRowAction[] = [
   {
+    key: "copy-one-line-prompt",
+    label: "Prompt",
+    title: "复制一句话任务指引（与任务 ID 旁的复制按钮一致）",
+    icon: "copy",
+    run: (task: Task) => copyText(buildAgentOneLinePrompt(task)),
+  },
+  {
     key: "copy-agent-prompt",
-    label: "复制 Prompt",
-    title: "复制 Agent 任务 Prompt",
+    label: "完整Prompt",
+    title: "复制完整的 Agent 任务 Prompt",
     icon: "copy",
     run: (task: Task) => copyText(buildAgentTaskPrompt(task, activeAccess)),
   },

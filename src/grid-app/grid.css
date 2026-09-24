@@ -355,6 +355,13 @@
   stroke: var(--text-tertiary);
   stroke-width: 1.6;
 }
+/* 拖动吸附时的对齐参考线 */
+.relation-guide {
+  stroke: var(--primary);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+  opacity: 0.85;
+}
 .relation-card {
   /* 卡片配色由状态 tone 驱动：tone 在 TaskRelationGraph.vue 里用 statusTones 算出，
      再由下方 [data-tone] 规则映射到 tag-* 令牌，与任务表状态列同源，不再各写一套映射。
@@ -796,7 +803,6 @@ th:focus-within .column-menu {
 .task-grid th.task-actions-column {
   z-index: 7;
 }
-.task-actions-heading,
 .task-actions {
   justify-content: center;
 }
@@ -810,6 +816,15 @@ th:focus-within .column-menu {
   max-width: 100%;
   padding: 0 7px;
   color: var(--text-secondary);
+}
+/* 操作列宽度的量尺：固定定位到视口外，不占位、不可见，只为量按钮自然宽度 */
+.action-measure {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  height: auto;
+  visibility: hidden;
+  pointer-events: none;
 }
 .task-grid .row-index {
   text-align: center;
@@ -958,14 +973,14 @@ th:focus-within .column-menu {
   height: 100%;
   gap: 4px;
 }
-.id-prompt-button {
+.id-copy-button {
   flex: 0 0 auto;
   width: 21px;
   height: 23px;
   opacity: 0;
 }
-.task-grid td[data-column="id"]:hover .id-prompt-button,
-.task-grid td[data-column="id"]:focus-within .id-prompt-button {
+.task-grid td[data-column="id"]:hover .id-copy-button,
+.task-grid td[data-column="id"]:focus-within .id-copy-button {
   opacity: 1;
 }
 .submitter-tag {

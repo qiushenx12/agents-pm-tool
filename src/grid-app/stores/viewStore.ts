@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
+import { TASK_ROW_ACTIONS } from "../taskActions";
 // 新装用户的默认列：顺序即任务字段的默认排布（操作列固定最后，不在此列表内），
 // 全部默认展示。老用户已保存的列顺序/显隐由下面的合并逻辑保留，不受此处调整影响。
 export const DEFAULT_COLUMNS = [
@@ -85,6 +86,7 @@ export const useViewStore = defineStore("view", () => {
     frozenColumns?: number;
     collapsed?: boolean;
     projectsOpen?: boolean;
+    hiddenActions?: unknown[];
   } = {};
   try {
     saved = JSON.parse(localStorage.getItem("pm-table-view-v1") || "{}") ?? {};
@@ -135,11 +137,45 @@ export const useViewStore = defineStore("view", () => {
   const collapsed = ref(saved.collapsed ?? window.innerWidth < 1100);
   /** 侧栏「Agents PM」模块的展开状态：收起只留模块标题，展开显示项目列表。 */
   const projectsOpen = ref(saved.projectsOpen ?? true);
+  /**
+   * 操作列里被隐藏的按钮 key。存「隐藏」而不是「显示」：以后新增的行级按钮
+   * 对老用户默认可见，无需迁移；新装用户为空数组，即所有按钮都在。
+   * 只保留仍然存在的 key，避免版本升级后残留旧按钮名。
+   */
+  const hiddenActions = ref(
+    (Array.isArray(saved.hiddenActions) ? saved.hiddenActions : []).filter(
+      (key): key is string =>
+        typeof key === "string" &&
+        TASK_ROW_ACTIONS.some((action) => action.key === key),
+    ),
+  );
+  // 存储被改坏成「全部隐藏」时按无隐藏处理，保证操作列至少留一个按钮
+  if (hiddenActions.value.length >= TASK_ROW_ACTIONS.length)
+    hiddenActions.value = [];
   const visibleColumns = computed(() => columns.value.filter((c) => c.visible));
+  /** 操作列实际渲染的按钮。 */
+  const visibleRowActions = computed(() =>
+    TASK_ROW_ACTIONS.filter(
+      (action) => !hiddenActions.value.includes(action.key),
+    ),
+  );
+  /** 已隐藏的可以重新显示；可见时必须还有别的按钮在——操作列至少保留一个。 */
+  function canToggleRowAction(key: string) {
+    return (
+      hiddenActions.value.includes(key) || visibleRowActions.value.length > 1
+    );
+  }
+  function toggleRowAction(key: string) {
+    if (!canToggleRowAction(key)) return;
+    hiddenActions.value = hiddenActions.value.includes(key)
+      ? hiddenActions.value.filter((item) => item !== key)
+      : [...hiddenActions.value, key];
+  }
   function reset() {
     columns.value = DEFAULT_COLUMNS.map((c) => ({ ...c }));
     density.value = 36;
     frozenColumns.value = 1;
+    hiddenActions.value = [];
   }
   function moveColumn(key: string, direction: -1 | 1) {
     const index = columns.value.findIndex((c) => c.key === key),
@@ -168,7 +204,7 @@ export const useViewStore = defineStore("view", () => {
     );
   }
   watch(
-    [columns, density, frozenColumns, collapsed, projectsOpen],
+    [columns, density, frozenColumns, collapsed, projectsOpen, hiddenActions],
     () => {
       try {
         localStorage.setItem(
@@ -179,6 +215,7 @@ export const useViewStore = defineStore("view", () => {
             frozenColumns: frozenColumns.value,
             collapsed: collapsed.value,
             projectsOpen: projectsOpen.value,
+            hiddenActions: hiddenActions.value,
           }),
         );
       } catch {
@@ -194,6 +231,10 @@ export const useViewStore = defineStore("view", () => {
     frozenColumns,
     collapsed,
     projectsOpen,
+    hiddenActions,
+    visibleRowActions,
+    canToggleRowAction,
+    toggleRowAction,
     reset,
     moveColumn,
     moveBefore,

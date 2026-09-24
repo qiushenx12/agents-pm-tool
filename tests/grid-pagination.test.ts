@@ -270,9 +270,12 @@ it("keeps actions fixed last while notes remain a resizable data column", async 
   expect(lastDataCell?.nextElementSibling).toBe(actionCell);
   expect(noteCell?.textContent).toBe("末列备注");
   expect(actionCell?.dataset.column).toBe("actions");
-  expect(actionCell?.querySelector("button")?.textContent).toContain(
-    "复制 Prompt",
-  );
+  // 操作列两个按钮：一句话 Prompt 在左，完整 Prompt 在右
+  expect(
+    [...(actionCell?.querySelectorAll("button") ?? [])].map((button) =>
+      button.textContent?.trim(),
+    ),
+  ).toEqual(["Prompt", "完整Prompt"]);
   expect(noteColumn?.style.width).toBe("240px");
   expect(actionColumn?.style.width).toBe("");
   expect(noteHeader?.draggable).toBe(true);
@@ -383,7 +386,9 @@ it("freezes the requested left columns and adjusts to layout changes", async () 
   await nextTick();
   expect(header("priority").style.left).toBe("564px");
 
-  Object.defineProperty(wrap, "clientWidth", { configurable: true, value: 700 });
+  // 冻结列的可用宽度 = 容器宽 - 索引列 - 固定操作列 - 最小可滚动宽度，
+  // 所以这个模拟宽度必须留出操作列的 196px：64 + 380 要能放下，而 +120 的「任务类型」放不下
+  Object.defineProperty(wrap, "clientWidth", { configurable: true, value: 800 });
   window.dispatchEvent(new Event("resize"));
   await nextTick();
   expect(header("description").classList.contains("pinned-column")).toBe(true);
@@ -398,7 +403,7 @@ it("freezes the requested left columns and adjusts to layout changes", async () 
   expect(header("priority").classList.contains("pinned-column")).toBe(true);
 });
 
-it("copies the concise task prompt from the ID cell button", async () => {
+it("copies only the task ID from the ID cell button", async () => {
   window.history.replaceState(null, "", "/");
   localStorage.clear();
   pinia = createPinia();
@@ -444,19 +449,183 @@ it("copies the concise task prompt from the ID cell button", async () => {
     `[data-task-id="${task.id}"][data-column="id"]`,
   );
   const button = idCell?.querySelector<HTMLButtonElement>(
-    ".id-prompt-button",
+    ".id-copy-button",
   );
   expect(idCell?.textContent).toContain(task.id);
   expect(button?.getAttribute("aria-label")).toBe(
-    `复制任务 Prompt：${task.id}`,
+    `复制任务 ID：${task.id}`,
   );
 
   button?.click();
   await vi.waitFor(() => {
-    expect(writeText).toHaveBeenCalledWith(
-      `请使用 pm-cli 获取任务id=${task.id}的内容并完成任务`,
-    );
+    // ID 单元格只复制 ID 本身，一句话 Prompt 已移到操作列
+    expect(writeText).toHaveBeenCalledWith(task.id);
   });
+});
+
+it("shows the page size remembered from the last visit", async () => {
+  window.history.replaceState(null, "", "/");
+  localStorage.clear();
+  // 上次选了 50 条/页，重开页面应当沿用
+  localStorage.setItem("pm-table-page-size-v1", "50");
+  pinia = createPinia();
+  vi.mocked(api.pageTasks).mockResolvedValue({
+    items: [],
+    total: 0,
+    page: 1,
+    page_size: 50,
+    groups: [],
+    anchor_found: null,
+  });
+  const tasks = useTaskStore(pinia);
+  expect(tasks.pageSize).toBe(50);
+  await tasks.refresh();
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp({ render: () => h(TaskGrid) });
+  app.use(pinia);
+  app.mount(host);
+  expect(
+    host.querySelector(".page-size-button")?.textContent,
+  ).toContain("50 条/页");
+});
+
+it("opens the action button list from the header menu arrow and hides the picked button", async () => {
+  window.history.replaceState(null, "", "/");
+  localStorage.clear();
+  pinia = createPinia();
+  const task: Task = {
+    id: "202609091504000002",
+    seq: 2,
+    project: "agents-pm-tool",
+    type: "优化",
+    status: "未开始",
+    priority: "中",
+    description: "操作列按钮显隐",
+    note: "",
+    submitter: "用户",
+    created_at: "",
+    finished_at: null,
+    updated_at: "",
+    position: 2,
+  };
+  vi.mocked(api.pageTasks).mockResolvedValue({
+    items: [task],
+    total: 1,
+    page: 1,
+    page_size: 100,
+    groups: [],
+    anchor_found: null,
+  });
+  const tasks = useTaskStore(pinia);
+  await tasks.refresh();
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp({ render: () => h(TaskGrid) });
+  app.use(pinia);
+  app.mount(host);
+
+  const labels = () =>
+    [...host.querySelectorAll('tbody .task-row td[data-column="actions"] button')]
+      .map((button) => button.textContent?.trim());
+  expect(labels()).toEqual(["Prompt", "完整Prompt"]);
+
+  // 与其它字段同款：表头右侧的小箭头（.column-menu，悬停才显形），左键展开
+  const header = host.querySelector<HTMLElement>('thead th[data-column="actions"]')!;
+  expect(header.querySelector(".column-heading .column-menu")).not.toBeNull();
+  expect(header.querySelector(".column-menu")?.getAttribute("aria-label")).toBe(
+    "操作列按钮",
+  );
+  header.querySelector<HTMLButtonElement>(".column-menu")!.click();
+  await nextTick();
+  await nextTick();
+  const boxes = [
+    ...document.body.querySelectorAll<HTMLInputElement>(
+      '.ui-popover input[type="checkbox"]',
+    ),
+  ];
+  expect(boxes.map((box) => box.checked)).toEqual([true, true]);
+
+  // 取消「Prompt」后行内只剩「完整Prompt」
+  boxes[0].click();
+  await nextTick();
+  expect(labels()).toEqual(["完整Prompt"]);
+  // 只剩一个时另一个不可取消
+  expect(boxes[1].disabled).toBe(true);
+  document.body.querySelector(".ui-popover")?.remove();
+});
+
+it("sizes the actions column to the buttons that are visible", async () => {
+  window.history.replaceState(null, "", "/");
+  localStorage.clear();
+  pinia = createPinia();
+  const task: Task = {
+    id: "202609091504000003",
+    seq: 3,
+    project: "agents-pm-tool",
+    type: "优化",
+    status: "未开始",
+    priority: "中",
+    description: "操作列宽度跟随按钮",
+    note: "",
+    submitter: "用户",
+    created_at: "",
+    finished_at: null,
+    updated_at: "",
+    position: 3,
+  };
+  vi.mocked(api.pageTasks).mockResolvedValue({
+    items: [task],
+    total: 1,
+    page: 1,
+    page_size: 100,
+    groups: [],
+    anchor_found: null,
+  });
+  // jsdom 没有布局：给量尺里的按钮桩上真实宽度（Prompt 74 / 完整Prompt 98），其余元素保持原样
+  const original = Element.prototype.getBoundingClientRect;
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: Element) {
+      if (this instanceof HTMLButtonElement && this.closest(".action-measure"))
+        return {
+          width: this.textContent?.includes("完整") ? 98 : 74,
+        } as DOMRect;
+      return original.call(this);
+    },
+  );
+  const tasks = useTaskStore(pinia);
+  await tasks.refresh();
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp({ render: () => h(TaskGrid) });
+  app.use(pinia);
+  app.mount(host);
+  await nextTick();
+  await nextTick();
+
+  const view = useViewStore(pinia);
+  const indexWidth = 64; // 与 TaskGrid 的 INDEX_COLUMN_WIDTH 一致
+  const actionsWidth = () =>
+    Number.parseFloat(
+      host.querySelector<HTMLElement>(".task-grid")!.style.width,
+    ) - view.visibleColumns.reduce((n, c) => n + c.width, indexWidth);
+
+  // 74 + 98 + 4 间距 + 16 内边距
+  expect(actionsWidth()).toBe(192);
+  expect(host.querySelectorAll(".action-measure button")).toHaveLength(2);
+
+  // 隐藏「Prompt」后列宽跟着收窄，不再留一大片空白
+  view.toggleRowAction("copy-one-line-prompt");
+  await nextTick();
+  await nextTick();
+  expect(host.querySelectorAll(".action-measure button")).toHaveLength(1);
+  expect(actionsWidth()).toBe(98 + 16);
+
+  // 恢复显示后回到两个按钮的宽度
+  view.toggleRowAction("copy-one-line-prompt");
+  await nextTick();
+  await nextTick();
+  expect(actionsWidth()).toBe(192);
 });
 
 it("shows the insertion column while dragging a table header", async () => {

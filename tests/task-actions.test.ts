@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import {
-  buildAgentIdPrompt,
+  buildAgentOneLinePrompt,
   buildAgentTaskPrompt,
   TASK_ROW_ACTIONS,
 } from "@/grid-app/taskActions";
@@ -24,9 +24,15 @@ const task: Task = {
 };
 
 describe("task row actions", () => {
-  it("registers the copy prompt action through the extensible action list", () => {
+  it("registers the one-line prompt on the left of the full prompt", () => {
+    // 数组顺序即按钮顺序：一句话 Prompt 在完整 Prompt 左侧
     expect(TASK_ROW_ACTIONS.map((action) => action.key)).toEqual([
+      "copy-one-line-prompt",
       "copy-agent-prompt",
+    ]);
+    expect(TASK_ROW_ACTIONS.map((action) => action.label)).toEqual([
+      "Prompt",
+      "完整Prompt",
     ]);
   });
 
@@ -83,13 +89,13 @@ describe("task row actions", () => {
     );
   });
 
-  it("builds the concise prompt used by the ID cell", () => {
-    expect(buildAgentIdPrompt(task)).toBe(
+  it("builds the one-line prompt used by the actions column", () => {
+    expect(buildAgentOneLinePrompt(task)).toBe(
       "请使用 pm-cli 获取任务id=202609091234560001的内容并完成任务",
     );
   });
 
-  it("copies the generated prompt through the registered action", async () => {
+  it("copies the one-line prompt through the first action", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -97,6 +103,19 @@ describe("task row actions", () => {
     });
 
     await TASK_ROW_ACTIONS[0].run(task);
+
+    expect(writeText).toHaveBeenCalledOnce();
+    expect(writeText).toHaveBeenCalledWith(buildAgentOneLinePrompt(task));
+  });
+
+  it("copies the full prompt through the registered action", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    await TASK_ROW_ACTIONS[1].run(task);
 
     expect(writeText).toHaveBeenCalledOnce();
     expect(writeText).toHaveBeenCalledWith(buildAgentTaskPrompt(task));

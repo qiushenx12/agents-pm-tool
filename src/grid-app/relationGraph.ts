@@ -28,6 +28,16 @@ const MARGIN = 32;
 const ROUTE_CLEARANCE = 10;
 const TURN_COST = 16;
 const BEND_RADIUS = 20;
+/**
+ * 相邻列直连时，竖直拐弯的「车道」离【目标】卡片那一侧边缘的距离。
+ *
+ * 取标准列间距的一半：对齐良好的布局里这个值和原来的「两卡间隙中点」完全相同（零视觉变化），
+ * 但车道锚在目标卡片上而不是每一对卡片的中点上——同一个目标的多条扇入线因此**共用一条竖线**。
+ * 之前按每对的中点算，源卡片稍微一拖，它的线就跑出另一条竖线（并排两条差十几像素的线），
+ * 拖得越远偏得越多，这就是"连线对不齐"的来源。
+ * 间隙不足时退回到中点，保证车道不会压到源卡片上。
+ */
+const LANE_OFFSET = (COLUMN_STEP - CARD_WIDTH) / 2;
 
 export interface NodePosition { x: number; y: number }
 
@@ -96,7 +106,9 @@ function routeEdge(source: RelationNode, target: RelationNode, nodes: RelationNo
   if (sourceRightOfTarget || targetRightOfSource) {
     const from = { x: sourceRightOfTarget ? source.x : source.x + CARD_WIDTH, y: source.y + CARD_HEIGHT / 2 };
     const to = { x: sourceRightOfTarget ? target.x + CARD_WIDTH : target.x, y: target.y + CARD_HEIGHT / 2 };
-    const laneX = (from.x + to.x) / 2;
+    const gap = Math.abs(to.x - from.x);
+    const laneX =
+      to.x + (sourceRightOfTarget ? 1 : -1) * Math.min(LANE_OFFSET, gap / 2);
     const direct = from.y === to.y
       ? [from, to]
       : [from, { x: laneX, y: from.y }, { x: laneX, y: to.y }, to];

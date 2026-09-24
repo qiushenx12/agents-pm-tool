@@ -208,6 +208,93 @@ it("places all direct predecessors in one column and aligns the next layer with 
   expect(turn).toMatch(/Q 338 /);
 });
 
+/** 路径里竖直段所在的 x（去重）；相邻列直连时这就是几条线共用的「车道」。 */
+function laneXs(path: string) {
+  const tokens = path.match(/[MLQ]|-?\d+(?:\.\d+)?/g)!;
+  const points: { x: number; y: number }[] = [];
+  for (let index = 0; index < tokens.length;) {
+    const command = tokens[index++];
+    points.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) });
+    if (command === "Q")
+      points.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) });
+  }
+  const lanes: number[] = [];
+  for (let index = 1; index < points.length; index++)
+    if (points[index].x === points[index - 1].x && points[index].y !== points[index - 1].y)
+      lanes.push(points[index].x);
+  return [...new Set(lanes)];
+}
+
+it("keeps one shared bend lane when a source card is nudged", () => {
+  // 用户反馈：把子任务稍微拖歪，它的连线就跑出另一条竖线，看着对不齐
+  const parent = "202609231900000000";
+  const first = "202609231900000001";
+  const second = "202609231900000002";
+  const third = "202609231900000003";
+  const records = [
+    task(parent, [first, second, third]),
+    task(first, [], [parent]),
+    task(second, [], [parent]),
+    task(third, [], [parent]),
+  ];
+  const base = buildRelationGraph(records, parent);
+  const auto = new Map(base.nodes.map((node) => [node.task.id, { x: node.x, y: node.y }]));
+  const parentNode = base.nodes.find((node) => node.task.id === parent)!;
+  const lanesOf = (graph: RelationGraph) =>
+    graph.edges.map((edge) => laneXs(edge.path)).flat();
+
+  // 对齐时：需要拐弯的那几条线共用一条车道，位置是父级边缘外侧半个标准列间距
+  // （与父级同一行的子任务是一条直线，没有竖直段，不产生车道）
+  expect(new Set(lanesOf(base))).toEqual(
+    new Set([parentNode.x + CARD_WIDTH + 34]),
+  );
+
+  // 把一个子任务往【背离父级】的方向拖 38px（用户截图里那种）：车道必须原地不动，几条线仍共用。
+  // 往父级方向拖到间隙不足 2×车偏移时，车道只能贴近平分点（否则会压到源卡片上），那是由几何决定的。
+  const moved = buildRelationGraph(
+    records,
+    parent,
+    new Map([...auto, [first, { x: auto.get(first)!.x + 38, y: auto.get(first)!.y }]]),
+  );
+  expect(new Set(lanesOf(moved))).toEqual(
+    new Set([parentNode.x + CARD_WIDTH + 34]),
+  );
+  expectPathsOutsideCards(moved);
+
+  // 反向拖到贴着父级：线路照样不许压到卡片
+  const tight = buildRelationGraph(
+    records,
+    parent,
+    new Map([...auto, [first, { x: parentNode.x + CARD_WIDTH + 30, y: auto.get(first)!.y }]]),
+  );
+  expectPathsOutsideCards(tight);
+});
+
+it("anchors the bend lane to the target so far drags stay aligned", () => {
+  const parent = "202609231910000000";
+  const first = "202609231910000001";
+  const second = "202609231910000002";
+  const third = "202609231910000003";
+  const records = [
+    task(parent, [first, second, third]),
+    task(first, [], [parent]),
+    task(second, [], [parent]),
+    task(third, [], [parent]),
+  ];
+  const base = buildRelationGraph(records, parent);
+  const auto = new Map(base.nodes.map((node) => [node.task.id, { x: node.x, y: node.y }]));
+  // 父级拖到很右边：三条线仍然共用一条竖线，且停在父级左侧 34px，不会跑到两列中间去
+  const far = buildRelationGraph(
+    records,
+    parent,
+    new Map([...auto, [parent, { x: 900, y: auto.get(parent)!.y + 200 }]]),
+  );
+  const lanes = far.edges.map((edge) => laneXs(edge.path)).flat();
+  expect(new Set(lanes).size).toBe(1);
+  expect(lanes[0]).toBe(900 - 34);
+  expectPathsOutsideCards(far);
+});
+
 it("does not draw a same-row shortcut through the card between its endpoints", () => {
   const graph = buildRelationGraph(
     [task("1", [], ["2", "3"]), task("2", ["1"], ["3"]), task("3", ["1", "2"])],
