@@ -103,14 +103,31 @@ it.each(["predecessor_task_ids", "unlock_task_ids"] as const)(
     await nextTick();
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
 
+    // 默认列表只显示已勾选任务，先输入关键词再勾选候选任务。
+    const search = document.body.querySelector<HTMLInputElement>(
+      ".ui-popover .menu-search input",
+    )!;
+    search.value = candidate.id;
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+
     const option = Array.from(
       document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'),
     ).find((button) => button.textContent?.includes(candidate.id))!;
+    const loadsBefore = vi.mocked(api.listTasks).mock.calls.length;
     option.click();
     await vi.waitFor(() =>
       expect(api.patchTask).toHaveBeenCalledWith(task.id, {
         [column]: [candidate.id],
       }),
     );
+    // 勾选后重取候选任务，也不会清空用户输入的搜索内容。
+    await vi.waitFor(() =>
+      expect(vi.mocked(api.listTasks).mock.calls.length).toBeGreaterThan(
+        loadsBefore,
+      ),
+    );
+    expect(search.value).toBe(candidate.id);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
   },
 );

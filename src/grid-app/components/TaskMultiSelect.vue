@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import UiIcon from "@/shared/UiIcon.vue";
 import UiPopover from "@/shared/UiPopover.vue";
 import type { Task } from "@/shared/types";
@@ -23,15 +23,28 @@ const emit = defineEmits<{
   locate: [id: string];
 }>();
 const search = ref("");
+const searchField = ref<HTMLInputElement>();
+function clearSearch() {
+  search.value = "";
+  searchField.value?.focus();
+}
+const keyword = computed(() => search.value.trim().toLowerCase());
 const displayValue = computed(() => props.modelValue.join(","));
+const candidates = computed(() =>
+  props.options.filter((task) => task.id !== props.excludeId),
+);
+// 无输入时只列出已勾选的任务，未勾选时交给空态提示引导用户输入。
+const checkedTasks = computed(() =>
+  candidates.value.filter((task) => props.modelValue.includes(task.id)),
+);
+// 输入关键词后只显示命中项，不再固定保留未命中的已勾选任务。
 const filtered = computed(() => {
-  const keyword = search.value.trim().toLowerCase();
-  return props.options.filter(
+  const value = keyword.value;
+  if (!value) return checkedTasks.value;
+  return candidates.value.filter(
     (task) =>
-      task.id !== props.excludeId &&
-      (!keyword ||
-        task.id.toLowerCase().includes(keyword) ||
-        task.description.toLowerCase().includes(keyword)),
+      task.id.toLowerCase().includes(value) ||
+      task.description.toLowerCase().includes(value),
   );
 });
 
@@ -49,6 +62,12 @@ function toggleFromClick(event: MouseEvent, open: boolean, toggle: () => void) {
   search.value = "";
   if (!open) emit("open");
   toggle();
+  // 列表默认只列已勾选任务，打开后聚焦搜索框，用户可以直接输入任务 ID。
+  if (!open) void focusSearch();
+}
+async function focusSearch() {
+  await nextTick();
+  searchField.value?.focus({ preventScroll: true });
 }
 const listPopover = ref<InstanceType<typeof UiPopover>>();
 const contextMenu = ref<InstanceType<typeof UiPopover>>();
@@ -94,7 +113,22 @@ function locateContextTask(closeMenu: () => void) {
       <div class="menu-caption">{{ label }} · 可多选</div>
       <div class="menu-search">
         <UiIcon name="search" />
-        <input v-model="search" :aria-label="'搜索' + label" placeholder="搜索任务 ID 或描述…" />
+        <input
+          ref="searchField"
+          v-model="search"
+          :aria-label="'搜索' + label"
+          placeholder="搜索任务 ID 或描述…"
+        />
+        <button
+          v-if="search"
+          type="button"
+          class="menu-search-clear"
+          aria-label="清空搜索"
+          title="清空搜索"
+          @click="clearSearch"
+        >
+          <UiIcon name="close" :size="13" />
+        </button>
       </div>
       <div class="dependency-options" role="listbox" :aria-label="label" aria-multiselectable="true">
         <button
@@ -115,7 +149,9 @@ function locateContextTask(closeMenu: () => void) {
           <UiIcon v-if="modelValue.includes(task.id)" name="check" class="menu-check" />
         </button>
         <div v-if="loading" class="menu-empty"><span class="spinner"></span>正在加载任务</div>
-        <div v-else-if="!filtered.length" class="menu-empty">没有匹配的任务</div>
+        <div v-else-if="!filtered.length" class="menu-empty">
+          {{ keyword ? "没有匹配的任务" : "输入任务 ID 或描述，开始搜索任务" }}
+        </div>
       </div>
     </template>
   </UiPopover>
@@ -133,6 +169,29 @@ function locateContextTask(closeMenu: () => void) {
 .dependency-trigger {
   min-width: 0;
   width: 100%;
+}
+.menu-search input {
+  flex: 1;
+  min-width: 0;
+}
+.menu-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+.menu-search-clear:hover,
+.menu-search-clear:focus-visible {
+  background: var(--hover);
+  color: var(--text-primary);
 }
 .dependency-value {
   overflow: hidden;
