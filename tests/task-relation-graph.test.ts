@@ -6,7 +6,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import TaskRelationGraph from "@/grid-app/components/TaskRelationGraph.vue";
 import { useTaskStore } from "@/grid-app/stores/taskStore";
-import type { Task } from "@/shared/types";
+import { statusTones } from "@/shared/taskOptions";
+import { TASK_STATUSES, type Task } from "@/shared/types";
 
 const { listTasks, pageTasks } = vi.hoisted(() => ({
   listTasks: vi.fn(),
@@ -334,4 +335,38 @@ it("ignores the project filter while showing a single tree", async () => {
   await nextTick();
   await nextTick();
   expect(listTasks).toHaveBeenCalledWith({}, expect.any(AbortSignal));
+});
+
+it("colors each card with the same status tone the task table uses", async () => {
+  const rootId = "202609230000002000";
+  // 七个状态各挂一张卡，全部连到根节点，保证单树视图里都能出现
+  const rows = TASK_STATUSES.map((status, index): Task => ({
+    ...first,
+    id: index === 0 ? rootId : `2026092300000021${String(index).padStart(2, "0")}`,
+    seq: 200 + index,
+    status,
+    predecessor_task_ids: [],
+    unlock_task_ids: index === 0 ? [] : [rootId],
+  }));
+  listTasks.mockResolvedValue(rows);
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp(TaskRelationGraph, { taskId: rootId, revision: 0 });
+  app.mount(host);
+  await nextTick();
+  await nextTick();
+  const cards = [...host.querySelectorAll<HTMLButtonElement>(".relation-card")];
+  expect(cards).toHaveLength(rows.length);
+  for (const task of rows) {
+    const card = cards.find((item) => item.textContent?.includes(task.id))!;
+    // tone 必须与任务表状态列取自同一份 statusTones，不能各写一套映射
+    expect(card.getAttribute("data-tone"), task.status).toBe(statusTones[task.status]);
+    // 卡面上仍要能看到状态文字
+    expect(card.querySelector(".relation-card-status")?.textContent).toBe(task.status);
+  }
+  // 卡片配色改由 tone 驱动，旧的按状态文字硬编码的规则不应再存在
+  const css = readFileSync(resolve("src/grid-app/grid.css"), "utf8");
+  expect(css).not.toContain(".relation-card[data-status=");
+  for (const tone of new Set(Object.values(statusTones)))
+    expect(css).toContain(`.relation-card[data-tone="${tone}"]`);
 });

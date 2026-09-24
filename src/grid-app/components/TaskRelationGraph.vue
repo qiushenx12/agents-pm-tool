@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { api } from "../api/client";
 import { buildRelationForest, buildRelationGraph, CARD_HEIGHT, CARD_WIDTH, type NodePosition } from "../relationGraph";
 import { errorText } from "@/shared/feedback";
+import { statusTones } from "@/shared/taskOptions";
 import UiIcon from "@/shared/UiIcon.vue";
 import { useTaskStore } from "../stores/taskStore";
 import type { Task } from "@/shared/types";
@@ -259,6 +260,11 @@ function selectNode(task: Task) {
   emit("openDetail", task);
 }
 
+/** 卡片配色与任务表状态列同源：都取自 shared/taskOptions.ts 的 statusTones */
+function statusTone(status: Task["status"]): string {
+  return statusTones[status] ?? "gray";
+}
+
 function clearSelection(event: MouseEvent) {
   if ((event.target as Element).closest(".relation-card")) return;
   if (suppressClick) { suppressClick = false; return; }
@@ -330,7 +336,7 @@ onBeforeUnmount(() => {
           class="relation-card"
           :class="{ 'relation-card-selected': node.task.id === selectedId }"
           type="button"
-          :data-status="node.task.status"
+          :data-tone="statusTone(node.task.status)"
           :aria-pressed="node.task.id === selectedId"
           :style="{ left: node.x + 'px', top: node.y + 'px' }"
           :aria-label="`查看任务 ${node.task.id}：${node.task.description}`"

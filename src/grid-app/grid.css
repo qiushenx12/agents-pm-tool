@@ -356,6 +356,11 @@
   stroke-width: 1.6;
 }
 .relation-card {
+  /* 卡片配色由状态 tone 驱动：tone 在 TaskRelationGraph.vue 里用 statusTones 算出，
+     再由下方 [data-tone] 规则映射到 tag-* 令牌，与任务表状态列同源，不再各写一套映射。
+     默认灰色（未识别到 tone 时的兜底）。 */
+  --relation-tone-fg: var(--tag-gray-fg);
+  --relation-tone-bg: var(--tag-gray-bg);
   position: absolute;
   z-index: 2;
   display: flex;
@@ -365,9 +370,9 @@
   height: 106px;
   padding: 12px 14px;
   overflow: hidden;
-  border: 2px solid var(--tag-gray-fg);
+  border: 2px solid var(--relation-tone-fg);
   border-radius: 9px;
-  background: var(--card);
+  background: color-mix(in srgb, var(--relation-tone-bg) 50%, var(--card));
   color: var(--text-primary);
   text-align: left;
   box-shadow: var(--shadow);
@@ -384,7 +389,7 @@
 .relation-card-selected,
 .relation-card-selected:hover,
 .relation-card-selected:focus-visible {
-  border-color: var(--primary);
+  /* 选中只加主色描边，不改边框：边框是状态色，必须始终与任务表一致 */
   outline: 2px solid var(--primary);
   outline-offset: 2px;
   box-shadow: 0 4px 22px color-mix(in srgb, var(--primary) 35%, transparent);
@@ -399,12 +404,15 @@
 .relation-scroll-dragging .relation-card {
   cursor: grabbing;
 }
-.relation-card[data-status="进行中"] { border-color: var(--tag-blue-fg); }
-.relation-card[data-status="待验证"] { border-color: var(--tag-orange-fg); }
-.relation-card[data-status="已完成"],
-.relation-card[data-status="验收通过"] { border-color: var(--tag-green-fg); }
-.relation-card[data-status="验收未通过"] { border-color: var(--tag-red-fg); }
-.relation-card[data-status="取消"] { border-color: var(--text-tertiary); }
+/* 与任务表状态列取同一份 tag-* 令牌（值见 src/shared/theme.css）。
+   tone 名来自 shared/taskOptions.ts 的 statusTones，新增状态色时这里跟着补一条即可。 */
+.relation-card[data-tone="gray"] { --relation-tone-fg: var(--tag-gray-fg); --relation-tone-bg: var(--tag-gray-bg); }
+.relation-card[data-tone="blue"] { --relation-tone-fg: var(--tag-blue-fg); --relation-tone-bg: var(--tag-blue-bg); }
+.relation-card[data-tone="orange"] { --relation-tone-fg: var(--tag-orange-fg); --relation-tone-bg: var(--tag-orange-bg); }
+.relation-card[data-tone="green"] { --relation-tone-fg: var(--tag-green-fg); --relation-tone-bg: var(--tag-green-bg); }
+.relation-card[data-tone="teal"] { --relation-tone-fg: var(--tag-teal-fg); --relation-tone-bg: var(--tag-teal-bg); }
+.relation-card[data-tone="red"] { --relation-tone-fg: var(--tag-red-fg); --relation-tone-bg: var(--tag-red-bg); }
+.relation-card[data-tone="purple"] { --relation-tone-fg: var(--tag-purple-fg); --relation-tone-bg: var(--tag-purple-bg); }
 .relation-card-top {
   display: flex;
   align-items: center;
@@ -418,6 +426,7 @@
 }
 .relation-card-status {
   flex-shrink: 0;
+  color: var(--relation-tone-fg);
   font-size: 11px;
   font-weight: 600;
 }
