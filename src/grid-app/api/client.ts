@@ -1,5 +1,6 @@
 import type {
   TaskPage,
+  TaskHistoryPage,
   TaskPageQuery,
   TaskBatchRequest,
   TaskBatchResult,
@@ -25,6 +26,8 @@ import type {
   WorkspaceSettings,
 } from "@/shared/types";
 
+import { beginTaskWrite, finishTaskWrite, undoBusy } from "./undoState";
+
 export class ApiRequestError extends Error {
   code: string;
   details?: Record<string, unknown>;
@@ -39,33 +42,41 @@ export class ApiRequestError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (init?.body && !(init.body instanceof FormData)) {
-    headers.set("Content-Type", "application/json");
-  }
-  if (init?.method && !["GET", "HEAD", "OPTIONS"].includes(init.method)) {
-    headers.set("X-PM-Client", "web");
-  }
-  const res = await fetch(path, {
-    ...init,
-    headers,
-    credentials: "same-origin",
-  });
-  if (!res.ok) {
-    let err: ApiError["error"] = {
-      code: "unknown",
-      message: `请求失败（${res.status}）`,
-    };
-    try {
-      const body = (await res.json()) as ApiError;
-      if (body?.error) err = body.error;
-    } catch {
-      /* ignore */
+  const taskWrite = !!init?.method && !["GET", "HEAD", "OPTIONS"].includes(init.method) && /^\/api\/web\/(tasks|attachments)(\/|$)/.test(path);
+  if (taskWrite && undoBusy.value) throw new Error("正在撤销，请稍后再修改任务");
+  const writeEpoch = taskWrite ? beginTaskWrite() : undefined;
+  let res: Response | undefined;
+  try {
+    const headers = new Headers(init?.headers);
+    if (init?.body && !(init.body instanceof FormData)) {
+      headers.set("Content-Type", "application/json");
     }
-    throw new ApiRequestError(err, res.status);
+    if (init?.method && !["GET", "HEAD", "OPTIONS"].includes(init.method)) {
+      headers.set("X-PM-Client", "web");
+    }
+    res = await fetch(path, {
+      ...init,
+      headers,
+      credentials: "same-origin",
+    });
+    if (!res.ok) {
+      let err: ApiError["error"] = {
+        code: "unknown",
+        message: `请求失败（${res.status}）`,
+      };
+      try {
+        const body = (await res.json()) as ApiError;
+        if (body?.error) err = body.error;
+      } catch {
+        /* ignore */
+      }
+      throw new ApiRequestError(err, res.status);
+    }
+    if (res.status === 204) return undefined as T;
+    return (await res.json()) as T;
+  } finally {
+    if (writeEpoch !== undefined) finishTaskWrite(writeEpoch, res);
   }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
 }
 
 function buildQuery(q: TaskPageQuery): string {
@@ -107,6 +118,10 @@ export const api = {
     request<TaskPage>(`/api/web/tasks/page${buildQuery(q)}`, { signal }),
   getTask: (id: string) =>
     request<Task>(`/api/web/tasks/${encodeURIComponent(id)}`),
+  taskHistory: (id: string, before?: number) =>
+    request<TaskHistoryPage>(`/api/web/tasks/${encodeURIComponent(id)}/history${before ? `?before=${before}` : ""}`),
+  undoOperation: (id: number) =>
+    request<Task[]>(`/api/web/task-operations/${id}/undo`, { method: "POST" }),
   batchTasks: (body: TaskBatchRequest) =>
     request<TaskBatchResult>("/api/web/tasks/batch", {
       method: "POST",

@@ -449,7 +449,7 @@ pub fn create_with_status(
     validate_dependency_targets(conn, &unlock_task_ids)?;
 
     let now = task::now_str();
-    let tx = conn.transaction()?;
+    let tx = conn.savepoint()?;
     let (id, seq) = idgen::next_task_id(&tx)?;
     // 新任务排在手动排序末尾：position 取递增的 seq 即可
     tx.execute(
@@ -622,7 +622,7 @@ pub fn patch(conn: &mut Connection, id: &str, p: &TaskPatch) -> ApiResult<Task> 
     }
     let now = task::now_str();
 
-    let tx = conn.transaction()?;
+    let tx = conn.savepoint()?;
     tx.execute(
         "UPDATE tasks SET project = ?2, type = ?3, description = ?4, note = ?5, status = ?6,
             priority = ?7, finished_at = ?8, updated_at = ?9, assignee_user_id = ?10 WHERE id = ?1",
@@ -804,7 +804,7 @@ pub fn reorder(
         position_of(conn, n)?;
     }
 
-    let tx = conn.transaction()?;
+    let tx = conn.savepoint()?;
     let mut renumbered = false;
     let position = loop {
         let lo = match prev_id {

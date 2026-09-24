@@ -126,8 +126,12 @@ pub async fn delete_user(
     if id == actor.id {
         return Err(ApiError::forbidden("不能删除当前登录账号"));
     }
-    let connection = core.db.lock().unwrap();
-    users::remove(&connection, &id)?;
+    let mut connection = core.db.lock().unwrap();
+    crate::db::history::record(&mut connection, &actor, "web", "user", |conn| {
+        users::remove(conn, &id)
+    })?;
+    drop(connection);
+    core.events.notify();
     Ok(StatusCode::NO_CONTENT)
 }
 

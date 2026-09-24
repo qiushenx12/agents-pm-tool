@@ -6,6 +6,7 @@ pub mod api_skill;
 pub mod api_settings;
 pub mod api_users;
 pub mod api_web;
+pub mod api_history;
 pub mod auth;
 pub mod events;
 pub mod finish_notice;
@@ -140,6 +141,8 @@ fn build_router(core: CoreState) -> Router {
             get(api_web::list_tasks).post(api_web::create_task),
         )
         .route("/tasks/page", get(api_web::page_tasks))
+        .route("/tasks/{id}/history", get(api_history::list))
+        .route("/task-operations/{id}/undo", axum::routing::post(api_history::undo))
         .route("/tasks/batch", axum::routing::post(api_web::batch_tasks))
         .route(
             "/tasks/{id}",

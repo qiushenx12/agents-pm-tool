@@ -270,3 +270,20 @@ export function formatDateTime(s: string | null): string {
   if (!s) return "";
   return s.replace(/-/g, "/");
 }
+export interface TaskHistoryChange {
+  field: string;
+  before: unknown;
+  after: unknown;
+}
+export interface TaskHistoryEntry {
+  operation_id: number;
+  actor_name: string;
+  source: string;
+  action: string;
+  created_at: string;
+  changes: TaskHistoryChange[];
+}
+export interface TaskHistoryPage {
+  items: TaskHistoryEntry[];
+  next_before: number | null;
+}

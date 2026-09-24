@@ -1,5 +1,7 @@
 pub mod agent_permissions;
 pub mod attachments;
+pub mod history;
+pub mod undo;
 pub mod permissions;
 pub mod projects;
 pub mod schema;
@@ -14,7 +16,7 @@ use rusqlite::Connection;
 
 use crate::error::ApiResult;
 
-const USER_VERSION: i32 = 14;
+const USER_VERSION: i32 = 15;
 
 fn configure(conn: &Connection) -> ApiResult<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -38,6 +40,7 @@ fn configure(conn: &Connection) -> ApiResult<()> {
 /// v13：agent_permission_profiles（按用户配置 Agent 能力；缺失行沿用旧版默认权限）
 /// v14：tasks 增加 assignee_user_id（负责人：Agent 把任务从「未开始」推进时自动认领，
 ///      认领后其它 Agent 不能再修改；网页端按授权改派或清空）
+/// v15：任务操作历史、事务快照和 Web 撤销记录
 fn migrate(conn: &Connection) -> ApiResult<()> {
     let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version < 1 {
@@ -220,6 +223,9 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
              COMMIT;",
         )?;
     }
+    if version < 15 {
+        history::migrate(conn)?;
+    }
     debug_assert!(version <= USER_VERSION);
     Ok(())
 }
@@ -242,6 +248,25 @@ pub fn open_memory() -> ApiResult<Connection> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn remove_history_schema(conn: &Connection) {
+        let triggers: Vec<String> = conn.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'audit_%'")
+            .unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+        for name in triggers { conn.execute_batch(&format!("DROP TRIGGER {name}")).unwrap(); }
+        conn.execute_batch("DROP VIEW task_audit_snapshot; DROP TABLE task_history; DROP TABLE task_operations; DROP TABLE task_audit_context;").unwrap();
+    }
+
+    #[test]
+    fn version_fourteen_upgrades_history_without_inventing_old_events() {
+        let conn = open_memory().unwrap();
+        remove_history_schema(&conn);
+        conn.pragma_update(None, "user_version", 14).unwrap();
+        conn.execute("INSERT INTO tasks(id,seq,project,type,description,submitter,created_at,updated_at) VALUES ('old',1,'default-project','BUG','旧任务','用户','2026-01-01','2026-01-01')", []).unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(tasks::get(&conn, "old").unwrap().description, "旧任务");
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM task_history", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+        assert_eq!(conn.pragma_query_value(None, "user_version", |r| r.get::<_,i32>(0)).unwrap(), USER_VERSION);
+    }
 
     fn task_columns(conn: &Connection) -> Vec<String> {
         let mut stmt = conn.prepare("PRAGMA table_info(tasks)").unwrap();
@@ -344,6 +369,7 @@ mod tests {
     #[test]
     fn version_eight_database_backfills_only_unowned_tasks_to_host() {
         let conn = open_memory().unwrap();
+        remove_history_schema(&conn);
         conn.execute(
             "INSERT INTO users(id, username, role, created_at) VALUES ('alice', 'alice', 'user', '2026-01-01')",
             [],
@@ -393,6 +419,7 @@ mod tests {
     #[test]
     fn version_nine_database_gains_user_view_state_table() {
         let conn = open_memory().unwrap();
+        remove_history_schema(&conn);
         // 模拟 v9 旧库：没有按用户保存的视图设置，也没有 v11 的 priority、v14 的负责人列
         conn.execute_batch(
             "DROP TABLE user_view_state;
@@ -424,6 +451,7 @@ mod tests {
     #[test]
     fn version_ten_database_gains_priority_with_default_medium() {
         let conn = open_memory().unwrap();
+        remove_history_schema(&conn);
         // 模拟 v10 旧库：tasks 表回退到没有 priority 的结构
         conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN;
              CREATE TABLE tasks_v10 (
@@ -477,6 +505,7 @@ mod tests {
     #[test]
     fn version_eleven_database_gains_empty_dependency_table() {
         let conn = open_memory().unwrap();
+        remove_history_schema(&conn);
         // 模拟 v11 旧库：没有任务依赖表，也没有 v14 的负责人列
         conn.execute_batch(
             "DROP TABLE task_dependencies;
@@ -501,6 +530,7 @@ mod tests {
     #[test]
     fn version_twelve_database_gains_agent_permissions_with_old_defaults() {
         let conn = open_memory().unwrap();
+        remove_history_schema(&conn);
         // 模拟 v12 旧库：没有 Agent 权限配置表，也没有 v14 的负责人列
         conn.execute_batch(
             "DROP TABLE agent_permission_profiles;
@@ -524,6 +554,7 @@ mod tests {
     #[test]
     fn version_thirteen_database_gains_empty_assignee_column() {
         let conn = open_memory().unwrap();
+        remove_history_schema(&conn);
         conn.execute(
             "INSERT INTO tasks (id, seq, project, type, description, status, submitter, created_at, updated_at, position, note, owner_user_id)
              VALUES ('legacy-assignee', 7, 'default-project', '优化', '存量任务', '未开始', '用户', '2026-01-01', '2026-01-01', 7, '', 'host')",

@@ -8,6 +8,7 @@ it("lets the browser generate a multipart boundary for attachments", async () =>
     .mockResolvedValue({
       ok: true,
       status: 200,
+      headers: new Headers(),
       json: async () => ({ id: "attachment" }),
     });
   vi.stubGlobal("fetch", fetchMock);

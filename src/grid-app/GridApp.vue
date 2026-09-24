@@ -28,12 +28,15 @@ import AgentAccessDialog from "./components/users/AgentAccessDialog.vue";
 import HostSettingsDialog from "./components/users/HostSettingsDialog.vue";
 import { useMetaStore } from "./stores/metaStore";
 import { useTaskStore } from "./stores/taskStore";
+import { useUndoStore } from "./stores/undoStore";
+import { isUndoShortcut, resetUndo } from "./api/undoState";
 import { useViewStore } from "./stores/viewStore";
 import type { Task, User } from "@/shared/types";
 import { setAgentPromptAccess } from "./taskActions";
 import { openWorkspaceSettings } from "./settingsNavigation";
 
 const tasks = useTaskStore(),
+  undo = useUndoStore(),
   meta = useMetaStore(),
   view = useViewStore();
 const showCreate = ref(false),
@@ -172,6 +175,13 @@ async function openHostSettings() {
 let unsubscribe: (() => void) | undefined;
 let metaTimer: ReturnType<typeof setTimeout> | undefined;
 function keyboard(e: KeyboardEvent) {
+  if (currentUser.value && isUndoShortcut(e) && !showCreate.value && !showProjects.value &&
+      !showUsers.value && !showAgentAccess.value && !showHostSettings.value &&
+      document.querySelectorAll('[role="dialog"], [role="alertdialog"]').length <= (detailTask.value ? 1 : 0)) {
+    e.preventDefault();
+    void undo.undo();
+    return;
+  }
   if (
     (e.ctrlKey || e.metaKey) &&
     e.key.toLowerCase() === "k" &&
@@ -182,6 +192,7 @@ function keyboard(e: KeyboardEvent) {
   }
 }
 async function startWorkspace(user: User) {
+  resetUndo();
   activeMode.value = "table";
   graphTaskId.value = null;
   currentUser.value = user;
@@ -236,6 +247,7 @@ async function logout() {
     await api.logout();
   } finally {
     unsubscribe?.();
+    resetUndo();
     unsubscribe = undefined;
     tasks.resetViewStateSync();
     // 视图设置跟账号走：别把上一个人的分组/排序/筛选带给下一个登录的人
@@ -361,6 +373,9 @@ onBeforeUnmount(() => {
           }}</span>
         </div>
         <SavedViews :mode="activeMode" @update:mode="switchMode" />
+        <button class="btn btn-ghost btn-sm" title="撤销当前页面上一步任务修改（Ctrl+Z / ⌘Z）" :disabled="!undo.available || undo.busy" @click="undo.undo()">
+          {{ undo.busy ? "处理中…" : "撤销" }}
+        </button>
       </header>
       <FilterBar v-if="activeMode === 'table'" @create="showCreate = true" />
       <BulkActions v-if="activeMode === 'table'" />

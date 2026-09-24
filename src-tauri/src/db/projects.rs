@@ -113,7 +113,7 @@ pub fn patch(conn: &mut Connection, name: &str, p: &ProjectPatch) -> ApiResult<P
         if get(conn, &new_name).is_ok() {
             return Err(ApiError::conflict(format!("项目选项「{new_name}」已存在")));
         }
-        let tx = conn.transaction()?;
+        let tx = conn.savepoint()?;
         tx.execute(
             "UPDATE projects SET name = ?2, color = ?3, sort_order = ?4, local_path = ?5, git_url = ?6 WHERE name = ?1",
             params![
@@ -133,6 +133,9 @@ pub fn patch(conn: &mut Connection, name: &str, p: &ProjectPatch) -> ApiResult<P
             "UPDATE user_permissions SET project = ?2 WHERE project = ?1",
             params![name, new_name],
         )?;
+        // Visibility follows a renamed project; snapshots retain the names shown at the time.
+        tx.execute("UPDATE task_history SET before_project=?2 WHERE before_project=?1", params![name, new_name])?;
+        tx.execute("UPDATE task_history SET after_project=?2 WHERE after_project=?1", params![name, new_name])?;
         tx.commit()?;
     } else {
         conn.execute(

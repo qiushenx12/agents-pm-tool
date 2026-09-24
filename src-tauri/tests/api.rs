@@ -1432,6 +1432,220 @@ async fn create_task(app: &TestApp, via_agent: bool, desc: &str) -> Value {
     res.json().await.unwrap()
 }
 
+async fn task_history(app: &TestApp, id: &str) -> Value {
+    let response = app.web(reqwest::Method::GET, &format!("/tasks/{id}/history")).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    response.json().await.unwrap()
+}
+
+async fn patch_for_undo(app: &TestApp, id: &str, patch: Value) -> String {
+    let response = app.web(reqwest::Method::PATCH, &format!("/tasks/{id}"))
+        .json(&patch).send().await.unwrap();
+    assert_eq!(response.status(), 200, "{:?}", response.text().await);
+    response.headers()["X-PM-Undo"].to_str().unwrap().into()
+}
+
+#[tokio::test]
+async fn undo_repeated_edits_keeps_history_and_detects_conflicts() {
+    let app = spawn_app().await;
+    let task = create_task(&app, false, "original").await;
+    let id = task["id"].as_str().unwrap();
+    let first = patch_for_undo(&app, id, json!({"description":"one"})).await;
+    let second = patch_for_undo(&app, id, json!({"description":"two"})).await;
+    let undo = |op: &str| app.web(reqwest::Method::POST, &format!("/task-operations/{op}/undo"));
+    assert_eq!(undo(&first).send().await.unwrap().status(), 409);
+    for (op, expected) in [(&second, "one"), (&first, "original")] {
+        let response = undo(op).send().await.unwrap();
+        assert_eq!(response.status(), 200);
+        let restored: Value = response.json().await.unwrap();
+        assert_eq!(restored[0]["description"], expected);
+    }
+    assert_eq!(undo(&first).send().await.unwrap().status(), 409);
+    let history = task_history(&app, id).await;
+    assert_eq!(history["items"][0]["action"], "undo");
+    assert_eq!(history["items"].as_array().unwrap().len(), 5);
+    let create_id = history["items"][4]["operation_id"].to_string();
+    assert_eq!(undo(&create_id).send().await.unwrap().status(), 422);
+    let op = patch_for_undo(&app, id, json!({"priority":"高"})).await;
+    assert_eq!(app.agent(reqwest::Method::PATCH, &format!("/tasks/{id}/priority"))
+        .json(&json!({"priority":"低"})).send().await.unwrap().status(), 200);
+    assert_eq!(undo(&op).send().await.unwrap().status(), 409);
+    let agent_op = task_history(&app, id).await["items"][0]["operation_id"].to_string();
+    assert_eq!(undo(&agent_op).send().await.unwrap().status(), 403);
+}
+
+#[tokio::test]
+async fn undo_rechecks_owner_project_fields_and_enum_permissions() {
+    let app = spawn_app().await;
+    let task = create_task(&app, false, "permissions").await;
+    let id = task["id"].as_str().unwrap();
+    let op = patch_for_undo(&app, id, json!({"note":"host"})).await;
+    let (user, http) = register_user(&app, "undo-user").await;
+    let endpoint = |op: &str| format!("{}/api/web/task-operations/{op}/undo", app.base);
+    assert_eq!(http.post(endpoint(&op)).send().await.unwrap().status(), 403);
+    let grant = |values: Value| app.web(reqwest::Method::PUT, &format!("/users/{}/permissions", user["id"].as_str().unwrap()))
+        .json(&json!({"permissions":[
+            {"project":"default-project","field":"project_access","allowed_values":null},
+            {"project":"default-project","field":"status","allowed_values":values}
+        ]}));
+    assert_eq!(grant(json!(["进行中"])).send().await.unwrap().status(), 200);
+    let response = http.patch(format!("{}/api/web/tasks/{id}", app.base)).json(&json!({"status":"进行中"})).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let op = response.headers()["X-PM-Undo"].to_str().unwrap().to_string();
+    assert_eq!(http.post(endpoint(&op)).send().await.unwrap().status(), 403);
+    assert_eq!(grant(Value::Null).send().await.unwrap().status(), 200);
+    assert_eq!(http.post(endpoint(&op)).send().await.unwrap().status(), 200);
+    let response = http.patch(format!("{}/api/web/tasks/{id}", app.base)).json(&json!({"status":"进行中"})).send().await.unwrap();
+    let op = response.headers()["X-PM-Undo"].to_str().unwrap().to_string();
+    assert_eq!(app.web(reqwest::Method::PUT, &format!("/users/{}/permissions", user["id"].as_str().unwrap()))
+        .json(&json!({"permissions":[]})).send().await.unwrap().status(), 200);
+    assert_eq!(http.post(endpoint(&op)).send().await.unwrap().status(), 403);
+}
+
+#[tokio::test]
+async fn undo_batch_is_atomic_and_relations_restore_cascaded_status() {
+    let app = spawn_app().await;
+    let parent = create_task(&app, false, "parent").await;
+    let child = create_task(&app, false, "child").await;
+    let pid = parent["id"].as_str().unwrap(); let cid = child["id"].as_str().unwrap();
+    for id in [cid, pid] { patch_for_undo(&app, id, json!({"status":"已完成"})).await; }
+    let op = patch_for_undo(&app, pid, json!({"predecessor_task_ids":[cid]})).await;
+    let response = app.web(reqwest::Method::POST, &format!("/task-operations/{op}/undo")).send().await.unwrap();
+    assert_eq!(response.status(), 200, "{:?}", response.text().await);
+    let restored: Value = response.json().await.unwrap();
+    let parent = restored.as_array().unwrap().iter().find(|t| t["id"] == pid).unwrap();
+    assert_eq!(parent["status"], "已完成"); assert_eq!(parent["predecessor_task_ids"], json!([]));
+    let response = app.web(reqwest::Method::POST, "/tasks/batch")
+        .json(&json!({"action":"update","ids":[pid,cid,"missing"],"patch":{"priority":"高"}})).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let op = response.headers()["X-PM-Undo"].to_str().unwrap().to_string();
+    assert_eq!(response.json::<Value>().await.unwrap()["succeeded"], 2);
+    let conflict = patch_for_undo(&app, cid, json!({"priority":"低"})).await;
+    assert_eq!(app.web(reqwest::Method::POST, &format!("/task-operations/{op}/undo")).send().await.unwrap().status(), 409);
+    let parent: Value = app.web(reqwest::Method::GET, &format!("/tasks/{pid}")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(parent["priority"], "高");
+    assert_eq!(app.web(reqwest::Method::POST, &format!("/task-operations/{conflict}/undo")).send().await.unwrap().status(), 200);
+    assert_eq!(app.web(reqwest::Method::POST, &format!("/task-operations/{op}/undo")).send().await.unwrap().status(), 200);
+    // Failed status validation rolls back the entire undo, including its audit record.
+    let status_op = patch_for_undo(&app, pid, json!({"status":"进行中"})).await;
+    patch_for_undo(&app, cid, json!({"status":"未开始"})).await;
+    patch_for_undo(&app, pid, json!({"predecessor_task_ids":[cid]})).await;
+    let count = task_history(&app, pid).await["items"].as_array().unwrap().len();
+    assert_eq!(app.web(reqwest::Method::POST, &format!("/task-operations/{status_op}/undo")).send().await.unwrap().status(), 422);
+    assert_eq!(task_history(&app, pid).await["items"].as_array().unwrap().len(), count);
+}
+
+#[tokio::test]
+async fn history_pagination_and_reorder_undo_keep_values_and_access_boundaries() {
+    let app = spawn_app().await;
+    let first = create_task(&app, false, "first").await;
+    let second = create_task(&app, false, "second").await;
+    let id = first["id"].as_str().unwrap();
+    for index in 0..51 { patch_for_undo(&app, id, json!({"note":format!("note-{index}")})).await; }
+    let page = task_history(&app, id).await;
+    assert_eq!(page["items"].as_array().unwrap().len(), 50);
+    let cursor = page["next_before"].as_i64().unwrap();
+    let more: Value = app.web(reqwest::Method::GET, &format!("/tasks/{id}/history?before={cursor}"))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(more["items"].as_array().unwrap().len(), 2);
+    assert!(more["next_before"].is_null());
+    assert!(more["items"][0]["operation_id"].as_i64().unwrap() < cursor);
+    let response = app.web(reqwest::Method::POST, &format!("/tasks/{id}/reorder"))
+        .json(&json!({"prev_id":second["id"]})).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let op = response.headers()["X-PM-Undo"].to_str().unwrap().to_string();
+    assert_ne!(response.json::<Value>().await.unwrap()["position"], first["position"]);
+    let response = app.web(reqwest::Method::POST, &format!("/task-operations/{op}/undo")).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.json::<Value>().await.unwrap()[0]["position"], first["position"]);
+    assert_eq!(app.agent(reqwest::Method::POST, &format!("/task-operations/{op}/undo")).send().await.unwrap().status(), 405);
+    let raw = reqwest::Client::new();
+    assert_eq!(raw.post(format!("{}/api/web/task-operations/{op}/undo", app.base)).send().await.unwrap().status(), 403);
+    assert_eq!(raw.post(format!("{}/api/web/task-operations/{op}/undo", app.base)).header("X-PM-Client", "web").send().await.unwrap().status(), 401);
+    let deleted = app.web(reqwest::Method::POST, "/tasks/batch")
+        .json(&json!({"action":"delete","ids":[id,"missing"]})).send().await.unwrap();
+    assert_eq!(deleted.status(), 200);
+    assert!(!deleted.headers().contains_key("X-PM-Undo"));
+    assert_eq!(deleted.json::<Value>().await.unwrap()["succeeded"], 1);
+}
+
+#[tokio::test]
+async fn history_records_web_agent_attachments_and_failed_mutations() {
+    let app = spawn_app().await;
+    let task = create_task(&app, false, "历史测试").await;
+    let id = task["id"].as_str().unwrap();
+    let initial = task_history(&app, id).await;
+    assert_eq!(initial["items"][0]["action"], "create");
+    assert!(initial["items"][0]["changes"][0]["before"].is_null());
+    let response = app.web(reqwest::Method::PATCH, &format!("/tasks/{id}"))
+        .json(&json!({"description":"修改后", "note":"备注"})).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let page = task_history(&app, id).await;
+    assert_eq!(page["items"][0]["actor_name"], "主机");
+    assert_eq!(page["items"][0]["source"], "web");
+    assert_eq!(page["items"][0]["changes"][0], json!({"field":"description","before":"历史测试","after":"修改后"}));
+    assert_eq!(page["items"][0]["changes"].as_array().unwrap().len(), 2);
+    let denied = app.agent(reqwest::Method::PATCH, &format!("/tasks/{id}/description"))
+        .json(&json!({"description":"不允许"})).send().await.unwrap();
+    assert_eq!(denied.status(), 403);
+    assert_eq!(task_history(&app, id).await["items"].as_array().unwrap().len(), 2);
+    assert_eq!(app.agent(reqwest::Method::PATCH, &format!("/tasks/{id}/status"))
+        .json(&json!({"status":"进行中"})).send().await.unwrap().status(), 200);
+    let page = task_history(&app, id).await;
+    assert_eq!(page["items"][0]["source"], "agent");
+    assert!(page["items"][0]["changes"].as_array().unwrap().iter().any(|c| c["field"] == "assignee_user_id" && c["after"] == "主机"));
+    let form = reqwest::multipart::Form::new().part("file", reqwest::multipart::Part::text("test").file_name("history.txt"));
+    let response = app.web(reqwest::Method::POST, &format!("/tasks/{id}/attachments")).multipart(form).send().await.unwrap();
+    assert_eq!(response.status(), 201);
+    let attachment: Value = response.json().await.unwrap();
+    let page = task_history(&app, id).await;
+    assert_eq!(page["items"][0]["changes"][0]["after"][0]["filename"], "history.txt");
+    assert!(!page.to_string().contains("stored_path"));
+    assert_eq!(app.web(reqwest::Method::DELETE, &format!("/attachments/{}", attachment["id"].as_str().unwrap())).send().await.unwrap().status(), 204);
+    assert_eq!(task_history(&app, id).await["items"][0]["changes"][0]["after"], json!([]));
+}
+
+#[tokio::test]
+async fn history_filters_hidden_projects_relations_and_records_cascades() {
+    let app = spawn_app().await;
+    let parent = create_task(&app, false, "父级").await;
+    let child = create_task(&app, false, "子级").await;
+    let pid = parent["id"].as_str().unwrap();
+    let cid = child["id"].as_str().unwrap();
+    for id in [cid, pid] {
+        assert_eq!(app.web(reqwest::Method::PATCH, &format!("/tasks/{id}"))
+            .json(&json!({"status":"已完成"})).send().await.unwrap().status(), 200);
+    }
+    assert_eq!(app.web(reqwest::Method::PATCH, &format!("/tasks/{pid}"))
+        .json(&json!({"predecessor_task_ids":[cid]})).send().await.unwrap().status(), 200);
+    let page = task_history(&app, pid).await;
+    let changes = page["items"][0]["changes"].as_array().unwrap();
+    assert!(changes.iter().any(|c| c["field"] == "status" && c["after"] == "进行中"));
+    assert!(changes.iter().any(|c| c["field"] == "predecessor_task_ids"));
+    assert_eq!(task_history(&app, cid).await["items"][0]["changes"][0]["field"], "unlock_task_ids");
+    let (user, http) = register_user(&app, "history-reader").await;
+    let url = format!("{}/api/web/tasks/{pid}/history", app.base);
+    assert_eq!(http.get(&url).send().await.unwrap().status(), 403);
+    assert_eq!(reqwest::Client::new().get(&url).send().await.unwrap().status(), 401);
+    assert_eq!(app.web(reqwest::Method::POST, "/projects").json(&json!({"name":"hidden"})).send().await.unwrap().status(), 201);
+    assert_eq!(app.web(reqwest::Method::PATCH, &format!("/tasks/{cid}"))
+        .json(&json!({"project":"hidden", "description":"secret"})).send().await.unwrap().status(), 200);
+    assert_eq!(app.web(reqwest::Method::PUT, &format!("/users/{}/permissions", user["id"].as_str().unwrap()))
+        .json(&json!({"permissions":[{"project":"default-project","field":"project_access","allowed_values":null}]}))
+        .send().await.unwrap().status(), 200);
+    let history: Value = http.get(&url).send().await.unwrap().json().await.unwrap();
+    assert!(!history.to_string().contains(cid));
+    assert_eq!(app.web(reqwest::Method::PATCH, &format!("/tasks/{cid}"))
+        .json(&json!({"project":"default-project", "description":"公开"})).send().await.unwrap().status(), 200);
+    let history: Value = http.get(format!("{}/api/web/tasks/{cid}/history", app.base)).send().await.unwrap().json().await.unwrap();
+    assert!(!history.to_string().contains("secret"));
+    assert!(!history.to_string().contains("hidden"));
+    assert_eq!(app.web(reqwest::Method::PATCH, "/projects/default-project")
+        .json(&json!({"new_name":"renamed"})).send().await.unwrap().status(), 200);
+    let history: Value = http.get(&url).send().await.unwrap().json().await.unwrap();
+    assert!(history["items"].as_array().unwrap().iter().any(|e| e["action"] == "create"));
+}
+
 // ── 基础 CRUD + 筛选 ─────────────────────────────────────
 
 #[tokio::test]

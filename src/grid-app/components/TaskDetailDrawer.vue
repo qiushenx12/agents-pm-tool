@@ -6,6 +6,7 @@ import UiDialog from "@/shared/UiDialog.vue";
 import UiIcon from "@/shared/UiIcon.vue";
 import UiPopover from "@/shared/UiPopover.vue";
 import TaskField from "./TaskField.vue";
+import TaskHistory from "./TaskHistory.vue";
 import TaskMultiSelect from "./TaskMultiSelect.vue";
 import DescriptionEditor from "./DescriptionEditor.vue";
 import AttachmentUploader from "./AttachmentUploader.vue";
@@ -18,6 +19,7 @@ const props = withDefaults(defineProps<{ task: Task; navigation?: boolean }>(), 
   navigation: true,
 });
 const emit = defineEmits<{ close: []; navigate: [task: Task] }>();
+const activeTab = ref<"detail" | "history">("detail");
 const tasks = useTaskStore(),
   queue = useUploadQueue();
 const attachments = ref<Attachment[]>([]),
@@ -104,6 +106,7 @@ watch(
   () => props.task.id,
   () => {
     detailRequest++;
+    activeTab.value = "detail";
     missing.value = false;
     detailError.value = "";
     attachments.value = [];
@@ -287,6 +290,14 @@ async function clearAssignee() {
     <div v-if="navigation && index < 0" class="info-banner detail-outside-filter">
       此任务不在当前页中，仍可在这里查看和编辑。
     </div>
+    <div class="detail-tabs" role="tablist" aria-label="任务详情分页">
+      <button id="task-detail-tab" role="tab" :aria-selected="activeTab === 'detail'" aria-controls="task-detail-panel" @click="activeTab = 'detail'">详情</button>
+      <button id="task-history-tab" role="tab" :aria-selected="activeTab === 'history'" aria-controls="task-history-panel" @click="activeTab = 'history'">历史</button>
+    </div>
+    <div v-if="activeTab === 'history'" id="task-history-panel" role="tabpanel" aria-labelledby="task-history-tab">
+      <TaskHistory :task-id="current.id" :revision="JSON.stringify(current)" />
+    </div>
+    <div v-show="activeTab === 'detail'" id="task-detail-panel" role="tabpanel" aria-labelledby="task-detail-tab">
     <div class="detail-properties">
       <div class="property-row">
         <span><UiIcon name="folder" />项目</span
@@ -530,6 +541,7 @@ async function clearAssignee() {
         ><span class="subtle">添加截图、文档或视频，补充任务信息。</span>
       </div>
     </section>
+    </div>
     <template #footer
       ><span class="detail-updated"
         >最后更新 {{ formatDateTime(current.updated_at) }}</span
@@ -544,3 +556,9 @@ async function clearAssignee() {
     @close="preview = null"
   />
 </template>
+
+<style scoped>
+.detail-tabs { display: flex; gap: 28px; border-bottom: 1px solid var(--separator); margin-bottom: 24px; }
+.detail-tabs button { padding: 12px 2px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--text-secondary); cursor: pointer; font: inherit; }
+.detail-tabs button[aria-selected="true"] { color: var(--primary); border-bottom-color: var(--primary); }
+</style>

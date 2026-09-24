@@ -51,7 +51,7 @@ pub async fn batch_tasks(
     State(core): State<CoreState>,
     Extension(user): Extension<User>,
     Json(body): Json<BatchRequest>,
-) -> ApiResult<Json<BatchResponse>> {
+) -> ApiResult<impl axum::response::IntoResponse> {
     let (ids, patch) = match body {
         BatchRequest::Update { ids, patch } => {
             if patch.project.is_none()
@@ -78,86 +78,94 @@ pub async fn batch_tasks(
     let mut cleanup = Vec::new();
     let mut notices = Vec::new();
     let mut succeeded = 0;
-    for id in ids {
-        let result: ApiResult<Option<Task>> = (|| {
-            let current = tasks::get(&conn, &id)?;
-            match &patch {
-                Some(patch) => {
-                    let mut fields = Vec::new();
-                    if patch.project.is_some() {
-                        fields.push(("project", None));
-                    }
-                    if let Some(value) = patch.task_type.as_deref() {
-                        fields.push(("type", Some(value)));
-                    }
-                    if let Some(value) = patch.status.as_deref() {
-                        fields.push(("status", Some(value)));
-                    }
-                    if let Some(value) = patch.priority.as_deref() {
-                        fields.push(("priority", Some(value)));
-                    }
-                    permissions::require_fields(&conn, &user, &current.project, &fields)?;
-                    if let Some(project) = patch.project.as_deref() {
-                        permissions::require_project(&conn, &user, project)?;
-                    }
-                    tasks::patch(
-                        &mut conn,
-                        &id,
-                        &tasks::TaskPatch {
-                            project: patch.project.clone(),
-                            task_type: patch.task_type.clone(),
-                            status: patch.status.clone(),
-                            priority: patch.priority.clone(),
-                            description: None,
-                            note: None,
-                            assignee_user_id: None,
-                            predecessor_task_ids: None,
-                            unlock_task_ids: None,
-                        },
-                    )
-                    .map(|task| {
-                        if let Some(notice) =
-                            super::finish_notice::notice_on_finish(&current, &task)
-                        {
-                            notices.push(notice);
+    let action = if patch.is_some() {
+        "batch_update"
+    } else {
+        "delete"
+    };
+    let (_, operation_id) = crate::db::history::record(&mut conn, &user, "web", action, |conn| {
+        for id in ids {
+            let result: ApiResult<Option<Task>> = (|| {
+                let current = tasks::get(&conn, &id)?;
+                match &patch {
+                    Some(patch) => {
+                        let mut fields = Vec::new();
+                        if patch.project.is_some() {
+                            fields.push(("project", None));
                         }
-                        Some(task)
-                    })
+                        if let Some(value) = patch.task_type.as_deref() {
+                            fields.push(("type", Some(value)));
+                        }
+                        if let Some(value) = patch.status.as_deref() {
+                            fields.push(("status", Some(value)));
+                        }
+                        if let Some(value) = patch.priority.as_deref() {
+                            fields.push(("priority", Some(value)));
+                        }
+                        permissions::require_fields(&conn, &user, &current.project, &fields)?;
+                        if let Some(project) = patch.project.as_deref() {
+                            permissions::require_project(&conn, &user, project)?;
+                        }
+                        tasks::patch(
+                            conn,
+                            &id,
+                            &tasks::TaskPatch {
+                                project: patch.project.clone(),
+                                task_type: patch.task_type.clone(),
+                                status: patch.status.clone(),
+                                priority: patch.priority.clone(),
+                                description: None,
+                                note: None,
+                                assignee_user_id: None,
+                                predecessor_task_ids: None,
+                                unlock_task_ids: None,
+                            },
+                        )
+                        .map(|task| {
+                            if let Some(notice) =
+                                super::finish_notice::notice_on_finish(&current, &task)
+                            {
+                                notices.push(notice);
+                            }
+                            Some(task)
+                        })
+                    }
+                    None => {
+                        permissions::require_field(
+                            &conn,
+                            &user,
+                            &current.project,
+                            "task_delete",
+                            None,
+                        )?;
+                        tasks::remove(&conn, &id).map(|paths| {
+                            cleanup.extend(paths);
+                            None
+                        })
+                    }
                 }
-                None => {
-                    permissions::require_field(
-                        &conn,
-                        &user,
-                        &current.project,
-                        "task_delete",
-                        None,
-                    )?;
-                    tasks::remove(&conn, &id).map(|paths| {
-                        cleanup.extend(paths);
-                        None
-                    })
+            })();
+            match result {
+                Ok(task) => {
+                    succeeded += 1;
+                    results.push(BatchItem {
+                        id,
+                        task,
+                        error: None,
+                    });
                 }
-            }
-        })();
-        match result {
-            Ok(task) => {
-                succeeded += 1;
-                results.push(BatchItem {
+                Err(error) => results.push(BatchItem {
                     id,
-                    task,
-                    error: None,
-                });
-            }
-            Err(error) => results.push(BatchItem {
-                id,
-                task: None,
-                error: Some(BatchError {
-                    code: error.code,
-                    message: error.message,
+                    task: None,
+                    error: Some(BatchError {
+                        code: error.code,
+                        message: error.message,
+                    }),
                 }),
-            }),
+            }
         }
-    }
+        Ok(())
+    })?;
     let visible = permissions::visible_projects(&conn, &user)?;
     for item in &mut results {
         if let Some(task) = item.task.as_mut() {
@@ -181,9 +189,22 @@ pub async fn batch_tasks(
         core.events.notify();
     }
     let failed = results.len() - succeeded;
-    Ok(Json(BatchResponse {
-        results,
-        succeeded,
-        failed,
-    }))
+    let mut headers = axum::http::HeaderMap::new();
+    if patch.is_some() || succeeded == 0 {
+        headers.insert(
+            "X-PM-Undo",
+            operation_id
+                .to_string()
+                .parse()
+                .map_err(ApiError::internal)?,
+        );
+    }
+    Ok((
+        headers,
+        Json(BatchResponse {
+            results,
+            succeeded,
+            failed,
+        }),
+    ))
 }

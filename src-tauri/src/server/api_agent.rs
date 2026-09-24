@@ -147,7 +147,9 @@ pub async fn create_task(
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| ApiError::unprocessable("任务类型为必填项（--type）"))?;
     if !domain::is_valid_task_type(task_type.trim()) {
-        return Err(ApiError::unprocessable(format!("任务类型不合法：{task_type}")));
+        return Err(ApiError::unprocessable(format!(
+            "任务类型不合法：{task_type}"
+        )));
     }
     let description = body
         .description
@@ -203,23 +205,33 @@ pub async fn create_task(
         fields.push(("unlock_task_ids", None));
     }
     permissions::require_fields(&conn, &user, project.trim(), &fields)?;
-    super::api_web::require_related_projects(&conn, &user, body.predecessor_task_ids.as_deref().unwrap_or_default())?;
-    super::api_web::require_related_projects(&conn, &user, body.unlock_task_ids.as_deref().unwrap_or_default())?;
-    let mut task = tasks::create_with_status(
-        &mut conn,
-        &tasks::NewTask {
-            project: project.trim(),
-            task_type: task_type.trim(),
-            description: description.trim(),
-            note: body.note.as_deref().unwrap_or(""),
-            submitter: "Agent",
-            owner_user_id: Some(&user.id),
-            priority: priority.as_deref(),
-            predecessor_task_ids: body.predecessor_task_ids.as_deref().unwrap_or_default(),
-            unlock_task_ids: body.unlock_task_ids.as_deref().unwrap_or_default(),
-        },
-        body.status.as_deref(),
+    super::api_web::require_related_projects(
+        &conn,
+        &user,
+        body.predecessor_task_ids.as_deref().unwrap_or_default(),
     )?;
+    super::api_web::require_related_projects(
+        &conn,
+        &user,
+        body.unlock_task_ids.as_deref().unwrap_or_default(),
+    )?;
+    let (mut task, _) = crate::db::history::record(&mut conn, &user, "agent", "create", |conn| {
+        tasks::create_with_status(
+            conn,
+            &tasks::NewTask {
+                project: project.trim(),
+                task_type: task_type.trim(),
+                description: description.trim(),
+                note: body.note.as_deref().unwrap_or(""),
+                submitter: "Agent",
+                owner_user_id: Some(&user.id),
+                priority: priority.as_deref(),
+                predecessor_task_ids: body.predecessor_task_ids.as_deref().unwrap_or_default(),
+                unlock_task_ids: body.unlock_task_ids.as_deref().unwrap_or_default(),
+            },
+            body.status.as_deref(),
+        )
+    })?;
     let visible = permissions::visible_projects(&conn, &user)?;
     tasks::retain_visible_dependencies(&conn, std::slice::from_mut(&mut task), visible.as_deref())?;
     drop(conn);
@@ -253,9 +265,17 @@ async fn apply_patch(
     mut patch: tasks::TaskPatch,
 ) -> ApiResult<Json<domain::Task>> {
     for (field, value, valid) in [
-        ("任务类型", patch.task_type.as_deref(), domain::is_valid_task_type as fn(&str) -> bool),
+        (
+            "任务类型",
+            patch.task_type.as_deref(),
+            domain::is_valid_task_type as fn(&str) -> bool,
+        ),
         ("状态", patch.status.as_deref(), domain::is_valid_status),
-        ("优先级", patch.priority.as_deref(), domain::is_valid_priority),
+        (
+            "优先级",
+            patch.priority.as_deref(),
+            domain::is_valid_priority,
+        ),
     ] {
         if let Some(value) = value {
             if !valid(value) {
@@ -285,12 +305,24 @@ async fn apply_patch(
     let mut fields = Vec::new();
     for (field, present, value) in [
         ("project", patch.project.is_some(), None),
-        ("type", patch.task_type.is_some(), patch.task_type.as_deref()),
+        (
+            "type",
+            patch.task_type.is_some(),
+            patch.task_type.as_deref(),
+        ),
         ("description", patch.description.is_some(), None),
         ("note", patch.note.is_some(), None),
         ("status", patch.status.is_some(), patch.status.as_deref()),
-        ("priority", patch.priority.is_some(), patch.priority.as_deref()),
-        ("predecessor_task_ids", patch.predecessor_task_ids.is_some(), None),
+        (
+            "priority",
+            patch.priority.is_some(),
+            patch.priority.as_deref(),
+        ),
+        (
+            "predecessor_task_ids",
+            patch.predecessor_task_ids.is_some(),
+            None,
+        ),
         ("unlock_task_ids", patch.unlock_task_ids.is_some(), None),
     ] {
         if present {
@@ -309,23 +341,34 @@ async fn apply_patch(
         let owns_task = current.submitter == "Agent"
             && current.owner_user_id.as_deref() == Some(user.id.as_str());
         if !owns_task {
-            return Err(ApiError::forbidden("该任务不是当前用户的 Agent 创建，不能修改其描述"));
+            return Err(ApiError::forbidden(
+                "该任务不是当前用户的 Agent 创建，不能修改其描述",
+            ));
         }
     }
     if let Some(project) = patch.project.as_deref() {
         permissions::require_project(&conn, &user, project)?;
     }
-    for ids in [patch.predecessor_task_ids.as_deref(), patch.unlock_task_ids.as_deref()]
-        .into_iter()
-        .flatten()
+    for ids in [
+        patch.predecessor_task_ids.as_deref(),
+        patch.unlock_task_ids.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
     {
         super::api_web::require_related_projects(&conn, &user, ids)?;
     }
     super::api_web::preserve_hidden_relationships(
-        &conn, &user, &current.predecessor_task_ids, &mut patch.predecessor_task_ids,
+        &conn,
+        &user,
+        &current.predecessor_task_ids,
+        &mut patch.predecessor_task_ids,
     )?;
     super::api_web::preserve_hidden_relationships(
-        &conn, &user, &current.unlock_task_ids, &mut patch.unlock_task_ids,
+        &conn,
+        &user,
+        &current.unlock_task_ids,
+        &mut patch.unlock_task_ids,
     )?;
     // 认领规则：Agent 把任务从「未开始」推进到其它任意状态时，自动成为该任务负责人。
     // 已有负责人时上面已通过锁定校验（只可能是自己），此处不重复写入。
@@ -338,7 +381,9 @@ async fn apply_patch(
     if agent_claims {
         patch.assignee_user_id = Some(Some(user.id.clone()));
     }
-    let mut task = tasks::patch(&mut conn, &id, &patch)?;
+    let (mut task, _) = crate::db::history::record(&mut conn, &user, "agent", "update", |conn| {
+        tasks::patch(conn, &id, &patch)
+    })?;
     let visible = permissions::visible_projects(&conn, &user)?;
     tasks::retain_visible_dependencies(&conn, std::slice::from_mut(&mut task), visible.as_deref())?;
     drop(conn);

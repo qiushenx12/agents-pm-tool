@@ -162,20 +162,22 @@ pub async fn create_task(
         &user,
         body.unlock_task_ids.as_deref().unwrap_or_default(),
     )?;
-    let mut task = tasks::create(
-        &mut conn,
-        &tasks::NewTask {
-            project: project.trim(),
-            task_type: task_type.trim(),
-            description: body.description.as_deref().unwrap_or(""),
-            note: body.note.as_deref().unwrap_or(""),
-            submitter: "用户", // 网页端固定（规划 §4.3）
-            owner_user_id: Some(&user.id),
-            priority: body.priority.as_deref(),
-            predecessor_task_ids: body.predecessor_task_ids.as_deref().unwrap_or_default(),
-            unlock_task_ids: body.unlock_task_ids.as_deref().unwrap_or_default(),
-        },
-    )?;
+    let (mut task, _) = crate::db::history::record(&mut conn, &user, "web", "create", |conn| {
+        tasks::create(
+            conn,
+            &tasks::NewTask {
+                project: project.trim(),
+                task_type: task_type.trim(),
+                description: body.description.as_deref().unwrap_or(""),
+                note: body.note.as_deref().unwrap_or(""),
+                submitter: "用户", // 网页端固定（规划 §4.3）
+                owner_user_id: Some(&user.id),
+                priority: body.priority.as_deref(),
+                predecessor_task_ids: body.predecessor_task_ids.as_deref().unwrap_or_default(),
+                unlock_task_ids: body.unlock_task_ids.as_deref().unwrap_or_default(),
+            },
+        )
+    })?;
     let visible = permissions::visible_projects(&conn, &user)?;
     tasks::retain_visible_dependencies(&conn, std::slice::from_mut(&mut task), visible.as_deref())?;
     drop(conn);
@@ -265,21 +267,24 @@ pub async fn patch_task(
         &current.unlock_task_ids,
         &mut body.unlock_task_ids,
     )?;
-    let mut task = tasks::patch(
-        &mut conn,
-        &id,
-        &tasks::TaskPatch {
-            project: body.project,
-            task_type: body.task_type,
-            description: body.description,
-            note: body.note,
-            status: body.status,
-            priority: body.priority,
-            assignee_user_id: body.assignee_user_id,
-            predecessor_task_ids: body.predecessor_task_ids,
-            unlock_task_ids: body.unlock_task_ids,
-        },
-    )?;
+    let (mut task, operation_id) =
+        crate::db::history::record(&mut conn, &user, "web", "update", |conn| {
+            tasks::patch(
+                conn,
+                &id,
+                &tasks::TaskPatch {
+                    project: body.project,
+                    task_type: body.task_type,
+                    description: body.description,
+                    note: body.note,
+                    status: body.status,
+                    priority: body.priority,
+                    assignee_user_id: body.assignee_user_id,
+                    predecessor_task_ids: body.predecessor_task_ids,
+                    unlock_task_ids: body.unlock_task_ids,
+                },
+            )
+        })?;
     let visible = permissions::visible_projects(&conn, &user)?;
     tasks::retain_visible_dependencies(&conn, std::slice::from_mut(&mut task), visible.as_deref())?;
     drop(conn);
@@ -287,7 +292,7 @@ pub async fn patch_task(
         core.finish_notices.notify(notice);
     }
     core.events.notify();
-    Ok(Json(task))
+    Ok(([("X-PM-Undo", operation_id.to_string())], Json(task)))
 }
 
 pub async fn delete_task(
@@ -295,10 +300,13 @@ pub async fn delete_task(
     Extension(user): Extension<User>,
     Path(id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
-    let conn = core.db.lock().unwrap();
+    let mut conn = core.db.lock().unwrap();
     let task = tasks::get(&conn, &id)?;
     permissions::require_field(&conn, &user, &task.project, "task_delete", None)?;
-    let attach_paths = tasks::remove(&conn, &id)?;
+    let (attach_paths, _) =
+        crate::db::history::record(&mut conn, &user, "web", "delete", |conn| {
+            tasks::remove(conn, &id)
+        })?;
     drop(conn);
     // 级联删除的附件行已清除，这里清理磁盘文件；失败仅告警不回滚（规划：删除任务仅网页端）
     for rel in &attach_paths {
@@ -333,17 +341,15 @@ pub async fn reorder_task(
         let neighbor = tasks::get(&conn, neighbor)?;
         permissions::require_project(&conn, &user, &neighbor.project)?;
     }
-    let mut task = tasks::reorder(
-        &mut conn,
-        &id,
-        body.prev_id.as_deref(),
-        body.next_id.as_deref(),
-    )?;
+    let (mut task, operation_id) =
+        crate::db::history::record(&mut conn, &user, "web", "reorder", |conn| {
+            tasks::reorder(conn, &id, body.prev_id.as_deref(), body.next_id.as_deref())
+        })?;
     let visible = permissions::visible_projects(&conn, &user)?;
     tasks::retain_visible_dependencies(&conn, std::slice::from_mut(&mut task), visible.as_deref())?;
     drop(conn);
     core.events.notify();
-    Ok(Json(task))
+    Ok(([("X-PM-Undo", operation_id.to_string())], Json(task)))
 }
 
 #[derive(Deserialize)]
@@ -358,26 +364,35 @@ pub async fn rebase_order(
     Extension(user): Extension<User>,
     Json(body): Json<RebaseOrderBody>,
 ) -> ApiResult<impl IntoResponse> {
-    let conn = core.db.lock().unwrap();
-    match permissions::visible_projects(&conn, &user)? {
-        None => {
-            tasks::rebase_positions(&conn, body.sort_by.as_deref(), body.sort_order.as_deref())?
-        }
-        Some(projects) => {
-            for project in &projects {
-                permissions::require_field(&conn, &user, project, "reorder", None)?;
+    let mut conn = core.db.lock().unwrap();
+    let (_, operation_id) =
+        crate::db::history::record(&mut conn, &user, "web", "reorder", |conn| {
+            match permissions::visible_projects(&conn, &user)? {
+                None => tasks::rebase_positions(
+                    &conn,
+                    body.sort_by.as_deref(),
+                    body.sort_order.as_deref(),
+                )?,
+                Some(projects) => {
+                    for project in &projects {
+                        permissions::require_field(&conn, &user, project, "reorder", None)?;
+                    }
+                    tasks::rebase_positions_for_projects(
+                        &conn,
+                        body.sort_by.as_deref(),
+                        body.sort_order.as_deref(),
+                        &projects,
+                    )?;
+                }
             }
-            tasks::rebase_positions_for_projects(
-                &conn,
-                body.sort_by.as_deref(),
-                body.sort_order.as_deref(),
-                &projects,
-            )?;
-        }
-    }
+            Ok(())
+        })?;
     drop(conn);
     core.events.notify();
-    Ok(StatusCode::NO_CONTENT)
+    Ok((
+        [("X-PM-Undo", operation_id.to_string())],
+        StatusCode::NO_CONTENT,
+    ))
 }
 
 // ── 项目选项 ─────────────────────────────────────────────
@@ -442,17 +457,19 @@ pub async fn patch_project(
         return Err(ApiError::forbidden("仅管理员可以修改项目"));
     }
     let mut conn = core.db.lock().unwrap();
-    let p = projects::patch(
-        &mut conn,
-        &name,
-        &projects::ProjectPatch {
-            new_name: body.new_name,
-            color: body.color,
-            sort_order: body.sort_order,
-            local_path: body.local_path,
-            git_url: body.git_url,
-        },
-    )?;
+    let (p, _) = crate::db::history::record(&mut conn, &user, "web", "project", |conn| {
+        projects::patch(
+            conn,
+            &name,
+            &projects::ProjectPatch {
+                new_name: body.new_name,
+                color: body.color,
+                sort_order: body.sort_order,
+                local_path: body.local_path,
+                git_url: body.git_url,
+            },
+        )
+    })?;
     drop(conn);
     core.events.notify();
     Ok(Json(p))
@@ -558,9 +575,9 @@ pub async fn upload_attachment(
     let mime = mime_guess::from_path(&filename)
         .first()
         .map(|m| m.to_string());
-    let conn = core.db.lock().unwrap();
+    let mut conn = core.db.lock().unwrap();
     let result =
-        (|| -> ApiResult<attach::Attachment> {
+        crate::db::history::record(&mut conn, &user, "web", "attachment", |conn| {
             tasks::get(&conn, &task_id)?;
             let now = now_str();
             conn.execute(
@@ -577,11 +594,11 @@ pub async fn upload_attachment(
                 size: data.len() as i64,
                 created_at: now,
             })
-        })();
+        });
     drop(conn);
 
     match result {
-        Ok(a) => {
+        Ok((a, _)) => {
             core.events.notify();
             Ok((StatusCode::CREATED, Json(a)))
         }
@@ -635,10 +652,13 @@ pub async fn delete_attachment(
         let conn = core.db.lock().unwrap();
         attachments::get(&conn, &id)?
     };
-    let conn = core.db.lock().unwrap();
+    let mut conn = core.db.lock().unwrap();
     let task = tasks::get(&conn, &a.task_id)?;
     permissions::require_field(&conn, &user, &task.project, "attachment_delete", None)?;
-    conn.execute("DELETE FROM attachments WHERE id = ?1", [id])?;
+    crate::db::history::record(&mut conn, &user, "web", "attachment", |conn| {
+        conn.execute("DELETE FROM attachments WHERE id = ?1", [id])?;
+        Ok(())
+    })?;
     drop(conn);
     let _ = std::fs::remove_file(core.data_dir.join(&a.stored_path));
     core.events.notify();
