@@ -19,7 +19,11 @@ const props = withDefaults(
   }>(),
   { placeholder: "请选择" },
 );
-const emit = defineEmits<{ "update:modelValue": [value: string] }>();
+const emit = defineEmits<{
+  "update:modelValue": [value: string];
+  /** 用户在下拉列表里显式点选某项（与 v-model 变化区分：默认值不会触发） */
+  pick: [value: string];
+}>();
 const search = ref("");
 const selected = computed(() =>
   props.options.find((o) => o.value === props.modelValue),
@@ -79,6 +83,7 @@ const filtered = computed(() =>
           :aria-selected="option.value === modelValue"
           @click="
             emit('update:modelValue', option.value);
+            emit('pick', option.value);
             close();
           "
         >

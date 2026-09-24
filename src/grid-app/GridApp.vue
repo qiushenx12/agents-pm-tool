@@ -28,6 +28,7 @@ import AgentAccessDialog from "./components/users/AgentAccessDialog.vue";
 import HostSettingsDialog from "./components/users/HostSettingsDialog.vue";
 import { useMetaStore } from "./stores/metaStore";
 import { useTaskStore } from "./stores/taskStore";
+import { rememberCreateProject } from "./stores/lastProject";
 import { useUndoStore } from "./stores/undoStore";
 import { isUndoShortcut, resetUndo } from "./api/undoState";
 import { useViewStore } from "./stores/viewStore";
@@ -135,6 +136,8 @@ async function quickCreate() {
       description: "",
       note: "",
     });
+    // 与弹窗里的显式选择一致：在哪个项目下建了任务，下次新建默认就是它。
+    rememberCreateProject(project);
     onCreated(task);
     notify("任务已创建", "success");
   } catch (e) {

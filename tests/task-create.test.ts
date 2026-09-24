@@ -4,6 +4,7 @@ import { createApp, h, nextTick, type App } from "vue";
 import { createPinia, disposePinia, type Pinia } from "pinia";
 import TaskCreateModal from "@/grid-app/components/TaskCreateModal.vue";
 import { useMetaStore } from "@/grid-app/stores/metaStore";
+import { useTaskStore } from "@/grid-app/stores/taskStore";
 import { api } from "@/grid-app/api/client";
 import type { Project, Task } from "@/shared/types";
 vi.mock("@/grid-app/api/client", () => ({
@@ -270,4 +271,153 @@ it("ignores the project filter default when multiple projects are filtered", asy
   expect(
     document.body.querySelector('[aria-label="项目：Beta"]'),
   ).not.toBeNull();
+});
+
+const lastProject = () => localStorage.getItem("pm-create-task-project-v1");
+const projectLabel = () =>
+  document.body.querySelector("[aria-label^='项目：']")?.getAttribute("aria-label");
+const twoProjects = () =>
+  ["Alpha", "Beta"].map((name, sort_order) => ({
+    name,
+    color: "#3370ff",
+    sort_order,
+    local_path: "",
+    git_url: "",
+    created_at: "",
+  })) as Project[];
+/** 一个测试内共用一个 store，这样筛选状态能跨多次「打开弹窗」保留。 */
+let lookupTasks: ReturnType<typeof useTaskStore> | undefined;
+function setupStore(projects: Project[]) {
+  pinia = createPinia();
+  useMetaStore(pinia).projects = projects;
+  lookupTasks = useTaskStore(pinia);
+  return lookupTasks;
+}
+/** 只挂载一次弹窗；筛选变化后再调用即可拿到新的默认项目。 */
+async function openCreateModal() {
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp(TaskCreateModal);
+  app.use(pinia!);
+  app.mount(host);
+  await nextTick();
+}
+/** 关掉当前弹窗（不卸载 pinia，筛选状态要留给下一次打开）。 */
+async function closeCreateModal() {
+  app?.unmount();
+  app = undefined;
+  host?.remove();
+  host = undefined;
+  await nextTick();
+}
+/** 关掉弹窗 → 改筛选 → 再打开，模拟用户真实的操作顺序。 */
+async function reopenCreateModal(active?: string) {
+  await closeCreateModal();
+  if (active === undefined) lookupTasks!.clearFilters();
+  else lookupTasks!.setProject(active);
+  await nextTick();
+  await openCreateModal();
+}
+
+/** 提交弹窗，等异步落库与收尾。createTask 由本文件的 mock 提供。 */
+async function submitCreateModal() {
+  Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .find((button) => button.textContent?.trim() === "创建任务")!
+    .click();
+  for (let i = 0; i < 50; i++) await Promise.resolve();
+  await nextTick();
+}
+/** 让 mock 的 createTask 回显传入的项目，便于断言「建在哪个项目下」。 */
+function stubCreateTaskEchoingProject() {
+  vi.mocked(api.createTask).mockImplementation(async (input) => {
+    const { project, type, description } = input as {
+      project: string;
+      type: Task["type"];
+      description: string;
+    };
+    return {
+      id: "created-" + project,
+      seq: 1,
+      project,
+      type,
+      description,
+      note: "",
+      status: "未开始",
+      priority: "中",
+      submitter: "用户",
+      submitter_name: "主机",
+      created_at: "",
+      finished_at: null,
+      updated_at: "",
+      position: 1,
+      attachment_count: 0,
+      predecessor_task_ids: [],
+      unlock_task_ids: [],
+    } as Task;
+  });
+}
+
+it("筛选项目下建完任务后清除筛选，下次新建仍默认该项目", async () => {
+  window.history.replaceState(null, "", "/");
+  localStorage.clear();
+  stubCreateTaskEchoingProject();
+  setupStore(twoProjects());
+
+  // 最初：没有任何筛选，新建弹窗默认落在项目列表第一项 Alpha。
+  await openCreateModal();
+  expect(projectLabel()).toBe("项目：Alpha");
+  expect(lastProject()).toBeNull();
+  await closeCreateModal();
+
+  // 筛选 Beta → 新建任务：弹窗跟随筛选显示 Beta，并在该项目下真正建出任务。
+  await reopenCreateModal("Beta");
+  expect(projectLabel()).toBe("项目：Beta");
+  await submitCreateModal();
+  expect(api.createTask).toHaveBeenCalledWith(
+    expect.objectContaining({ project: "Beta" }),
+  );
+  expect(lastProject()).toBe("Beta");
+  await closeCreateModal();
+
+  // 清除筛选后再新建：必须还是 Beta，而不是跳回 Alpha。
+  await reopenCreateModal(undefined);
+  expect(projectLabel()).toBe("项目：Beta");
+});
+
+it("打开弹窗本身不会改写「上次新建的项目」", async () => {
+  window.history.replaceState(null, "", "/");
+  localStorage.clear();
+  localStorage.setItem("pm-create-task-project-v1", "Beta");
+  setupStore(twoProjects());
+
+  // 筛选 Alpha 打开弹窗：默认跟随筛选显示 Alpha，但没创建就等于没做选择，
+  // 不能把 Alpha 覆盖成「上次新建的项目」。
+  await reopenCreateModal("Alpha");
+  expect(projectLabel()).toBe("项目：Alpha");
+  expect(lastProject()).toBe("Beta");
+
+  await reopenCreateModal(undefined);
+  expect(projectLabel()).toBe("项目：Beta");
+});
+
+it("弹窗开着时清除筛选不会污染记忆", async () => {
+  window.history.replaceState(null, "", "/");
+  localStorage.clear();
+  localStorage.setItem("pm-create-task-project-v1", "Beta");
+  setupStore(twoProjects());
+
+  // 筛 Alpha 打开弹窗后，弹窗还开着就把筛选清掉：旧实现里 watch(project)
+  // 会跟着把项目改回 Beta 并回写记忆，等于凭空改写用户的选择。
+  await reopenCreateModal("Alpha");
+  expect(projectLabel()).toBe("项目：Alpha");
+  lookupTasks!.clearFilters();
+  await nextTick();
+  // 记忆必须原封不动，仍是上次真正创建过的 Beta。
+  expect(lastProject()).toBe("Beta");
+  await closeCreateModal();
+
+  // 清除筛选后再打开：没有筛选可跟随，回落到记忆里的 Beta。
+  await openCreateModal();
+  expect(projectLabel()).toBe("项目：Beta");
+  expect(lastProject()).toBe("Beta");
 });

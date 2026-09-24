@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { api } from "../api/client";
 import { useMetaStore } from "../stores/metaStore";
 import { useTaskStore } from "../stores/taskStore";
+import { readLastCreateProject, rememberCreateProject } from "../stores/lastProject";
 import UiDialog from "@/shared/UiDialog.vue";
 import UiSelect from "@/shared/UiSelect.vue";
 import UiIcon from "@/shared/UiIcon.vue";
@@ -26,21 +27,13 @@ const emit = defineEmits<{
 const meta = useMetaStore(),
   tasks = useTaskStore(),
   queue = useUploadQueue();
-const LAST_PROJECT_KEY = "pm-create-task-project-v1";
-function lastProject() {
-  try {
-    return localStorage.getItem(LAST_PROJECT_KEY) ?? "";
-  } catch {
-    return "";
-  }
-}
 function initialProjectFrom(projects = meta.projects) {
   // 恰好筛选一个项目时，默认跟随当前筛选，忽略上次新建的选择；多项目筛选不适用。
   const filtered =
     tasks.filters.project.length === 1 ? tasks.filters.project[0] : "";
   if (filtered && projects.some((item) => item.name === filtered))
     return filtered;
-  const saved = lastProject();
+  const saved = readLastCreateProject();
   if (projects.some((item) => item.name === saved)) return saved;
   return projects[0]?.name ?? "";
 }
@@ -89,14 +82,13 @@ watch(
       project.value = initialProjectFrom(list);
   },
 );
-watch(project, (value) => {
-  if (!value) return;
-  try {
-    localStorage.setItem(LAST_PROJECT_KEY, value);
-  } catch {
-    /* browsing without storage still works */
-  }
-});
+/**
+ * 用户显式点选项目只需更新当前值；记忆统一在任务创建成功时写入（见 submit）。
+ * 这里若再写一次记忆，会把「只是改了主意、最后没提交」的项目也记下来。
+ */
+function pickProject(name: string) {
+  project.value = name;
+}
 const busy = computed(() => submitting.value || queue.busy.value);
 function finish() {
   if (!createdTask.value) return;
@@ -156,6 +148,11 @@ async function submit() {
         predecessor_task_ids: predecessorTaskIds.value,
         unlock_task_ids: unlockTaskIds.value,
       });
+      // 「上次新建的项目」记在**任务真正创建成功**的那一刻：此刻弹窗里显示的项目
+      // 就是用户认可的选择。不能在打开弹窗时记（默认值可能只是跟随筛选，会把筛选
+      // 当成选择写进记忆），也不能只在下拉点选时记（靠筛选带出项目、没碰过下拉的
+      // 用户永远不会被记住，清除筛选后又会跳回旧项目）。
+      rememberCreateProject(createdTask.value.project);
       tasks.acceptTask(createdTask.value);
     }
     const complete = await queue.upload(createdTask.value.id);
@@ -177,10 +174,11 @@ async function submit() {
       <div class="form-field">
         <label>项目 <span class="required">*</span></label
         ><UiSelect
-          v-model="project"
+          :model-value="project"
           :options="projectOptions"
           label="项目"
           :disabled="busy || !!createdTask"
+          @pick="pickProject"
         /><button
           v-if="!meta.projects.length"
           class="text-button"
