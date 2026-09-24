@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref } from "vue";
 import UiSelect from "@/shared/UiSelect.vue";
 import { useMetaStore } from "../stores/metaStore";
 import { useTaskStore } from "../stores/taskStore";
@@ -18,6 +18,20 @@ const props = withDefaults(
 const tasks = useTaskStore(),
   meta = useMetaStore();
 const error = ref("");
+/** 字段错误提示的自动关闭：出现后 3 秒消失，新的错误重新计时 */
+const ERROR_AUTO_DISMISS_MS = 3000;
+let errorTimer: ReturnType<typeof setTimeout> | undefined;
+function clearError() {
+  error.value = "";
+  clearTimeout(errorTimer);
+  errorTimer = undefined;
+}
+function showError(message: string) {
+  error.value = message;
+  clearTimeout(errorTimer);
+  errorTimer = setTimeout(clearError, ERROR_AUTO_DISMISS_MS);
+}
+onBeforeUnmount(() => clearTimeout(errorTimer));
 const options = computed(() =>
   props.field === "project"
     ? meta.projects.map((p) => ({ value: p.name, color: p.color, tone: "" }))
@@ -40,7 +54,7 @@ const label = computed(
     })[props.field],
 );
 async function update(value: string) {
-  error.value = "";
+  clearError();
   try {
     await tasks.updateTask(
       props.task.id,
@@ -53,7 +67,7 @@ async function update(value: string) {
             : { status: value as TaskStatus },
     );
   } catch (e) {
-    error.value = errorText(e);
+    showError(errorText(e));
   }
 }
 </script>

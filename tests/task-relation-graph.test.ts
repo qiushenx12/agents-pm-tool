@@ -1,13 +1,25 @@
 // @vitest-environment jsdom
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createApp, h, nextTick, ref, type App } from "vue";
+import { createPinia, disposePinia, setActivePinia, type Pinia } from "pinia";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import TaskRelationGraph from "@/grid-app/components/TaskRelationGraph.vue";
+import { useTaskStore } from "@/grid-app/stores/taskStore";
 import type { Task } from "@/shared/types";
 
-const { listTasks } = vi.hoisted(() => ({ listTasks: vi.fn() }));
-vi.mock("@/grid-app/api/client", () => ({ api: { listTasks } }));
+const { listTasks, pageTasks } = vi.hoisted(() => ({
+  listTasks: vi.fn(),
+  pageTasks: vi.fn().mockResolvedValue({
+    items: [],
+    page: 1,
+    page_size: 100,
+    total: 0,
+    groups: [],
+    anchor_found: null,
+  }),
+}));
+vi.mock("@/grid-app/api/client", () => ({ api: { listTasks, pageTasks } }));
 
 const first: Task = {
   id: "202609230000000000",
@@ -37,12 +49,19 @@ const second: Task = {
 };
 let app: App | undefined;
 let host: HTMLElement;
+let pinia: Pinia;
 let style: HTMLStyleElement | undefined;
+beforeEach(() => {
+  localStorage.clear();
+  pinia = createPinia();
+  setActivePinia(pinia);
+});
 afterEach(() => {
   app?.unmount();
   app = undefined;
   host?.remove();
   style?.remove();
+  disposePinia(pinia);
   listTasks.mockReset();
   vi.unstubAllGlobals();
 });
@@ -271,4 +290,48 @@ it("refreshes new relationships and resets dragged cards, zoom, and pan", async 
   expect(Number.parseFloat(card.style.left)).toBe(372);
   expect(Number.parseFloat(card.style.top)).toBe(32);
   expect(canvas.style.transform).toBe("translate(-358px, 35px) scale(1)");
+});
+
+it("follows the task table project filter and reloads when it changes", async () => {
+  listTasks.mockResolvedValue([first, second]);
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp(TaskRelationGraph, { taskId: null, revision: 0 });
+  app.mount(host);
+  await vi.waitFor(() => expect(host.querySelectorAll(".relation-card")).toHaveLength(2));
+  expect(listTasks).toHaveBeenLastCalledWith({}, expect.any(AbortSignal));
+
+  // 侧栏/关联图页签改的都是任务表的项目筛选，关联图跟随它重新加载
+  const tasks = useTaskStore();
+  tasks.setProject("项目乙");
+  await vi.waitFor(() =>
+    expect(listTasks).toHaveBeenLastCalledWith({ project: ["项目乙"] }, expect.any(AbortSignal)),
+  );
+  tasks.setProject();
+  await vi.waitFor(() => expect(listTasks).toHaveBeenLastCalledWith({}, expect.any(AbortSignal)));
+});
+
+it("names the single filtered project in the empty state", async () => {
+  useTaskStore().setProject("已删项目");
+  listTasks.mockResolvedValue([]);
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp(TaskRelationGraph, { taskId: null, revision: 0 });
+  app.mount(host);
+  await nextTick();
+  await nextTick();
+  expect(listTasks).toHaveBeenLastCalledWith({ project: ["已删项目"] }, expect.any(AbortSignal));
+  expect(host.textContent).toContain("已删项目");
+});
+
+it("ignores the project filter while showing a single tree", async () => {
+  useTaskStore().setProject("项目甲");
+  listTasks.mockResolvedValue([first, second]);
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp(TaskRelationGraph, { taskId: first.id, revision: 0 });
+  app.mount(host);
+  await nextTick();
+  await nextTick();
+  expect(listTasks).toHaveBeenCalledWith({}, expect.any(AbortSignal));
 });

@@ -223,9 +223,10 @@ pub fn focus_or_create_app_window<R: tauri::Runtime>(
     // 先摆好再显示：越界的位置会被夹回工作区，省得窗口先闪一下再跳
     .visible(false);
     let builder = match geometry {
-        Some(geometry) => builder
-            .position(geometry.x, geometry.y)
-            .maximized(geometry.maximized),
+        // 注意不在建窗时 .maximized()：那样 Windows 会把建窗矩形（默认尺寸）
+        // 记成「还原」要回到的位置，之后对最大化窗口的 set_size/set_position
+        // 都是空操作，还原出来就是错的。改为下面先摆好正常态几何再 maximize()。
+        Some(geometry) => builder.position(geometry.x, geometry.y),
         None => builder.center(),
     };
     let window = builder
@@ -236,6 +237,11 @@ pub fn focus_or_create_app_window<R: tauri::Runtime>(
         let fitted = window_state::apply_geometry(&window, geometry);
         // 先按这份几何预热：用户什么都没动就关窗时，也能原样存回去
         state.app_window.lock().unwrap().prime(fitted);
+        // 窗口还藏着：正常态矩形真正生效后再最大化，Windows 会把这份矩形
+        // 记成还原位置 —— 下次点「还原」回到的就是它，而不是建窗默认值
+        if fitted.maximized {
+            let _ = window.maximize();
+        }
     }
     let _ = window.show();
     let _ = window.set_focus();

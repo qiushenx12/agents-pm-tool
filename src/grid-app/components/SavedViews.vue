@@ -1,13 +1,33 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import UiIcon from "@/shared/UiIcon.vue";
 import UiPopover from "@/shared/UiPopover.vue";
 import UiDialog from "@/shared/UiDialog.vue";
 import { useSavedViewStore } from "../stores/savedViewStore";
+import { useMetaStore } from "../stores/metaStore";
+import { useTaskStore } from "../stores/taskStore";
 import { askConfirm, errorText, notify } from "@/shared/feedback";
-const saved = useSavedViewStore();
+const saved = useSavedViewStore(),
+  meta = useMetaStore(),
+  tasks = useTaskStore();
 defineProps<{ mode: "table" | "graph" }>();
 const emit = defineEmits<{ "update:mode": [mode: "table" | "graph"] }>();
+/**
+ * 关联图的项目筛选就是任务表的项目筛选（侧栏当前项目）：这里只换了个入口，
+ * 选中状态、URL 与跨客户端同步都随任务表那份走。
+ * 下拉候选补进已保存但已删除的项目名，便于看到并清除筛选。
+ */
+const projectOptions = computed(() => {
+  const names = meta.projects.map((project) => project.name);
+  return [
+    ...names,
+    ...tasks.filters.project.filter((name) => !names.includes(name)),
+  ];
+});
+/** 与侧栏高亮口径一致：只在恰好筛选一个项目时把页签文案换成项目名 */
+const graphTabLabel = computed(() =>
+  tasks.filters.project.length === 1 ? tasks.filters.project[0] : "关联图",
+);
 const dialog = ref<"save" | "rename" | null>(null),
   name = ref(""),
   targetId = ref(""),
@@ -69,7 +89,7 @@ function update() {
           :aria-selected="mode === 'table'"
           :aria-expanded="open"
           aria-label="切换筛选方案"
-          @click="emit('update:mode', 'table'); toggle()"
+          @click="mode === 'table' ? toggle() : emit('update:mode', 'table')"
         >
           <UiIcon name="grid" :size="15" /><span>{{
             saved.active?.name || "任务表"
@@ -143,17 +163,60 @@ function update() {
     ><button v-if="mode === 'table' && saved.dirty" class="text-button" @click="update">
       更新方案
     </button>
-    <button
-      class="view-tab graph-view-tab"
-      :class="{ active: mode === 'graph' }"
-      type="button"
-      role="tab"
-      aria-label="关联图"
-      :aria-selected="mode === 'graph'"
-      @click="emit('update:mode', 'graph')"
+    <UiPopover :width="220" label="关联图项目筛选"
+      ><template #trigger="{ toggle, open }"
+        ><button
+          class="view-tab graph-view-tab"
+          :class="{ active: mode === 'graph' }"
+          type="button"
+          role="tab"
+          aria-label="关联图"
+          :aria-selected="mode === 'graph'"
+          :aria-expanded="open"
+          @click="mode === 'graph' ? toggle() : emit('update:mode', 'graph')"
+        >
+          <UiIcon name="git" :size="15" /><span>{{ graphTabLabel }}</span
+          ><UiIcon name="chevron" :size="12" /></button></template
+      ><template #default="{ close }">
+        <div class="menu-caption">按项目筛选</div>
+        <button
+          type="button"
+          class="menu-item"
+          @click="
+            tasks.setProject();
+            close();
+          "
+        >
+          全部项目<UiIcon
+            v-if="!tasks.filters.project.length"
+            name="check"
+            class="menu-check"
+          />
+        </button>
+        <div v-if="projectOptions.length" class="menu-divider"></div>
+        <button
+          v-for="name in projectOptions"
+          :key="name"
+          type="button"
+          class="menu-item"
+          @click="
+            tasks.setProject(name);
+            close();
+          "
+        >
+          <span
+            class="option-dot"
+            :style="{ background: meta.projectColor(name) }"
+          ></span
+          ><span>{{ name }}</span
+          ><UiIcon
+            v-if="tasks.filters.project.includes(name)"
+            name="check"
+            class="menu-check"
+          />
+        </button>
+      </template></UiPopover
     >
-      <UiIcon name="git" :size="15" />关联图
-    </button>
   </div>
   <UiDialog
     v-if="dialog"

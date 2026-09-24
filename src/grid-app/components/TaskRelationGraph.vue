@@ -4,10 +4,12 @@ import { api } from "../api/client";
 import { buildRelationForest, buildRelationGraph, CARD_HEIGHT, CARD_WIDTH, type NodePosition } from "../relationGraph";
 import { errorText } from "@/shared/feedback";
 import UiIcon from "@/shared/UiIcon.vue";
+import { useTaskStore } from "../stores/taskStore";
 import type { Task } from "@/shared/types";
 
 const props = defineProps<{ taskId: string | null; revision: number; selectedTaskId?: string | null }>();
 const emit = defineEmits<{ openDetail: [task: Task]; clearDetail: [] }>();
+const tasks = useTaskStore();
 const records = ref<Task[]>([]);
 const loading = ref(false);
 const error = ref("");
@@ -47,7 +49,13 @@ async function load() {
   loading.value = true;
   error.value = "";
   try {
-    const result = await api.listTasks({}, controller.signal);
+    // 项目范围跟随任务表的当前筛选（侧栏当前项目），只作用于多树总览；
+    // 单树模式始终展示该任务所在的整棵树
+    const query =
+      !props.taskId && tasks.filters.project.length
+        ? { project: [...tasks.filters.project] }
+        : {};
+    const result = await api.listTasks(query, controller.signal);
     if (current === requestId) records.value = result;
   } catch (cause) {
     if (current === requestId && !(cause instanceof Error && cause.name === "AbortError"))
@@ -77,6 +85,20 @@ watch(() => props.selectedTaskId, (id) => {
 watch(() => props.revision, () => {
   void load();
 });
+// 任务表的项目筛选变化（侧栏或关联图页签下拉）：重新加载并重置视图，
+// 已被筛掉的选中卡片一并取消
+watch(
+  () => tasks.filters.project,
+  () => {
+    if (selectedId.value) {
+      selectedId.value = null;
+      emit("clearDetail");
+    }
+    resetView();
+    void load();
+  },
+  { deep: true },
+);
 
 // ========== 画布平移（中键拖拽）与缩放（滚轮） ==========
 const scrollEl = ref<HTMLElement | null>(null);
@@ -274,7 +296,7 @@ onBeforeUnmount(() => {
     </div>
     <div v-else-if="loading && !records.length" class="relation-message">正在加载关联任务…</div>
     <div v-else-if="!graph.nodes.length" class="relation-message">
-      {{ taskId ? "任务不可见、已删除，或没有可见的关联任务。" : "暂无未验收通过的关联任务树。可从任务表右键查看已验收通过的任务树。" }}
+      {{ taskId ? "任务不可见、已删除，或没有可见的关联任务。" : `暂无${tasks.filters.project.length === 1 ? `项目「${tasks.filters.project[0]}」的` : ""}未验收通过的关联任务树。可从任务表右键查看已验收通过的任务树。` }}
     </div>
     <div
       v-else

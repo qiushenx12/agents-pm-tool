@@ -279,8 +279,9 @@ pub fn fit_to_desktop<R: Runtime>(
 /// 按这份几何摆放窗口，返回实际生效的几何。
 ///
 /// 尺寸与位置走 `set_size`/`set_position`（客户区尺寸 + 左上角坐标，与 `capture`
-/// 的取值口径一致）；最大化交给建窗时的 `.maximized()`，这里不重复调用 —— 那样
-/// 会在窗口已经显示之后才放大，闪一下。
+/// 的取值口径一致）。窗口必须在正常态下调用本函数：对已经最大化的窗口这两个
+/// 调用是空操作。最大化由调用方在几何摆好、窗口尚未显示时用 `maximize()` 完成 ——
+/// 既不会在显示后闪一下，Windows 也会把这份几何正确记成「还原」要回到的位置。
 pub fn apply_geometry<R: Runtime>(
     window: &WebviewWindow<R>,
     geometry: WindowGeometry,

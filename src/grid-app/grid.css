@@ -1725,11 +1725,13 @@ th:focus-within .column-menu {
   gap: 10px;
   min-width: 0;
 }
-.view-selector {
+.view-selector,
+.graph-view-tab {
   max-width: 260px;
   text-align: left;
 }
-.view-selector > span {
+.view-selector > span,
+.graph-view-tab > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
