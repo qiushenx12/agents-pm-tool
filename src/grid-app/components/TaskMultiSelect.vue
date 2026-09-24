@@ -20,6 +20,7 @@ const emit = defineEmits<{
   "update:modelValue": [value: string[]];
   open: [];
   "trigger-click": [];
+  locate: [id: string];
 }>();
 const search = ref("");
 const displayValue = computed(() => props.modelValue.join(","));
@@ -49,10 +50,28 @@ function toggleFromClick(event: MouseEvent, open: boolean, toggle: () => void) {
   if (!open) emit("open");
   toggle();
 }
+const listPopover = ref<InstanceType<typeof UiPopover>>();
+const contextMenu = ref<InstanceType<typeof UiPopover>>();
+const contextTask = ref<Task | null>(null);
+function openContextMenu(event: MouseEvent, task: Task) {
+  // 仅在已有勾选内容时提供“定位任务”，否则保留浏览器默认右键菜单。
+  if (props.disabled || !props.modelValue.length) return;
+  event.preventDefault();
+  event.stopPropagation();
+  contextTask.value = task;
+  void contextMenu.value?.openAt(event.clientX, event.clientY);
+}
+function locateContextTask(closeMenu: () => void) {
+  const id = contextTask.value?.id;
+  closeMenu();
+  if (!id) return;
+  listPopover.value?.close();
+  emit("locate", id);
+}
 </script>
 
 <template>
-  <UiPopover :width="360" :label="label">
+  <UiPopover ref="listPopover" :width="360" :label="label">
     <template #trigger="{ toggle, open }">
       <button
         type="button"
@@ -87,6 +106,7 @@ function toggleFromClick(event: MouseEvent, open: boolean, toggle: () => void) {
           :aria-selected="modelValue.includes(task.id)"
           :disabled="disabled"
           @click="toggleValue(task.id)"
+          @contextmenu="openContextMenu($event, task)"
         >
           <span class="dependency-option-text">
             <strong>{{ task.id }}</strong>
@@ -97,6 +117,14 @@ function toggleFromClick(event: MouseEvent, open: boolean, toggle: () => void) {
         <div v-if="loading" class="menu-empty"><span class="spinner"></span>正在加载任务</div>
         <div v-else-if="!filtered.length" class="menu-empty">没有匹配的任务</div>
       </div>
+    </template>
+  </UiPopover>
+  <UiPopover ref="contextMenu" :width="150" label="任务操作">
+    <template #trigger></template>
+    <template #default="{ close }">
+      <button class="menu-item" @click="locateContextTask(close)">
+        <UiIcon name="locate" />定位任务
+      </button>
     </template>
   </UiPopover>
 </template>

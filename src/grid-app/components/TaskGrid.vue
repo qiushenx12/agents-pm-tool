@@ -685,14 +685,25 @@ async function jumpPage(event: Event) {
 }
 async function reveal(id: string) {
   const result = await tasks.reveal(id);
-  if (!result?.anchor_found) return;
+  if (!result?.anchor_found) return false;
   const task = tasks.tasks.find((t) => t.id === id);
-  if (!task) return;
+  if (!task) return false;
   if (tasks.filters.group_by)
     collapsedGroups.value.delete(task[tasks.filters.group_by]);
+  // 优先选中任务描述单元格；描述列隐藏时回退到最左侧可见字段。
+  const key = view.visibleColumns.some((column) => column.key === "description")
+    ? "description"
+    : (view.visibleColumns[0]?.key ?? "description");
   await nextTick();
-  await select(task, "description");
-  cell(id, "description")?.scrollIntoView({ block: "nearest" });
+  await select(task, key);
+  cell(id, key)?.scrollIntoView({ block: "nearest" });
+  return true;
+}
+/** 从单元格内的子任务/父级任务列表“定位任务”。 */
+async function locateDependency(id: string) {
+  const found = await reveal(id);
+  if (found === false)
+    notify("该任务不在当前筛选结果中，调整筛选后再试", "info");
 }
 const sorts = ["created_at", "finished_at", "priority"] as const;
 defineExpose({ reveal });
@@ -1130,6 +1141,7 @@ defineExpose({ reveal });
                     @update:model-value="
                       updateDependencies(task, column.key, $event)
                     "
+                    @locate="locateDependency"
                   />
                 </template>
                 <span

@@ -18,7 +18,11 @@ import { formatDateTime, type Task, type Attachment } from "@/shared/types";
 const props = withDefaults(defineProps<{ task: Task; navigation?: boolean }>(), {
   navigation: true,
 });
-const emit = defineEmits<{ close: []; navigate: [task: Task] }>();
+const emit = defineEmits<{
+  close: [];
+  navigate: [task: Task];
+  locate: [id: string];
+}>();
 const activeTab = ref<"detail" | "history">("detail");
 const tasks = useTaskStore(),
   queue = useUploadQueue();
@@ -330,6 +334,7 @@ async function clearAssignee() {
           :loading="dependencyOptionsLoading"
           @open="loadDependencyOptions"
           @update:model-value="updateDependencies('predecessor_task_ids', $event)"
+          @locate="emit('locate', $event)"
         />
       </div>
       <div class="property-row">
@@ -347,6 +352,7 @@ async function clearAssignee() {
           :loading="dependencyOptionsLoading"
           @open="loadDependencyOptions"
           @update:model-value="updateDependencies('unlock_task_ids', $event)"
+          @locate="emit('locate', $event)"
         />
       </div>
       <div class="property-row">

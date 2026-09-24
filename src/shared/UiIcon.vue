@@ -51,6 +51,8 @@ const paths: Record<string, string> = {
   file: "M4 2h10l6 6v14H4z M14 2v6h6",
   video: "M4 5h11v14H4z M15 10l5-3v10l-5-3z",
   flag: "M5 21V4 M5 4c4-2 8 2 13 0v9c-5 2-9-2-13 0",
+  locate:
+    "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z M12 2v3 M12 19v3 M2 12h3 M19 12h3",
 };
 </script>
 <template>

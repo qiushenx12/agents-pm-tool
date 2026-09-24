@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   applyTheme,
   currentTheme,
@@ -106,6 +106,14 @@ function switchMode(mode: "table" | "graph") {
     graphTaskId.value = null;
     detailTask.value = null;
   }
+}
+/** 从子任务/父级任务选择列表“定位任务”：切回任务表并把该任务翻页滚动到可见。 */
+async function locateTask(id: string) {
+  if (activeMode.value !== "table") switchMode("table");
+  await nextTick();
+  const found = await table.value?.reveal(id);
+  if (found === false)
+    notify("该任务不在当前筛选结果中，调整筛选后再试", "info");
 }
 function openRelationGraph(task: Task) {
   graphTaskId.value = task.id;
@@ -425,6 +433,7 @@ onBeforeUnmount(() => {
       @close="showCreate = false"
       @created="onCreated"
       @manage-projects="openProjectCreate"
+      @locate="locateTask"
     />
     <TaskDetailDrawer
       v-if="detailTask"
@@ -432,6 +441,7 @@ onBeforeUnmount(() => {
       :navigation="activeMode === 'table'"
       @close="detailTask = null"
       @navigate="detailTask = $event"
+      @locate="locateTask"
     />
     <ProjectOptionPopover
       v-if="showProjects && isAdmin"

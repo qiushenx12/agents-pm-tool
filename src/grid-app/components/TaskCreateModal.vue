@@ -21,6 +21,7 @@ const emit = defineEmits<{
   close: [];
   created: [task: Task];
   "manage-projects": [];
+  locate: [id: string];
 }>();
 const meta = useMetaStore(),
   tasks = useTaskStore(),
@@ -220,6 +221,7 @@ async function submit() {
           :loading="dependencyOptionsLoading"
           @open="loadDependencyOptions"
           @update:model-value="setPredecessors"
+          @locate="emit('locate', $event)"
         />
       </div>
       <div class="form-field">
@@ -232,6 +234,7 @@ async function submit() {
           :loading="dependencyOptionsLoading"
           @open="loadDependencyOptions"
           @update:model-value="setUnlocked"
+          @locate="emit('locate', $event)"
         />
       </div>
     </div>

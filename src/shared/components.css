@@ -229,6 +229,10 @@ input[type="radio"] {
   display: inline-flex;
   min-width: 0;
 }
+/* 纯右键菜单的弹层没有触发器内容，隐藏空锚点避免参与布局。 */
+.popover-anchor:empty {
+  display: none;
+}
 .popover-anchor:has(.select-trigger:not(.select-field)) {
   width: 100%;
 }
