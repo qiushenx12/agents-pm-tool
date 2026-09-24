@@ -233,7 +233,9 @@ input[type="radio"] {
 .popover-anchor:empty {
   display: none;
 }
-.popover-anchor:has(.select-trigger:not(.select-field)) {
+/* 非单元格形态的下拉（表单、栏位里的 UiSelect）要撑满可用宽度；锚点类名由 UiSelect 显式传入。
+   这里刻意不用父选择伪类 has()：它要 Safari 15.4+，与 tauri.conf.json 声明的 macOS 11 不符。 */
+.popover-anchor.select-anchor {
   width: 100%;
 }
 .ui-popover {
@@ -318,6 +320,8 @@ input[type="radio"] {
   display: flex;
   flex-direction: column;
   max-width: calc(100vw - 32px);
+  /* 旧 WebKit 回退：dvh 要 Safari 15.4 才有，缺了它对话框就没有高度上限。 */
+  max-height: calc(100vh - 48px);
   max-height: calc(100dvh - 48px);
   background: var(--card);
   border-radius: 10px;

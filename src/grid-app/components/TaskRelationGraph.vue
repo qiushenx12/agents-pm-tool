@@ -101,7 +101,7 @@ watch(
   { deep: true },
 );
 
-// ========== 画布平移（中键拖拽）与缩放（滚轮） ==========
+// ========== 画布平移（左键拖空白 / 中键）与缩放（滚轮） ==========
 const scrollEl = ref<HTMLElement | null>(null);
 const viewportW = ref(0);
 const viewportH = ref(0);
@@ -146,7 +146,7 @@ watch(scrollEl, () => {
   bindResizeObserver();
 }, { immediate: true });
 
-// 中键拖拽平移
+// 画布平移：左键拖空白处（触控板用户没有中键）、中键随处可拖
 const panning = ref(false);
 let panStart: { pointerId: number; startX: number; startY: number; panX: number; panY: number } | null = null;
 const draggingId = ref<string | null>(null);
@@ -250,8 +250,12 @@ function onMouseDown(event: MouseEvent) {
 }
 
 function onPointerDown(event: PointerEvent) {
-  if (event.button !== 1 || !scrollEl.value) return;
-  event.preventDefault();
+  // dragStart 就是左键归属的判据：落在卡片上时，卡片的 beginNodeDrag 先于本处理器置位，
+  // 因此卡片上的左键只拖卡片。能走到下面这行的，要么是空白处的左键，要么是任意位置的中键。
+  if (!scrollEl.value || dragStart) return;
+  if (event.button !== 0 && event.button !== 1) return;
+  // 中键会触发浏览器自动滚动，必须拦掉；左键不拦，保留「点空白处清除选中」的那个 click
+  if (event.button === 1) event.preventDefault();
   panStart = {
     pointerId: event.pointerId,
     startX: event.clientX,
@@ -374,7 +378,7 @@ onBeforeUnmount(() => {
         <span class="relation-count">{{ taskId ? "当前任务所在的关联树" : "全部未验收通过的关联树" }}</span>
         <template v-if="graph.nodes.length">
           <span class="relation-count">{{ graph.nodes.length }} 个节点 · {{ graph.edges.length }} 条关联</span>
-          <span class="relation-hint">单击查看详情 · 拖动卡片（自动对齐）· 中键平移 · 滚轮缩放</span>
+          <span class="relation-hint">单击查看详情 · 拖动卡片（自动对齐）· 拖动空白处平移 · 滚轮缩放</span>
         </template>
       </div>
       <div class="relation-actions">
@@ -397,7 +401,7 @@ onBeforeUnmount(() => {
       class="relation-scroll"
       :class="{ 'relation-scroll-panning': panning, 'relation-scroll-dragging': draggingId }"
       tabindex="0"
-      aria-label="关联图画布，中键拖动平移，滚轮缩放"
+      aria-label="关联图画布，拖动空白处或按中键可平移，滚轮缩放"
       @mousedown="onMouseDown"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"

@@ -80,6 +80,10 @@ it.each(["predecessor_task_ids", "unlock_task_ids"] as const)(
       ".dependency-trigger",
     )!;
     expect(trigger).not.toBeNull();
+    // 触发器要撑满整格，靠锚点自带的类名（原来用 :has() 找内部的 .dependency-trigger）
+    expect(
+      cell.querySelector(".popover-anchor")?.classList.contains("dependency-anchor"),
+    ).toBe(true);
     trigger.querySelector<HTMLElement>(".dependency-value")!.click();
     await vi.waitFor(() =>
       expect(trigger?.getAttribute("aria-expanded")).toBe("true"),

@@ -34,6 +34,10 @@
   --tag-teal-fg: #127267;
   --tag-red-bg: #ffe5e3;
   --tag-red-fg: #c0342c;
+  /* 危险区底色 = --tag-red-bg 48% 不透明度。原先写作 color-mix(in srgb, var(--tag-red-bg) 48%, transparent)
+     （color-mix 要 Safari 16.2），改成等价令牌，两端渲染一致且旧引擎也认。
+     改 --tag-red-bg 时这里要跟着改。 */
+  --danger-zone-bg: rgba(255, 229, 227, 0.48);
   --tag-purple-bg: #eee5ff;
   --tag-purple-fg: #7248bd;
   --brand-codex-bg: #e8e8ff;
@@ -105,6 +109,8 @@
   --tag-teal-fg: #84d5c8;
   --tag-red-bg: #4c2f32;
   --tag-red-fg: #ffaaa4;
+  /* 同 :root 的 --danger-zone-bg，按深色主题的 --tag-red-bg 取 48% 不透明度 */
+  --danger-zone-bg: rgba(76, 47, 50, 0.48);
   --tag-purple-bg: #3c3056;
   --tag-purple-fg: #c7abf5;
   --brand-codex-bg: #26264d;

@@ -195,7 +195,7 @@ function frozenBeforeInput(event: InputEvent) {
             class="filter-condition"
             :data-filter-key="group.key"
           >
-            <UiPopover :width="210" label="选择筛选字段"
+            <UiPopover :width="210" label="选择筛选字段" anchor-class="filter-field-anchor"
               ><template #trigger="{ toggle, open: fieldOpen }"
                 ><button
                   type="button"
@@ -232,6 +232,7 @@ function frozenBeforeInput(event: InputEvent) {
               v-if="group.key === 'status'"
               :width="150"
               label="当前状态筛选方式"
+              anchor-class="filter-operator-anchor"
             >
               <template #trigger="{ toggle, open: modeOpen }"
                 ><button
@@ -269,7 +270,7 @@ function frozenBeforeInput(event: InputEvent) {
             <span v-else class="filter-condition-control filter-operator-static"
               >等于</span
             >
-            <UiPopover :width="270" :label="`选择${group.label}`"
+            <UiPopover :width="270" :label="`选择${group.label}`" anchor-class="filter-value-anchor"
               ><template #trigger="{ toggle, open: valueOpen }"
                 ><button
                   type="button"

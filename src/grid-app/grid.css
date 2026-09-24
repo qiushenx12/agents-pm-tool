@@ -333,6 +333,8 @@
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  /* 空白处左键即可拖动平移，光标随之提示（拖动时由 .relation-scroll-panning 换成 grabbing） */
+  cursor: grab;
   background-color: var(--sidebar-bg);
   background-image: radial-gradient(var(--separator) 0.8px, transparent 0.8px);
   background-size: 20px 20px;
@@ -379,6 +381,9 @@
   overflow: hidden;
   border: 2px solid var(--relation-tone-fg);
   border-radius: 9px;
+  /* 旧 WebKit 回退：color-mix() 要 Safari 16.2 才有，缺了它会整条声明失效、卡片背景变透明
+     （只剩边框和底下的网格纹）。下一行的 color-mix 才是带状态色的正解。 */
+  background: var(--card);
   background: color-mix(in srgb, var(--relation-tone-bg) 50%, var(--card));
   color: var(--text-primary);
   text-align: left;
@@ -386,6 +391,7 @@
   cursor: grab;
   touch-action: none;
   user-select: none;
+  -webkit-user-select: none;
 }
 .relation-card:hover,
 .relation-card:focus-visible {
@@ -404,6 +410,7 @@
 .relation-scroll-panning {
   cursor: grabbing;
   user-select: none;
+  -webkit-user-select: none;
 }
 .relation-scroll-panning .relation-card {
   pointer-events: none;
@@ -869,7 +876,9 @@ th:focus-within .column-menu {
   pointer-events: none;
 }
 
-.task-grid .popover-anchor:has(.dependency-trigger) {
+/* 依赖单元格的触发器要撑满整格（见 TaskMultiSelect 传的 anchor-class），类名由锚点自带。
+   刻意不用父选择伪类 has()：它要 Safari 15.4+，与 tauri.conf.json 声明的 macOS 11 不符。 */
+.task-grid .popover-anchor.dependency-anchor {
   width: 100%;
 }
 .expand-record {
@@ -1592,7 +1601,7 @@ th:focus-within .column-menu {
   padding: 14px;
   border: 1px solid var(--tag-red-bg);
   border-radius: 9px;
-  background: color-mix(in srgb, var(--tag-red-bg) 48%, transparent);
+  background: var(--danger-zone-bg);
 }
 .project-danger-zone strong {
   display: block;
@@ -1604,20 +1613,22 @@ th:focus-within .column-menu {
   color: var(--text-tertiary);
   font-size: 10px;
 }
+/* 窄屏把「字段·运算符」放一行、「值」独占一行。锚点类名由 FilterBar 显式传给 UiPopover。
+   刻意不用父选择伪类 has()：它要 Safari 15.4+，与 tauri.conf.json 声明的 macOS 11 不符。 */
 @media (max-width: 600px) {
   .filter-condition {
     grid-template-columns: minmax(0, 1fr) 86px 28px;
   }
-  .filter-condition > .popover-anchor:has(.filter-field-control) {
+  .filter-condition > .popover-anchor.filter-field-anchor {
     grid-column: 1;
     grid-row: 1;
   }
-  .filter-condition > .popover-anchor:has(.filter-operator-control),
+  .filter-condition > .popover-anchor.filter-operator-anchor,
   .filter-operator-static {
     grid-column: 2;
     grid-row: 1;
   }
-  .filter-condition > .popover-anchor:has(.filter-value-control) {
+  .filter-condition > .popover-anchor.filter-value-anchor {
     grid-column: 1 / 3;
     grid-row: 2;
   }

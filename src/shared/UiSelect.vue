@@ -35,7 +35,7 @@ const filtered = computed(() =>
 );
 </script>
 <template>
-  <UiPopover :width="240" :label="label"
+  <UiPopover :width="240" :label="label" :anchor-class="field ? '' : 'select-anchor'"
     ><template #trigger="{ toggle, open }">
       <button
         type="button"

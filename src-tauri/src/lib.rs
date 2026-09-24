@@ -617,11 +617,24 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "tray_quit", "退出（停止服务）", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &open_web, &quit])?;
 
-    TrayIconBuilder::new()
+    let builder = TrayIconBuilder::new()
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("Agents PM Tool")
-        .icon(app.default_window_icon().unwrap().clone())
+        .tooltip("Agents PM Tool");
+    // 托盘图标两端分开（互不影响）：
+    // - macOS 菜单栏惯例是单色模板图，系统按 alpha 取形并跟着明暗反色，所以用专门抠出来的
+    //   tray-template.png（只有标记轮廓、透明底）。注意**不能**把彩色 app 图标直接开成
+    //   template：macOS 会把不透明的橙色方块整个当遮罩，渲染成一团实心色块。
+    //   `icon_as_template` 在 tauri 里是 macOS 专属开关，Windows 看不到它。
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .icon(tauri::include_image!("icons/tray-template.png"))
+        .icon_as_template(true);
+    // 其它平台（Windows）沿用原来的彩色 app 图标，行为与之前完全一致。
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.icon(app.default_window_icon().unwrap().clone());
+
+    builder
         .on_menu_event(|app, event| match event.id().as_ref() {
             "tray_show" => show_settings_view(app),
             "tray_open_web" => open_web_page(app),

@@ -2,8 +2,20 @@
 import { nextTick, onBeforeUnmount, ref } from "vue";
 import { enterLayer, leaveLayer, isTopLayer, focusables } from "./layers";
 const props = withDefaults(
-  defineProps<{ width?: number; align?: "left" | "right"; label?: string }>(),
-  { width: 240, align: "left", label: "选项" },
+  defineProps<{
+    width?: number;
+    align?: "left" | "right";
+    label?: string;
+    /**
+     * 追加到锚点（.popover-anchor）上的类名。锚点由本组件创建，而调用方常常要根据
+     * 「锚点里装的是什么控件」来定位它（见 components.css 的 .select-anchor、
+     * grid.css 的 .dependency-anchor / .filter-*-anchor）。这类父选择语义以前用
+     * 父选择伪类 has() 表达，但那要求 Safari 15.4+，与 tauri.conf.json 声明的 macOS 11 不符，
+     * 所以改由调用方显式传类名。
+     */
+    anchorClass?: string;
+  }>(),
+  { width: 240, align: "left", label: "选项", anchorClass: "" },
 );
 const open = ref(false);
 const anchor = ref<HTMLElement>();
@@ -124,7 +136,7 @@ onBeforeUnmount(() => close(false));
 defineExpose({ toggle, openAt, close });
 </script>
 <template>
-  <span ref="anchor" class="popover-anchor" @click.stop @keydown.stop
+  <span ref="anchor" class="popover-anchor" :class="anchorClass" @click.stop @keydown.stop
     ><slot name="trigger" :toggle="toggle" :open="open"
   /></span>
   <Teleport to="body"

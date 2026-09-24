@@ -90,7 +90,12 @@ function locateContextTask(closeMenu: () => void) {
 </script>
 
 <template>
-  <UiPopover ref="listPopover" :width="360" :label="label">
+  <UiPopover
+    ref="listPopover"
+    :width="360"
+    :label="label"
+    :anchor-class="field ? 'dependency-anchor' : 'select-anchor'"
+  >
     <template #trigger="{ toggle, open }">
       <button
         type="button"

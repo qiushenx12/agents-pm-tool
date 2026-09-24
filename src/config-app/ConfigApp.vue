@@ -355,6 +355,7 @@ onBeforeUnmount(() => {
   padding: 0 12px 0 16px;
   border-bottom: 1px solid var(--separator);
   user-select: none;
+  -webkit-user-select: none;
 }
 .titlebar-brand {
   display: flex;

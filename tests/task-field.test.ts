@@ -78,6 +78,25 @@ async function choose(value: string) {
   await flush();
 }
 
+it("gives the form select a full-width anchor while the cell variant does not", async () => {
+  // 表单里的下拉要撑满，单元格（field）形态由所在格子的规则管，两者靠锚点类名区分，
+  // 不用 :has()（Safari 15.4+），见 shared/components.css 的 .select-anchor
+  app = createApp(TaskField, { task, field: "status" });
+  app.mount(host);
+  await nextTick();
+  const cellAnchor = host.querySelector<HTMLElement>(".popover-anchor")!;
+  expect(cellAnchor).not.toBeNull();
+  expect(cellAnchor.classList.contains("select-anchor")).toBe(false);
+  app.unmount();
+
+  app = createApp(TaskField, { task, field: "status", form: true });
+  app.mount(host);
+  await nextTick();
+  const formAnchor = host.querySelector<HTMLElement>(".popover-anchor")!;
+  expect(formAnchor).not.toBeNull();
+  expect(formAnchor.classList.contains("select-anchor")).toBe(true);
+});
+
 it("auto-dismisses the field error three seconds after it appears", async () => {
   app = createApp(TaskField, { task, field: "status" });
   app.mount(host);

@@ -2,6 +2,8 @@
 import { afterEach, expect, it } from "vitest";
 import { createApp, nextTick } from "vue";
 import { createPinia, disposePinia, type Pinia } from "pinia";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import FilterBar from "@/grid-app/components/FilterBar.vue";
 import { useTaskStore } from "@/grid-app/stores/taskStore";
 import { useMetaStore } from "@/grid-app/stores/metaStore";
@@ -127,6 +129,34 @@ it("opens an empty filter with the first field as its default condition", async 
   );
   expect(project).not.toBeNull();
   expect(project!.textContent).toContain("选择项目");
+});
+
+it("tags each filter control anchor with the class the narrow layout targets", async () => {
+  mountBar();
+  await openFilterMenu();
+  await addCondition("当前状态");
+
+  const main = popover("筛选任务")!;
+  const statusRow = main.querySelector<HTMLElement>('[data-filter-key="status"]')!;
+  // 窄屏重排靠锚点自带的类名定位（原来用 :has() 找包裹的控件，Safari 15.4 以下不支持）
+  expect(statusRow.querySelector(":scope > .popover-anchor.filter-field-anchor")).not.toBeNull();
+  expect(statusRow.querySelector(":scope > .popover-anchor.filter-operator-anchor")).not.toBeNull();
+  expect(statusRow.querySelector(":scope > .popover-anchor.filter-value-anchor")).not.toBeNull();
+
+  // 非「当前状态」的字段没有运算符下拉，用的是静态文字，不该多出一个运算符锚点
+  const projectRow = main.querySelector<HTMLElement>('[data-filter-key="project"]')!;
+  expect(projectRow.querySelector(":scope > .popover-anchor.filter-field-anchor")).not.toBeNull();
+  expect(projectRow.querySelector(":scope > .popover-anchor.filter-operator-anchor")).toBeNull();
+  expect(projectRow.querySelector(".filter-operator-static")).not.toBeNull();
+});
+
+it("keeps the anchor hooks class-based instead of the has() pseudo-class", () => {
+  // 父选择伪类要 Safari 15.4+，而 tauri.conf.json 声明的最低系统是 macOS 11（Safari 14）。
+  // 锚点定位一律用显式类名，禁止回退到 :has()。
+  for (const file of ["src/grid-app/grid.css", "src/shared/components.css"]) {
+    const css = readFileSync(resolve(file), "utf8");
+    expect(css, file).not.toContain(":has(");
+  }
 });
 
 it("switches the status condition between include and exclude", async () => {

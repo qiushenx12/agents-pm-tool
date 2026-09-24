@@ -83,6 +83,17 @@ function stubViewport(width: number, height: number) {
   });
 }
 
+/** 画布 transform 里的平移量（jsdom 不实现指针捕获，需要自己打桩） */
+function translateOf(canvas: HTMLElement) {
+  const match = /translate\((-?[\d.]+)px, (-?[\d.]+)px\)/.exec(canvas.style.transform);
+  return { x: Number.parseFloat(match?.[1] ?? ""), y: Number.parseFloat(match?.[2] ?? "") };
+}
+
+function stubPointerCapture(element: HTMLElement) {
+  element.setPointerCapture = vi.fn();
+  element.hasPointerCapture = vi.fn(() => false);
+}
+
 it("loads the selected projects, draws task cards, and opens the shared detail on click", async () => {
   listTasks.mockResolvedValue([first, second]);
   host = document.createElement("div");
@@ -499,4 +510,90 @@ it("colors each card with the same status tone the task table uses", async () =>
   expect(css).not.toContain(".relation-card[data-status=");
   for (const tone of new Set(Object.values(statusTones)))
     expect(css).toContain(`.relation-card[data-tone="${tone}"]`);
+});
+
+it("pans the canvas by dragging empty space with the left button", async () => {
+  listTasks.mockResolvedValue([first, second]);
+  host = document.createElement("div");
+  document.body.append(host);
+  app = createApp(TaskRelationGraph, { taskId: first.id, revision: 0 });
+  app.mount(host);
+  await nextTick();
+  await nextTick();
+  const viewport = host.querySelector<HTMLElement>(".relation-scroll")!;
+  const canvas = host.querySelector<HTMLElement>(".relation-canvas")!;
+  stubPointerCapture(viewport);
+  const before = translateOf(canvas);
+  expect(Number.isFinite(before.x) && Number.isFinite(before.y)).toBe(true);
+  // 从空白处按下（真实浏览器里 target 是画布，靠冒泡到 .relation-scroll）
+  canvas.dispatchEvent(pointer("pointerdown", 0, 0));
+  viewport.dispatchEvent(pointer("pointermove", 70, 45));
+  await nextTick();
+  // 拖动过程中换成抓取光标
+  expect(viewport.classList.contains("relation-scroll-panning")).toBe(true);
+  expect(translateOf(canvas)).toEqual({ x: before.x + 70, y: before.y + 45 });
+  viewport.dispatchEvent(pointer("pointerup", 70, 45));
+  await nextTick();
+  expect(viewport.classList.contains("relation-scroll-panning")).toBe(false);
+});
+
+it("does not pan when the drag starts on a card, and swallows the follow-up click", async () => {
+  listTasks.mockResolvedValue([first, second]);
+  host = document.createElement("div");
+  document.body.append(host);
+  const onOpenDetail = vi.fn();
+  app = createApp(TaskRelationGraph, { taskId: first.id, revision: 0, onOpenDetail });
+  app.mount(host);
+  await nextTick();
+  await nextTick();
+  const viewport = host.querySelector<HTMLElement>(".relation-scroll")!;
+  const canvas = host.querySelector<HTMLElement>(".relation-canvas")!;
+  const card = [...host.querySelectorAll<HTMLButtonElement>(".relation-card")]
+    .find((item) => item.textContent?.includes(second.id))!;
+  stubPointerCapture(viewport);
+  const before = translateOf(canvas);
+  // 卡片上的左键只归属卡片自己：画布不能被顺手拖走（拖动前后位移要补偿回原值）
+  card.dispatchEvent(pointer("pointerdown", 100, 100));
+  viewport.dispatchEvent(pointer("pointermove", 60, 60));
+  viewport.dispatchEvent(pointer("pointerup", 60, 60));
+  await nextTick();
+  expect(Number.parseFloat(card.style.left)).toBeLessThan(0);
+  const after = translateOf(canvas);
+  expect(after.x - before.x).toBeCloseTo(0, 6);
+  expect(after.y - before.y).toBeCloseTo(0, 6);
+  // 拖卡片不能留下"平移中"状态：.relation-scroll-panning 会把卡片的 pointer-events 关掉，
+  // 残留的话整张图会卡住点不动
+  expect(viewport.classList.contains("relation-scroll-panning")).toBe(false);
+  // 拖完松手补的那个 click 不应打开详情
+  card.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  await nextTick();
+  expect(onOpenDetail).not.toHaveBeenCalled();
+});
+
+it("keeps the selection after a pan but still clears it on a plain click", async () => {
+  listTasks.mockResolvedValue([first, second]);
+  host = document.createElement("div");
+  document.body.append(host);
+  const onClearDetail = vi.fn();
+  app = createApp(TaskRelationGraph, { taskId: first.id, revision: 0, onClearDetail });
+  app.mount(host);
+  await nextTick();
+  await nextTick();
+  const viewport = host.querySelector<HTMLElement>(".relation-scroll")!;
+  const canvas = host.querySelector<HTMLElement>(".relation-canvas")!;
+  stubPointerCapture(viewport);
+  expect(host.querySelectorAll(".relation-card-selected")).toHaveLength(1);
+  canvas.dispatchEvent(pointer("pointerdown", 0, 0));
+  viewport.dispatchEvent(pointer("pointermove", 70, 45));
+  viewport.dispatchEvent(pointer("pointerup", 70, 45));
+  // 平移结束后浏览器仍会补一个 click：不能顺手把选中清掉
+  viewport.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  await nextTick();
+  expect(host.querySelectorAll(".relation-card-selected")).toHaveLength(1);
+  expect(onClearDetail).not.toHaveBeenCalled();
+  // 单纯点空白（没有拖动）仍然清除选中
+  viewport.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  await nextTick();
+  expect(host.querySelectorAll(".relation-card-selected")).toHaveLength(0);
+  expect(onClearDetail).toHaveBeenCalledOnce();
 });
